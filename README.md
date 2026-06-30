@@ -49,6 +49,29 @@ Implementation work starts in Phase 2 after Phase 1 is complete.
 
 - `PLAN.md`
 - `docs/ARCHITECTURE.md`
+- `docs/MCP_SERVER.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 
+## Phase 2 Development
+
+The MCP server skeleton lives in `src/index.ts`.
+
+Available tools:
+
+- `start_task`
+- `finish_task`
+- `get_context_pack`
+- `wiki_search`
+- `git_sync` as dry-run only
+
+Local verification:
+
+```powershell
+npm install
+npm run build
+npm run check
+npm run smoke
+```
+
+Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.

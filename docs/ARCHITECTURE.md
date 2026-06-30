@@ -49,6 +49,8 @@ The first MCP server skeleton will expose these tools:
 
 No other tools are approved until the plan is updated.
 
+The Phase 2 skeleton is implemented as a stdio MCP server in `src/index.ts`.
+
 ## Write Boundary
 
 The final architecture uses a single MCP server as the writer.
@@ -90,4 +92,3 @@ The following are intentionally deferred:
 - external fact ingestion
 - automatic push without policy checks
 - vector search before keyword/frontmatter retrieval is proven
-
