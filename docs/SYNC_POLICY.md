@@ -51,7 +51,7 @@ These data types are local-only unless the plan is explicitly changed:
 
 ## `git_sync` MVP Behavior
 
-In Phase 2, `git_sync` is dry-run only.
+In Phase 6, `git_sync` is dry-run only.
 
 It must report:
 
@@ -59,8 +59,18 @@ It must report:
 - whether each file is syncable, conditional, or blocked
 - policy reasons
 - suspected sensitive patterns
+- per-file recommended action
+- whether manual approval is required
 
 It must not commit or push until manual approval is added in a later phase.
+
+Required dry-run fields:
+
+- `dry_run: true`
+- `would_commit: false`
+- `would_push: false`
+- `manual_approval_required: true`
+- `commit_allowed_by_tool: false`
 
 ## Commit Rule
 

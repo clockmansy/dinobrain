@@ -59,6 +59,38 @@ This note exists only to verify quarantine exclusion from Context Packs.
 `,
   "utf8",
 );
+writeFileSync(
+  path.join(tempDataRoot, "20_Wiki", "Syncable-Change.md"),
+  `---
+title: Syncable Change
+summary: This file should be classified as syncable after review.
+tags: [syncable]
+source_status: internal
+confidence: high
+last_verified: 2026-07-01
+---
+
+# Syncable Change
+
+This file exists to verify git_sync dry-run classification.
+`,
+  "utf8",
+);
+writeFileSync(
+  path.join(tempDataRoot, "80_Review_Queue", "review-needed.md"),
+  "# Review Needed\n\nThis file should be classified as conditional.\n",
+  "utf8",
+);
+writeFileSync(
+  path.join(tempDataRoot, ".dino", "secrets.json"),
+  "{\"note\":\"This path must be blocked even without secret-looking values.\"}\n",
+  "utf8",
+);
+writeFileSync(
+  path.join(tempDataRoot, "20_Wiki", "Sensitive-Pattern.md"),
+  `api_${"key"}: pretend-this-is-sensitive\n`,
+  "utf8",
+);
 
 spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
@@ -274,6 +306,30 @@ try {
   );
   if (gitSync.dry_run !== true || gitSync.would_commit !== false || gitSync.would_push !== false) {
     throw new Error("git_sync did not stay in dry-run mode");
+  }
+  if (gitSync.commit_allowed_by_tool !== false || gitSync.manual_approval_required !== true) {
+    throw new Error("git_sync did not require manual approval");
+  }
+  const syncFiles = new Map(gitSync.files.map((file) => [file.path, file]));
+  const syncableFile = syncFiles.get("20_Wiki/Syncable-Change.md");
+  if (!syncableFile || syncableFile.classification !== "syncable") {
+    throw new Error("git_sync did not classify syncable Wiki change correctly");
+  }
+  const conditionalFile = syncFiles.get("80_Review_Queue/review-needed.md");
+  if (!conditionalFile || conditionalFile.classification !== "conditional") {
+    throw new Error("git_sync did not classify review queue change as conditional");
+  }
+  const blockedPathFile = syncFiles.get(".dino/secrets.json");
+  if (!blockedPathFile || blockedPathFile.classification !== "blocked") {
+    throw new Error("git_sync did not block local-only secrets path");
+  }
+  const sensitivePatternFile = syncFiles.get("20_Wiki/Sensitive-Pattern.md");
+  if (
+    !sensitivePatternFile ||
+    sensitivePatternFile.classification !== "blocked" ||
+    sensitivePatternFile.sensitive_patterns.length < 1
+  ) {
+    throw new Error("git_sync did not block sensitive pattern");
   }
 
   console.log(

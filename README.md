@@ -70,6 +70,8 @@ Available tools:
 
 `get_context_pack` writes a trace record to `.dino/context-packs` in the configured data vault so the inclusion reasons are inspectable after the tool call.
 
+`git_sync` is dry-run only. It reports syncable, conditional, and blocked files, but it does not commit or push.
+
 Local verification:
 
 ```powershell

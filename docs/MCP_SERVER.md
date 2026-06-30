@@ -110,8 +110,28 @@ Reports:
 - sync classification
 - policy reasons
 - sensitive pattern flags
+- per-file recommended action
+- manual approval requirement
 
 It does not commit or push.
+
+Phase 6 response fields include:
+
+- `dry_run: true`
+- `would_commit: false`
+- `would_push: false`
+- `manual_approval_required: true`
+- `commit_allowed_by_tool: false`
+- `policy_version`
+- `files[].classification`
+- `files[].policy`
+- `files[].reasons`
+- `files[].action`
+- `files[].sensitivity_scan`
+- `files[].sensitive_patterns`
+- `summary.syncable`
+- `summary.conditional`
+- `summary.blocked`
 
 ### `create_candidate_instance`
 
@@ -205,6 +225,23 @@ The smoke test verifies:
 - candidate approval creates an accepted instance
 - quarantine creates a demotion review record
 - quarantined notes are excluded from default Context Packs
+
+## Phase 6 Git Sync Dry Run
+
+Phase 6 verification is included in:
+
+```powershell
+npm run smoke
+```
+
+The smoke test verifies:
+
+- `git_sync` remains dry-run only
+- manual approval is required
+- syncable paths are classified as `syncable`
+- Review Queue paths are classified as `conditional`
+- local-only secret paths are classified as `blocked`
+- sensitive patterns block otherwise syncable files
 
 Default golden set:
 

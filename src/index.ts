@@ -116,7 +116,20 @@ function jsonResult(value: unknown): CallToolResult {
   };
 }
 
-function classifyPath(normalizedPath: string): { classification: string; reasons: string[] } {
+type SyncClassification = "syncable" | "conditional" | "blocked";
+
+type PathClassification = {
+  classification: SyncClassification;
+  policy: string;
+  reasons: string[];
+};
+
+type SensitivityHit = {
+  pattern: string;
+  line: number;
+};
+
+function classifyPath(normalizedPath: string): PathClassification {
   const blockedPrefixes = [
     "10_Conversations/raw/",
     "50_Instances/raw/",
@@ -153,21 +166,37 @@ function classifyPath(normalizedPath: string): { classification: string; reasons
     blockedPrefixes.some((prefix) => normalizedPath.startsWith(prefix)) ||
     blockedExtensions.some((extension) => normalizedPath.toLowerCase().endsWith(extension))
   ) {
-    return { classification: "blocked", reasons: ["path is local-only or secret-bearing"] };
+    return {
+      classification: "blocked",
+      policy: "local_only",
+      reasons: ["path is local-only or secret-bearing"],
+    };
   }
 
   if (conditionalPrefixes.some((prefix) => normalizedPath.startsWith(prefix))) {
-    return { classification: "conditional", reasons: ["path requires review before sync"] };
+    return {
+      classification: "conditional",
+      policy: "requires_review",
+      reasons: ["path requires review before sync"],
+    };
   }
 
   if (syncableExact.has(normalizedPath) || syncablePrefixes.some((prefix) => normalizedPath.startsWith(prefix))) {
-    return { classification: "syncable", reasons: ["path is allowed by sync policy"] };
+    return {
+      classification: "syncable",
+      policy: "syncable_after_review",
+      reasons: ["path is allowed by sync policy"],
+    };
   }
 
-  return { classification: "conditional", reasons: ["path is not explicitly classified"] };
+  return {
+    classification: "conditional",
+    policy: "unclassified_requires_review",
+    reasons: ["path is not explicitly classified"],
+  };
 }
 
-async function sensitivityHits(filePath: string): Promise<string[]> {
+async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
   try {
     const stat = await fs.stat(filePath);
     if (!stat.isFile() || stat.size > 512 * 1024) return [];
@@ -180,7 +209,15 @@ async function sensitivityHits(filePath: string): Promise<string[]> {
       ["private_key_block", /BEGIN [A-Z ]*PRIVATE KEY/],
       ["openai_key_shape", /sk-[A-Za-z0-9]{20,}/],
     ];
-    return patterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+    const hits: SensitivityHit[] = [];
+    const lines = text.split(/\r?\n/);
+    for (const [patternName, pattern] of patterns) {
+      const lineIndex = lines.findIndex((line) => pattern.test(line));
+      if (lineIndex >= 0) {
+        hits.push({ pattern: patternName, line: lineIndex + 1 });
+      }
+    }
+    return hits;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -669,7 +706,7 @@ server.registerTool(
     },
   },
   async ({ include_sensitive_scan }) => {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1"], {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
       cwd: DATA_ROOT,
       windowsHide: true,
     });
@@ -677,14 +714,37 @@ server.registerTool(
     const files = [];
     for (const change of changes) {
       const classification = classifyPath(change.path);
-      const hits = include_sensitive_scan ? await sensitivityHits(dataPath(change.path)) : [];
+      const deleted = change.status.includes("D");
+      const hits = include_sensitive_scan && !deleted ? await sensitivityHits(dataPath(change.path)) : [];
+      const finalClassification: SyncClassification = hits.length > 0 ? "blocked" : classification.classification;
+      const reasons =
+        hits.length > 0 ? [...classification.reasons, "sensitive pattern detected"] : classification.reasons;
       files.push({
         ...change,
-        classification: hits.length > 0 ? "blocked" : classification.classification,
-        reasons: hits.length > 0 ? [...classification.reasons, "sensitive pattern detected"] : classification.reasons,
+        classification: finalClassification,
+        policy: hits.length > 0 ? "sensitive_pattern_block" : classification.policy,
+        reasons,
+        action:
+          finalClassification === "syncable"
+            ? "ready_for_manual_commit"
+            : finalClassification === "conditional"
+              ? "requires_review"
+              : "do_not_sync",
+        sensitivity_scan: {
+          enabled: include_sensitive_scan,
+          scanned: include_sensitive_scan && !deleted,
+        },
         sensitive_patterns: hits,
       });
     }
+    const summary = {
+      syncable: files.filter((file) => file.classification === "syncable").length,
+      conditional: files.filter((file) => file.classification === "conditional").length,
+      blocked: files.filter((file) => file.classification === "blocked").length,
+      ready_for_manual_commit: files.filter((file) => file.action === "ready_for_manual_commit").length,
+      requires_review: files.filter((file) => file.action === "requires_review").length,
+      do_not_sync: files.filter((file) => file.action === "do_not_sync").length,
+    };
 
     return jsonResult({
       ok: true,
@@ -693,12 +753,11 @@ server.registerTool(
       changed_file_count: files.length,
       would_commit: false,
       would_push: false,
+      manual_approval_required: true,
+      commit_allowed_by_tool: false,
+      policy_version: "phase-6-dry-run",
       files,
-      summary: {
-        syncable: files.filter((file) => file.classification === "syncable").length,
-        conditional: files.filter((file) => file.classification === "conditional").length,
-        blocked: files.filter((file) => file.classification === "blocked").length,
-      },
+      summary,
     });
   },
 );
