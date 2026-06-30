@@ -17,18 +17,15 @@ The data vault lives in a separate private repository:
 
 ## Current Phase
 
-DinoBrain is in Phase 1: Foundation.
+DinoBrain has the MVP core from `PLAN.md` implemented through Phase 6.
 
-The only approved work in this phase is:
+The current verification focus is proving that the system behaves like a compounding memory OS:
 
-- define repository boundaries
-- document architecture
-- document sync policy
-- document sensitivity policy
-- create the initial data vault structure
-- commit and push the initial state
-
-Implementation work starts in Phase 2 after Phase 1 is complete.
+- reviewed task knowledge can become future Context Pack input
+- Context Pack traces explain why a memory was selected
+- quarantined memories are excluded from later Context Packs
+- `git_sync` classifies safe, conditional, and blocked data without committing or pushing
+- Codex has a local MCP server configuration for DinoBrain
 
 ## Ground Rules
 
@@ -52,8 +49,9 @@ Implementation work starts in Phase 2 after Phase 1 is complete.
 - `docs/MCP_SERVER.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
+- `docs/VERIFICATION.md`
 
-## Phase 2 Development
+## MCP Development
 
 The MCP server skeleton lives in `src/index.ts`.
 
@@ -80,6 +78,9 @@ npm run build
 npm run check
 npm run smoke
 npm run eval:context
+npm run verify:os
 ```
 
 Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.
+
+`npm run verify:os` is the strongest local gate. It verifies the compounding loop and the Codex MCP configuration described in `docs/VERIFICATION.md`.

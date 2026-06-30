@@ -151,7 +151,30 @@ function stringArray(value: unknown): string[] {
   return [];
 }
 
-async function walkMarkdown(dir: string, records: string[] = []): Promise<string[]> {
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function evidenceSnippet(value: Record<string, unknown>): string {
+  const evidence = value.evidence;
+  if (typeof evidence === "object" && evidence !== null) {
+    return firstString((evidence as { snippet?: unknown }).snippet);
+  }
+  return "";
+}
+
+function isQuarantinedRecord(value: Record<string, unknown>, relativePath: string, quarantinedPaths: Set<string>): boolean {
+  const status = String(value.status ?? "").toLowerCase();
+  const quarantineFlag = value.quarantine === true || String(value.quarantine ?? "").toLowerCase() === "true";
+  return status === "quarantined" || status === "quarantine" || quarantineFlag || quarantinedPaths.has(relativePath);
+}
+
+async function walkSupportedRecords(dir: string, records: string[] = []): Promise<string[]> {
   let entries: Array<import("node:fs").Dirent>;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -164,8 +187,8 @@ async function walkMarkdown(dir: string, records: string[] = []): Promise<string
     if (entry.name === ".git" || entry.name === "node_modules") continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await walkMarkdown(full, records);
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      await walkSupportedRecords(full, records);
+    } else if (entry.isFile() && [".md", ".json"].includes(path.extname(entry.name).toLowerCase())) {
       records.push(full);
     }
   }
@@ -177,7 +200,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
   const files: string[] = [];
   const quarantinedPaths = await collectQuarantinedPaths(dataRoot);
   for (const root of SEARCH_ROOTS) {
-    await walkMarkdown(dataPath(dataRoot, root), files);
+    await walkSupportedRecords(dataPath(dataRoot, root), files);
   }
 
   const records: RankedRecord[] = [];
@@ -185,14 +208,41 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
     const stat = await fs.stat(file);
     if (stat.size > 256 * 1024) continue;
 
-    const raw = await fs.readFile(file, "utf8");
-    const { metadata, body } = parseFrontmatter(raw);
     const relativePath = relDataPath(dataRoot, file);
-    const status = String(metadata.status ?? "").toLowerCase();
-    const quarantineFlag = metadata.quarantine === true || String(metadata.quarantine ?? "").toLowerCase() === "true";
-    if (status === "quarantined" || status === "quarantine" || quarantineFlag || quarantinedPaths.has(relativePath)) {
+    const raw = await fs.readFile(file, "utf8");
+    const extension = path.extname(file).toLowerCase();
+
+    if (extension === ".json") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch {
+        continue;
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+      const jsonRecord = parsed as Record<string, unknown>;
+      if (isQuarantinedRecord(jsonRecord, relativePath, quarantinedPaths)) continue;
+      const claim = firstString(jsonRecord.claim);
+      const evidence = evidenceSnippet(jsonRecord);
+      const summary = firstString(jsonRecord.summary, claim, evidence);
+      records.push({
+        path: relativePath,
+        kind: "curated_record",
+        title: firstString(jsonRecord.title, claim, path.basename(file, extension)),
+        summary: [summary, evidence && evidence !== summary ? `Evidence: ${evidence}` : ""]
+          .filter(Boolean)
+          .join(" | ")
+          .slice(0, 420),
+        tags: stringArray(jsonRecord.tags),
+        score: 0,
+        reasons: [],
+        excerpt: raw.replace(/\s+/g, " ").trim().slice(0, 600),
+      });
       continue;
     }
+
+    const { metadata, body } = parseFrontmatter(raw);
+    if (isQuarantinedRecord(metadata, relativePath, quarantinedPaths)) continue;
     const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));
     const summary = String(metadata.summary ?? firstParagraph(body));
     const tags = stringArray(metadata.tags);

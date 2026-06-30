@@ -1,7 +1,7 @@
 # DinoBrain MCP Server
 
 Date: 2026-07-01
-Status: Phase 2 skeleton
+Status: MVP core with OS-level verification
 
 ## Runtime
 
@@ -39,6 +39,8 @@ npm run smoke
 ```
 
 `npm run smoke` starts the compiled MCP server through `StdioClientTransport`, lists tools, and calls each Phase 2 tool against a temporary data vault.
+
+`npm run verify:os` runs the stronger OS-level verification from `docs/VERIFICATION.md`. It checks the Codex MCP configuration and proves that an approved accepted instance can be retrieved by a later Context Pack, then excluded after quarantine.
 
 ## Tools
 
@@ -200,6 +202,8 @@ The default pack excludes:
 
 - `50_Instances/candidates`
 - `80_Review_Queue`
+
+Accepted instance JSON records under `50_Instances/accepted` are indexed by default so reviewed task knowledge can reappear in later Context Packs.
 
 `wiki_search` may inspect body excerpts for interactive search, but `get_context_pack` keeps to the narrower Phase 3 ranking inputs.
 
