@@ -47,9 +47,34 @@ The current verification focus is proving that the system behaves like a compoun
 - `PLAN.md`
 - `docs/ARCHITECTURE.md`
 - `docs/MCP_SERVER.md`
+- `docs/INSTALL.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
+
+## Install And Update
+
+Fresh Windows setup:
+
+```powershell
+.\install.ps1
+```
+
+Inside an already cloned repo:
+
+```powershell
+.\setup.ps1
+```
+
+Update, reinstall, and uninstall entrypoints:
+
+```powershell
+.\update.ps1
+.\reinstall.ps1
+.\uninstall.ps1
+```
+
+See `docs/INSTALL.md` for custom paths, private repo prerequisites, and removal flags.
 
 ## MCP Development
 

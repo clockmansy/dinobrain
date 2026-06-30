@@ -9,8 +9,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
-const realDataRoot = path.resolve(root, "..", "dinobrain-data");
-const codexConfigPath = path.join(homedir(), ".codex", "config.toml");
+const realDataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
+const codexConfigPath = path.resolve(
+  process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
+);
 
 const expectedTools = [
   "create_candidate_instance",
