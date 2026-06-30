@@ -65,6 +65,8 @@ Available tools:
 - `wiki_search`
 - `git_sync` as dry-run only
 
+`get_context_pack` writes a trace record to `.dino/context-packs` in the configured data vault so the inclusion reasons are inspectable after the tool call.
+
 Local verification:
 
 ```powershell

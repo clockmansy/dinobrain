@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,22 @@ try {
   if (contextPack.item_count < 1) {
     throw new Error("Context Pack did not return the seeded Wiki note");
   }
+  if (!contextPack.trace_path || !existsSync(path.join(tempDataRoot, contextPack.trace_path))) {
+    throw new Error(`Missing Context Pack trace: ${contextPack.trace_path}`);
+  }
+  if (contextPack.ranking_inputs.includes("body excerpt")) {
+    throw new Error("Context Pack ranking inputs should not include body excerpt");
+  }
+  if (!contextPack.ranking_inputs.includes("recent task records")) {
+    throw new Error("Context Pack ranking inputs should include recent task records");
+  }
+  const contextTrace = JSON.parse(readFileSync(path.join(tempDataRoot, contextPack.trace_path), "utf8"));
+  if (!Array.isArray(contextTrace.items) || contextTrace.items.length < 1) {
+    throw new Error("Context Pack trace did not record included items");
+  }
+  if (!contextTrace.items.every((item) => Array.isArray(item.reasons) && item.reasons.length > 0)) {
+    throw new Error("Context Pack trace did not record inclusion reasons");
+  }
 
   const search = parseTool(
     await client.callTool({
@@ -155,6 +171,7 @@ try {
         tools: names,
         task_path: start.task_path,
         trace_path: finish.trace_path,
+        context_trace_path: contextPack.trace_path,
         context_items: contextPack.item_count,
         search_results: search.result_count,
         git_sync_changed_files: gitSync.changed_file_count,
@@ -166,4 +183,3 @@ try {
 } finally {
   await client.close();
 }
-

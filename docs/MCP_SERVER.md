@@ -82,6 +82,20 @@ Search roots:
 
 It excludes candidates and review queue records by default.
 
+Creates:
+
+- `.dino/context-packs/<pack_id>.json`
+- `.dino/events/<date>.jsonl`
+
+The Context Pack trace records:
+
+- question
+- ranking inputs
+- scanned record count
+- included items
+- why each item was included
+- excluded record count
+
 ### `wiki_search`
 
 Searches the same curated roots as `get_context_pack`.
@@ -109,3 +123,20 @@ npm run check
 npm run smoke
 ```
 
+## Phase 3 Context Pack v0
+
+Context Pack v0 uses only these ranking inputs:
+
+- file name
+- frontmatter
+- title
+- summary
+- tags
+- recent task records
+
+The default pack excludes:
+
+- `50_Instances/candidates`
+- `80_Review_Queue`
+
+`wiki_search` may inspect body excerpts for interactive search, but `get_context_pack` keeps to the narrower Phase 3 ranking inputs.

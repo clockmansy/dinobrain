@@ -18,6 +18,7 @@ type RecordValue = string | number | boolean | null | Record<string, unknown> | 
 
 type RankedRecord = {
   path: string;
+  kind: "curated_record" | "recent_task";
   title: string;
   summary: string;
   tags: string[];
@@ -46,6 +47,11 @@ function safeSlug(value: string): string {
 function makeTaskId(request: string): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
   return `task-${stamp}-${safeSlug(request).slice(0, 28)}`;
+}
+
+function makePackId(question: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `pack-${stamp}-${safeSlug(question).slice(0, 28)}`;
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -197,7 +203,7 @@ const SEARCH_ROOTS = [
   "70_Error_Book",
 ];
 
-async function collectRecords(): Promise<RankedRecord[]> {
+async function collectCuratedRecords(): Promise<RankedRecord[]> {
   const files: string[] = [];
   for (const root of SEARCH_ROOTS) {
     await walkMarkdown(dataPath(root), files);
@@ -215,6 +221,7 @@ async function collectRecords(): Promise<RankedRecord[]> {
     const tags = stringArray(metadata.tags);
     records.push({
       path: relDataPath(file),
+      kind: "curated_record",
       title,
       summary,
       tags,
@@ -227,7 +234,66 @@ async function collectRecords(): Promise<RankedRecord[]> {
   return records;
 }
 
-function rankRecords(records: RankedRecord[], query: string): RankedRecord[] {
+async function collectRecentTaskRecords(limit = 10): Promise<RankedRecord[]> {
+  const tasksDir = dataPath(".dino", "tasks");
+  let entries: Array<import("node:fs").Dirent>;
+  try {
+    entries = await fs.readdir(tasksDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const tasks = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const taskPath = path.join(tasksDir, entry.name);
+    const task = await readJson<Record<string, unknown>>(taskPath);
+    if (!task) continue;
+    const updatedAt = String(task.updated_at ?? task.created_at ?? "");
+    tasks.push({ taskPath, task, updatedAt });
+  }
+
+  tasks.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  const records: RankedRecord[] = [];
+  for (const { taskPath, task } of tasks.slice(0, limit)) {
+    const request = String(task.request ?? task.task_id ?? path.basename(taskPath, ".json"));
+    const tracePathValue = typeof task.trace_path === "string" ? task.trace_path : null;
+    const trace = tracePathValue ? await readJson<Record<string, unknown>>(dataPath(tracePathValue)) : null;
+    const traceSummary = trace && typeof trace.summary === "string" ? trace.summary : "";
+    records.push({
+      path: relDataPath(taskPath),
+      kind: "recent_task",
+      title: `Task: ${request.slice(0, 96)}`,
+      summary: [
+        `status=${String(task.status ?? "unknown")}`,
+        task.project ? `project=${String(task.project)}` : "",
+        traceSummary,
+      ]
+        .filter(Boolean)
+        .join(" | ")
+        .slice(0, 420),
+      tags: ["recent-task", String(task.status ?? "unknown")],
+      score: 0,
+      reasons: [],
+      excerpt: request,
+    });
+  }
+
+  return records;
+}
+
+async function collectContextRecords(): Promise<RankedRecord[]> {
+  const [curated, recentTasks] = await Promise.all([collectCuratedRecords(), collectRecentTaskRecords()]);
+  return [...curated, ...recentTasks];
+}
+
+function rankRecords(
+  records: RankedRecord[],
+  query: string,
+  options: { includeExcerpt?: boolean } = {},
+): RankedRecord[] {
   const terms = tokenize(query);
   return records
     .map((record) => {
@@ -256,9 +322,9 @@ function rankRecords(records: RankedRecord[], query: string): RankedRecord[] {
           score += 3;
           reasons.push(`tag matched "${term}"`);
         }
-        if (excerptText.includes(term)) {
+        if (options.includeExcerpt && excerptText.includes(term)) {
           score += 1;
-          reasons.push(`body excerpt matched "${term}"`);
+          reasons.push(`excerpt matched "${term}"`);
         }
       }
 
@@ -286,6 +352,7 @@ function classifyPath(normalizedPath: string): { classification: string; reasons
     ".dino/tasks/",
     ".dino/events/",
     ".dino/traces/",
+    ".dino/context-packs/",
   ];
   const syncablePrefixes = [
     "00_Home/",
@@ -468,25 +535,57 @@ server.registerTool(
     },
   },
   async ({ question, limit }) => {
-    const records = await collectRecords();
+    const records = await collectContextRecords();
     const ranked = rankRecords(records, question).slice(0, limit);
+    const packId = makePackId(question);
+    const createdAt = nowIso();
+    const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
+    const items = ranked.map(({ path: recordPath, kind, title, summary, tags, score, reasons }) => ({
+      path: recordPath,
+      kind,
+      title,
+      summary,
+      tags,
+      score,
+      reasons,
+    }));
+    const trace = {
+      pack_id: packId,
+      pack_type: "standard",
+      question,
+      created_at: createdAt,
+      ranking_inputs: ["file name", "frontmatter", "title", "summary", "tags", "recent task records"],
+      source_roots: SEARCH_ROOTS,
+      recent_task_limit: 10,
+      candidate_records_excluded: true,
+      review_queue_excluded: true,
+      scanned_record_count: records.length,
+      included_item_count: items.length,
+      excluded_record_count: Math.max(0, records.length - ranked.length),
+      items,
+    };
+    await writeJson(packPath, trace);
+    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+      event: "context_pack_created",
+      pack_id: packId,
+      at: createdAt,
+      path: relDataPath(packPath),
+      item_count: items.length,
+    });
     return jsonResult({
       ok: true,
+      pack_id: packId,
       pack_type: "standard",
       question,
       data_root: DATA_ROOT,
-      ranking_inputs: ["file name", "frontmatter", "title", "summary", "tags", "body excerpt"],
-      item_count: ranked.length,
-      items: ranked.map(({ path: recordPath, title, summary, tags, score, reasons }) => ({
-        path: recordPath,
-        title,
-        summary,
-        tags,
-        score,
-        reasons,
-      })),
+      trace_path: relDataPath(packPath),
+      event_log: `.dino/events/${dateStamp()}.jsonl`,
+      ranking_inputs: trace.ranking_inputs,
+      scanned_record_count: records.length,
+      item_count: items.length,
+      items,
       caveats: [
-        "Context Pack v0 uses keyword/frontmatter matching only.",
+        "Context Pack v0 uses keyword/frontmatter/recent-task matching only.",
         "Candidate and review queue records are excluded from default packs.",
       ],
     });
@@ -504,8 +603,8 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const records = await collectRecords();
-    const ranked = rankRecords(records, query).slice(0, limit);
+    const records = await collectCuratedRecords();
+    const ranked = rankRecords(records, query, { includeExcerpt: true }).slice(0, limit);
     return jsonResult({
       ok: true,
       query,
@@ -568,4 +667,3 @@ main().catch((error: unknown) => {
   console.error(error);
   process.exit(1);
 });
-
