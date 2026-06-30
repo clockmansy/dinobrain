@@ -11,4 +11,4 @@ dist/
 *.log
 tmp/
 coverage/
-
+reports/

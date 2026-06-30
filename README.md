@@ -104,8 +104,11 @@ npm run check
 npm run smoke
 npm run eval:context
 npm run verify:os
+npm run graph:vault
 ```
 
 Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.
 
 `npm run verify:os` is the strongest local gate. It verifies the compounding loop and the Codex MCP configuration described in `docs/VERIFICATION.md`.
+
+`npm run graph:vault` writes a local Obsidian-style graph report to `reports/dinobrain-vault-graph.html` and `reports/dinobrain-vault-graph.svg`. It counts handwritten wikilinks separately from DinoBrain OS relationships such as folders, tags, golden evaluation cases, traces, review records, accepted instances, and quarantine targets.
