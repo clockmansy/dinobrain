@@ -48,6 +48,7 @@ The current verification focus is proving that the system behaves like a compoun
 - `docs/ARCHITECTURE.md`
 - `docs/MCP_SERVER.md`
 - `docs/INSTALL.md`
+- `docs/FLOW_AUDIT.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
@@ -100,6 +101,7 @@ Local verification:
 ```powershell
 npm install
 npm run build
+npm run flow:audit
 npm run check
 npm run smoke
 npm run eval:context

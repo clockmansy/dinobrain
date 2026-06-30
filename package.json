@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "flow:audit": "node scripts/audit-user-flow.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "eval:context": "node dist/evaluate-context.js",
     "graph:vault": "node scripts/export-vault-graph.mjs",
