@@ -140,3 +140,39 @@ The default pack excludes:
 - `80_Review_Queue`
 
 `wiki_search` may inspect body excerpts for interactive search, but `get_context_pack` keeps to the narrower Phase 3 ranking inputs.
+
+## Phase 4 Search Quality Evaluation
+
+Context Pack retrieval quality is measured with:
+
+```powershell
+npm run eval:context
+```
+
+Default golden set:
+
+```text
+../dinobrain-data/.dino/evaluations/context-golden.json
+```
+
+The evaluator reports:
+
+- total cases
+- aggregate recall
+- max noise
+- average noise
+- per-case missing paths
+- per-case noise paths
+
+Phase 4 targets:
+
+- recall >= `0.8`
+- max noise <= `2`
+
+Override paths:
+
+```powershell
+$env:DINOBRAIN_DATA_DIR="C:\path\to\dinobrain-data"
+$env:DINOBRAIN_GOLDEN_FILE="C:\path\to\context-golden.json"
+npm run eval:context
+```

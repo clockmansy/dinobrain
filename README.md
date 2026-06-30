@@ -74,6 +74,7 @@ npm install
 npm run build
 npm run check
 npm run smoke
+npm run eval:context
 ```
 
 Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.
