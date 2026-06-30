@@ -42,6 +42,23 @@ DinoBrain uses MCP tools to start tasks, finish tasks, search curated notes, and
 `,
   "utf8",
 );
+writeFileSync(
+  path.join(tempDataRoot, "20_Wiki", "Quarantine-Test-Memory.md"),
+  `---
+title: Quarantine Test Memory
+summary: This record should disappear from default Context Packs after quarantine.
+tags: [quarantine, test-memory]
+source_status: internal
+confidence: low
+last_verified: 2026-07-01
+---
+
+# Quarantine Test Memory
+
+This note exists only to verify quarantine exclusion from Context Packs.
+`,
+  "utf8",
+);
 
 spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
@@ -72,7 +89,16 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  const expected = ["finish_task", "get_context_pack", "git_sync", "start_task", "wiki_search"];
+  const expected = [
+    "create_candidate_instance",
+    "finish_task",
+    "get_context_pack",
+    "git_sync",
+    "quarantine_record",
+    "review_candidate",
+    "start_task",
+    "wiki_search",
+  ];
   for (const name of expected) {
     if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
   }
@@ -134,6 +160,93 @@ try {
     throw new Error("wiki_search did not return the seeded Wiki note");
   }
 
+  let missingEvidenceRejected = false;
+  try {
+    const invalidCandidate = await client.callTool({
+      name: "create_candidate_instance",
+      arguments: {
+        claim: "This should not be accepted without evidence.",
+        evidence_snippet: "",
+        evidence_source: "smoke",
+        confidence: "low",
+        last_verified: "2026-07-01",
+        source_status: "internal",
+      },
+    });
+    missingEvidenceRejected = invalidCandidate.isError === true;
+  } catch {
+    missingEvidenceRejected = true;
+  }
+  if (!missingEvidenceRejected) {
+    throw new Error("Candidate without evidence was not rejected");
+  }
+
+  const candidate = parseTool(
+    await client.callTool({
+      name: "create_candidate_instance",
+      arguments: {
+        claim: "DinoBrain candidate instances enter review before promotion.",
+        evidence_snippet: "Candidate instances always enter Review Queue first.",
+        evidence_source: "scripts/smoke-mcp.mjs",
+        confidence: "medium",
+        last_verified: "2026-07-01",
+        source_status: "internal",
+        tags: ["candidate", "review"],
+        task_id: start.task_id,
+        sensitivity: "normal",
+      },
+    }),
+  );
+  if (!existsSync(path.join(tempDataRoot, candidate.candidate_path))) {
+    throw new Error(`Missing candidate instance: ${candidate.candidate_path}`);
+  }
+  if (!existsSync(path.join(tempDataRoot, candidate.review_path))) {
+    throw new Error(`Missing promotion review item: ${candidate.review_path}`);
+  }
+
+  const review = parseTool(
+    await client.callTool({
+      name: "review_candidate",
+      arguments: {
+        candidate_id: candidate.candidate_id,
+        decision: "approve",
+        reviewer: "smoke-test",
+        notes: "Evidence, confidence, and last_verified are present.",
+      },
+    }),
+  );
+  if (!review.accepted_path || !existsSync(path.join(tempDataRoot, review.accepted_path))) {
+    throw new Error(`Missing accepted instance: ${review.accepted_path}`);
+  }
+
+  const quarantine = parseTool(
+    await client.callTool({
+      name: "quarantine_record",
+      arguments: {
+        target_path: "20_Wiki/Quarantine-Test-Memory.md",
+        reason: "Smoke test quarantine exclusion.",
+        reviewer: "smoke-test",
+      },
+    }),
+  );
+  if (!existsSync(path.join(tempDataRoot, quarantine.quarantine_path))) {
+    throw new Error(`Missing quarantine record: ${quarantine.quarantine_path}`);
+  }
+
+  const quarantinedPack = parseTool(
+    await client.callTool({
+      name: "get_context_pack",
+      arguments: {
+        question: "quarantine test memory",
+        limit: 5,
+      },
+    }),
+  );
+  const quarantinedPaths = quarantinedPack.items.map((item) => item.path);
+  if (quarantinedPaths.includes("20_Wiki/Quarantine-Test-Memory.md")) {
+    throw new Error("Quarantined note appeared in Context Pack");
+  }
+
   const finish = parseTool(
     await client.callTool({
       name: "finish_task",
@@ -172,6 +285,9 @@ try {
         task_path: start.task_path,
         trace_path: finish.trace_path,
         context_trace_path: contextPack.trace_path,
+        candidate_path: candidate.candidate_path,
+        accepted_path: review.accepted_path,
+        quarantine_path: quarantine.quarantine_path,
         context_items: contextPack.item_count,
         search_results: search.result_count,
         git_sync_changed_files: gitSync.changed_file_count,

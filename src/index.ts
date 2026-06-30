@@ -49,6 +49,16 @@ function makePackId(question: string): string {
   return `pack-${stamp}-${safeSlug(question).slice(0, 28)}`;
 }
 
+function makeCandidateId(claim: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `candidate-${stamp}-${safeSlug(claim).slice(0, 28)}`;
+}
+
+function makeQuarantineId(targetPath: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `quarantine-${stamp}-${safeSlug(targetPath).slice(0, 36)}`;
+}
+
 function isInside(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -64,6 +74,12 @@ function dataPath(...parts: string[]): string {
 
 function relDataPath(filePath: string): string {
   return path.relative(DATA_ROOT, filePath).split(path.sep).join("/");
+}
+
+function normalizeVaultPath(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\/+/, "");
+  dataPath(normalized);
+  return normalized;
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -119,6 +135,7 @@ function classifyPath(normalizedPath: string): { classification: string; reasons
     ".dino/events/",
     ".dino/traces/",
     ".dino/context-packs/",
+    ".dino/quarantine/",
   ];
   const syncablePrefixes = [
     "00_Home/",
@@ -375,6 +392,269 @@ server.registerTool(
       query,
       result_count: ranked.length,
       results: ranked,
+    });
+  },
+);
+
+server.registerTool(
+  "create_candidate_instance",
+  {
+    title: "Create Candidate Instance",
+    description: "Create a reviewed-by-default memory candidate with required evidence metadata.",
+    inputSchema: {
+      claim: z.string().min(1),
+      evidence_snippet: z.string().min(1),
+      evidence_source: z.string().min(1),
+      confidence: z.enum(["low", "medium", "high"]),
+      last_verified: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      source_status: z.enum(["internal", "external", "mixed", "unknown"]).default("unknown"),
+      tags: z.array(z.string()).default([]),
+      task_id: z.string().optional(),
+      sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
+    },
+  },
+  async ({
+    claim,
+    evidence_snippet,
+    evidence_source,
+    confidence,
+    last_verified,
+    source_status,
+    tags,
+    task_id,
+    sensitivity,
+  }) => {
+    const candidateId = makeCandidateId(claim);
+    const createdAt = nowIso();
+    const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
+    const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);
+    const candidate = {
+      candidate_id: candidateId,
+      status: "pending_review",
+      claim,
+      evidence: {
+        snippet: evidence_snippet,
+        source: evidence_source,
+      },
+      confidence,
+      last_verified,
+      source_status,
+      tags,
+      task_id: task_id ?? null,
+      sensitivity,
+      auto_promote: false,
+      promotion_blockers: ["manual_review_required"],
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const review = {
+      review_id: candidateId,
+      type: "promotion",
+      status: "pending",
+      candidate_path: relDataPath(candidatePath),
+      required_checks: ["evidence_snippet", "confidence", "last_verified", "sensitivity"],
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await writeJson(candidatePath, candidate);
+    await writeJson(reviewPath, review);
+    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+      event: "candidate_instance_created",
+      candidate_id: candidateId,
+      at: createdAt,
+      candidate_path: relDataPath(candidatePath),
+      review_path: relDataPath(reviewPath),
+    });
+    return jsonResult({
+      ok: true,
+      candidate_id: candidateId,
+      candidate_path: relDataPath(candidatePath),
+      review_path: relDataPath(reviewPath),
+      auto_promote: false,
+      reason: "Candidate instances always enter Review Queue first.",
+    });
+  },
+);
+
+server.registerTool(
+  "review_candidate",
+  {
+    title: "Review Candidate",
+    description: "Approve or reject a candidate instance from the Review Queue.",
+    inputSchema: {
+      candidate_id: z.string().min(1),
+      decision: z.enum(["approve", "reject"]),
+      reviewer: z.string().default("manual-review"),
+      notes: z.string().default(""),
+    },
+  },
+  async ({ candidate_id, decision, reviewer, notes }) => {
+    const candidateId = safeSlug(candidate_id);
+    const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
+    const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);
+    const candidate = await readJson<Record<string, unknown>>(candidatePath);
+    if (!candidate) {
+      return jsonResult({
+        ok: false,
+        candidate_id: candidateId,
+        error: "candidate_not_found",
+      });
+    }
+
+    const evidence = candidate.evidence;
+    const hasEvidence =
+      typeof evidence === "object" &&
+      evidence !== null &&
+      typeof (evidence as { snippet?: unknown }).snippet === "string" &&
+      ((evidence as { snippet: string }).snippet.trim().length > 0);
+    const hasConfidence = ["low", "medium", "high"].includes(String(candidate.confidence));
+    const hasLastVerified = /^\d{4}-\d{2}-\d{2}$/.test(String(candidate.last_verified ?? ""));
+    const reviewedAt = nowIso();
+
+    if (decision === "approve" && (!hasEvidence || !hasConfidence || !hasLastVerified)) {
+      await writeJson(reviewPath, {
+        review_id: candidateId,
+        type: "promotion",
+        status: "blocked",
+        candidate_path: relDataPath(candidatePath),
+        decision,
+        reviewer,
+        notes,
+        blockers: [
+          !hasEvidence ? "missing_evidence_snippet" : null,
+          !hasConfidence ? "missing_confidence" : null,
+          !hasLastVerified ? "missing_last_verified" : null,
+        ].filter(Boolean),
+        reviewed_at: reviewedAt,
+        updated_at: reviewedAt,
+      });
+      return jsonResult({
+        ok: false,
+        candidate_id: candidateId,
+        status: "blocked",
+        reason: "Claims without evidence, confidence, and last_verified cannot be promoted.",
+      });
+    }
+
+    const updatedCandidate = {
+      ...candidate,
+      status: decision === "approve" ? "accepted" : "rejected",
+      reviewed_by: reviewer,
+      review_notes: notes,
+      reviewed_at: reviewedAt,
+      updated_at: reviewedAt,
+    };
+    await writeJson(candidatePath, updatedCandidate);
+
+    let acceptedPath: string | null = null;
+    if (decision === "approve") {
+      acceptedPath = dataPath("50_Instances", "accepted", `${candidateId}.json`);
+      await writeJson(acceptedPath, {
+        ...updatedCandidate,
+        accepted_at: reviewedAt,
+        source_candidate_path: relDataPath(candidatePath),
+      });
+    }
+
+    await writeJson(reviewPath, {
+      review_id: candidateId,
+      type: "promotion",
+      status: decision === "approve" ? "approved" : "rejected",
+      candidate_path: relDataPath(candidatePath),
+      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+      decision,
+      reviewer,
+      notes,
+      reviewed_at: reviewedAt,
+      updated_at: reviewedAt,
+    });
+    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+      event: "candidate_instance_reviewed",
+      candidate_id: candidateId,
+      decision,
+      at: reviewedAt,
+      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+    });
+
+    return jsonResult({
+      ok: true,
+      candidate_id: candidateId,
+      decision,
+      candidate_path: relDataPath(candidatePath),
+      review_path: relDataPath(reviewPath),
+      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+    });
+  },
+);
+
+server.registerTool(
+  "quarantine_record",
+  {
+    title: "Quarantine Record",
+    description: "Mark a vault record as quarantined so default Context Packs exclude it.",
+    inputSchema: {
+      target_path: z.string().min(1),
+      reason: z.string().min(1),
+      reviewer: z.string().default("manual-review"),
+      replacement_path: z.string().optional(),
+    },
+  },
+  async ({ target_path, reason, reviewer, replacement_path }) => {
+    const targetPath = normalizeVaultPath(target_path);
+    const targetAbsolutePath = dataPath(targetPath);
+    try {
+      await fs.stat(targetAbsolutePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return jsonResult({
+          ok: false,
+          error: "target_not_found",
+          target_path: targetPath,
+        });
+      }
+      throw error;
+    }
+
+    const quarantineId = makeQuarantineId(targetPath);
+    const createdAt = nowIso();
+    const quarantinePath = dataPath(".dino", "quarantine", `${quarantineId}.json`);
+    const reviewPath = dataPath("80_Review_Queue", "demotion", `${quarantineId}.json`);
+    const record = {
+      quarantine_id: quarantineId,
+      status: "quarantined",
+      target_path: targetPath,
+      reason,
+      reviewer,
+      replacement_path: replacement_path ? normalizeVaultPath(replacement_path) : null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await writeJson(quarantinePath, record);
+    await writeJson(reviewPath, {
+      review_id: quarantineId,
+      type: "demotion",
+      status: "quarantined",
+      target_path: targetPath,
+      quarantine_path: relDataPath(quarantinePath),
+      reason,
+      reviewer,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+      event: "record_quarantined",
+      quarantine_id: quarantineId,
+      target_path: targetPath,
+      at: createdAt,
+    });
+
+    return jsonResult({
+      ok: true,
+      quarantine_id: quarantineId,
+      target_path: targetPath,
+      quarantine_path: relDataPath(quarantinePath),
+      review_path: relDataPath(reviewPath),
+      context_pack_effect: "excluded_from_default_context_packs",
     });
   },
 );

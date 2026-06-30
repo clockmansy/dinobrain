@@ -68,3 +68,15 @@ If a record is wrong, stale, unsafe, or over-promoted, it must be demotable.
 
 Demoted or quarantined records must be excluded from default Context Packs.
 
+## Candidate Rule
+
+Candidate instances must not be treated as durable knowledge.
+
+Candidates require:
+
+- evidence snippet
+- evidence source
+- confidence
+- last verified date
+
+Candidates enter Review Queue before they can become accepted instances.

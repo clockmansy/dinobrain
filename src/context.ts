@@ -14,6 +14,11 @@ export type RankedRecord = {
   excerpt: string;
 };
 
+type QuarantineRecord = {
+  target_path?: unknown;
+  status?: unknown;
+};
+
 export const SEARCH_ROOTS = [
   "20_Wiki",
   "30_Sources",
@@ -56,6 +61,27 @@ async function readJson<T>(filePath: string): Promise<T | null> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+
+async function collectQuarantinedPaths(dataRoot: string): Promise<Set<string>> {
+  const quarantineDir = dataPath(dataRoot, ".dino", "quarantine");
+  const quarantined = new Set<string>();
+  let entries: Array<import("node:fs").Dirent>;
+  try {
+    entries = await fs.readdir(quarantineDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return quarantined;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const record = await readJson<QuarantineRecord>(path.join(quarantineDir, entry.name));
+    if (!record || record.status !== "quarantined" || typeof record.target_path !== "string") continue;
+    quarantined.add(record.target_path.replace(/\\/g, "/"));
+  }
+
+  return quarantined;
 }
 
 function tokenize(value: string): string[] {
@@ -149,6 +175,7 @@ async function walkMarkdown(dir: string, records: string[] = []): Promise<string
 
 export async function collectCuratedRecords(dataRoot: string): Promise<RankedRecord[]> {
   const files: string[] = [];
+  const quarantinedPaths = await collectQuarantinedPaths(dataRoot);
   for (const root of SEARCH_ROOTS) {
     await walkMarkdown(dataPath(dataRoot, root), files);
   }
@@ -160,11 +187,17 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
 
     const raw = await fs.readFile(file, "utf8");
     const { metadata, body } = parseFrontmatter(raw);
+    const relativePath = relDataPath(dataRoot, file);
+    const status = String(metadata.status ?? "").toLowerCase();
+    const quarantineFlag = metadata.quarantine === true || String(metadata.quarantine ?? "").toLowerCase() === "true";
+    if (status === "quarantined" || status === "quarantine" || quarantineFlag || quarantinedPaths.has(relativePath)) {
+      continue;
+    }
     const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));
     const summary = String(metadata.summary ?? firstParagraph(body));
     const tags = stringArray(metadata.tags);
     records.push({
-      path: relDataPath(dataRoot, file),
+      path: relativePath,
       kind: "curated_record",
       title,
       summary,

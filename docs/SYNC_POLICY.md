@@ -29,6 +29,11 @@ These paths may be synced only when the records are curated and non-sensitive:
 - `80_Review_Queue`
 - `.dino/index`
 - `.dino/evaluations`
+- `.dino/tasks`
+- `.dino/events`
+- `.dino/traces`
+- `.dino/context-packs`
+- `.dino/quarantine`
 
 ## Local Only By Default
 
@@ -70,4 +75,3 @@ Bad:
 
 - `update files`
 - `misc`
-

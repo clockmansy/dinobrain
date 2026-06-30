@@ -92,3 +92,15 @@ The following are intentionally deferred:
 - external fact ingestion
 - automatic push without policy checks
 - vector search before keyword/frontmatter retrieval is proven
+
+## Phase 5 Promotion And Demotion Boundary
+
+Phase 5 adds three policy tools:
+
+- `create_candidate_instance`
+- `review_candidate`
+- `quarantine_record`
+
+Candidate instances are never auto-promoted. They enter `50_Instances/candidates` and `80_Review_Queue/promotion` first.
+
+Quarantine records live in `.dino/quarantine`. Default Context Packs must exclude any target path listed in an active quarantine record.

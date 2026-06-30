@@ -113,6 +113,48 @@ Reports:
 
 It does not commit or push.
 
+### `create_candidate_instance`
+
+Creates:
+
+- `50_Instances/candidates/<candidate_id>.json`
+- `80_Review_Queue/promotion/<candidate_id>.json`
+- `.dino/events/<date>.jsonl`
+
+Required fields:
+
+- `claim`
+- `evidence_snippet`
+- `evidence_source`
+- `confidence`
+- `last_verified`
+
+Candidates always enter Review Queue first. They are not auto-promoted.
+
+### `review_candidate`
+
+Approves or rejects a candidate.
+
+Approval requires:
+
+- non-empty evidence snippet
+- valid confidence
+- valid `last_verified`
+
+Approved candidates are copied to:
+
+- `50_Instances/accepted/<candidate_id>.json`
+
+### `quarantine_record`
+
+Creates:
+
+- `.dino/quarantine/<quarantine_id>.json`
+- `80_Review_Queue/demotion/<quarantine_id>.json`
+- `.dino/events/<date>.jsonl`
+
+Any active quarantine target is excluded from default Context Packs.
+
 ## Phase 2 Verification
 
 Phase 2 is considered locally verified when these commands pass:
@@ -148,6 +190,21 @@ Context Pack retrieval quality is measured with:
 ```powershell
 npm run eval:context
 ```
+
+## Phase 5 Promotion And Demotion
+
+Phase 5 verification is included in:
+
+```powershell
+npm run smoke
+```
+
+The smoke test verifies:
+
+- candidate creation requires evidence
+- candidate approval creates an accepted instance
+- quarantine creates a demotion review record
+- quarantined notes are excluded from default Context Packs
 
 Default golden set:
 

@@ -64,6 +64,9 @@ Available tools:
 - `get_context_pack`
 - `wiki_search`
 - `git_sync` as dry-run only
+- `create_candidate_instance`
+- `review_candidate`
+- `quarantine_record`
 
 `get_context_pack` writes a trace record to `.dino/context-packs` in the configured data vault so the inclusion reasons are inspectable after the tool call.
 
