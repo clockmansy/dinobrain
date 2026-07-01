@@ -7,6 +7,8 @@ param(
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
+  [string]$ClaudeCommand = "claude",
+  [switch]$SkipClaudeCodeConfig,
   [switch]$RemoveAppRepo,
   [switch]$RemoveDataRepo,
   [switch]$RemovePortableNode,
@@ -74,6 +76,28 @@ function Remove-DinoBrainCodexConfig {
   Write-Host "Codex config backup: $backupPath"
 }
 
+function Remove-DinoBrainClaudeCodeConfig {
+  param([Parameter(Mandatory = $true)][string]$ClaudeCommand)
+  $command = Get-Command $ClaudeCommand -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $command) {
+    Write-Host "Claude Code CLI not found, skipping Claude Code MCP removal: $ClaudeCommand"
+    return
+  }
+
+  $claudeExe = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $ClaudeCommand }
+  $argumentList = @("mcp", "remove", "dinobrain")
+  $output = & $claudeExe @argumentList 2>&1
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "Removed Claude Code MCP registration: dinobrain"
+    return
+  }
+
+  Write-Host "Claude Code MCP registration was not removed or was not present: dinobrain"
+  if ($output) {
+    Write-Host ($output -join "`n")
+  }
+}
+
 function Assert-SafeDeleteTarget {
   param([Parameter(Mandatory = $true)][string]$TargetPath)
   $full = Get-FullPath $TargetPath
@@ -116,9 +140,12 @@ $CodexConfigPath = Get-FullPath $CodexConfigPath
 $nodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
 
 Remove-DinoBrainCodexConfig -ConfigPath $CodexConfigPath
+if (-not $SkipClaudeCodeConfig) {
+  Remove-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand
+}
 
 if (($RemoveAppRepo -or $RemoveDataRepo -or $RemovePortableNode) -and -not $Force) {
-  throw "Pass -Force to remove files from disk. Without remove flags, uninstall only unregisters Codex MCP."
+  throw "Pass -Force to remove files from disk. Without remove flags, uninstall only unregisters MCP integrations."
 }
 
 if ($RemoveAppRepo) { Remove-InstallPath -TargetPath $AppDir -Label "DinoBrain app repo" }

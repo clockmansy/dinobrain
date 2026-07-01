@@ -13,6 +13,8 @@ const realDataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(ro
 const codexConfigPath = path.resolve(
   process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
 );
+const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
+const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
 
 const expectedTools = [
   "create_candidate_instance",
@@ -395,6 +397,72 @@ function verifyGoldenRetrieval() {
   };
 }
 
+function commandExists(command) {
+  if (existsSync(command)) return true;
+  if (process.platform === "win32") {
+    return spawnSync("where.exe", [command], { encoding: "utf8" }).status === 0;
+  }
+  const quoted = `'${command.replace(/'/g, "'\\''")}'`;
+  return spawnSync("sh", ["-lc", `command -v ${quoted}`], { encoding: "utf8" }).status === 0;
+}
+
+function verifyClaudeCodeMcp() {
+  if (!commandExists(claudeCommand)) {
+    return {
+      ok: !requireClaudeCode,
+      required: requireClaudeCode,
+      command: claudeCommand,
+      command_exists: false,
+      skipped: true,
+      reason: "claude_code_cli_missing",
+    };
+  }
+
+  const result = spawnSync(claudeCommand, ["mcp", "list"], {
+    cwd: root,
+    encoding: "utf8",
+    shell: process.platform === "win32",
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+
+  if (result.error) {
+    return {
+      ok: !requireClaudeCode,
+      required: requireClaudeCode,
+      command: claudeCommand,
+      command_exists: false,
+      skipped: true,
+      reason: "claude_code_cli_missing",
+      error: result.error.message,
+    };
+  }
+
+  if (result.status !== 0) {
+    return {
+      ok: !requireClaudeCode,
+      required: requireClaudeCode,
+      command: claudeCommand,
+      command_exists: true,
+      mcp_list_ok: false,
+      status: result.status,
+      reason: "claude_mcp_list_failed",
+      output,
+    };
+  }
+
+  const dinobrainRegistered = /\bdinobrain\b/i.test(output);
+  return {
+    ok: dinobrainRegistered || !requireClaudeCode,
+    required: requireClaudeCode,
+    command: claudeCommand,
+    command_exists: true,
+    mcp_list_ok: true,
+    dinobrain_registered: dinobrainRegistered,
+    reason: dinobrainRegistered ? "registered" : "dinobrain_mcp_not_registered",
+    output,
+  };
+}
+
 async function main() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
 
@@ -404,14 +472,19 @@ async function main() {
     verifyCompoundingLoop(),
   ]);
   const retrievalEval = verifyGoldenRetrieval();
+  const claudeCodeMcp = verifyClaudeCodeMcp();
 
   const report = {
-    ok: codexMcp.ok === true && compoundingLoop.ok === true && retrievalEval.ok === true,
+    ok: codexMcp.ok === true && compoundingLoop.ok === true && retrievalEval.ok === true && claudeCodeMcp.ok === true,
     verification_version: "dinobrain-os-2026-07-01",
     codex_integration: {
       config: codexConfig,
       mcp_list_tools: codexMcp,
       note: "If the Codex app was already running before this MCP block was added, restart or reload Codex to expose the new tool surface in future threads.",
+    },
+    claude_code_integration: {
+      mcp_list: claudeCodeMcp,
+      note: "Claude Code integration is required during installer verification only when the installer successfully registered the local claude CLI.",
     },
     compounding_loop: compoundingLoop,
     retrieval_quality: retrievalEval,

@@ -9,7 +9,11 @@ param(
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
+  [string]$ClaudeCommand = "claude",
+  [ValidateSet("local", "project", "user")]
+  [string]$ClaudeScope = "user",
   [switch]$SkipCodexConfig,
+  [switch]$SkipClaudeCodeConfig,
   [switch]$SkipVerify,
   [switch]$Force
 )
@@ -61,6 +65,25 @@ function Invoke-NativeCommand {
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
       throw "Command failed with exit code ${exitCode}: $FilePath $($ArgumentList -join ' ')"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
+function Invoke-NativeCommandResult {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory
+  )
+
+  Push-Location $WorkingDirectory
+  try {
+    $output = & $FilePath @ArgumentList 2>&1
+    return [pscustomobject]@{
+      ExitCode = $LASTEXITCODE
+      Output = ($output -join "`n")
     }
   } finally {
     Pop-Location
@@ -217,26 +240,80 @@ function Set-DinoBrainCodexConfig {
   Write-Host "Codex MCP registered: $ConfigPath"
 }
 
+function Set-DinoBrainClaudeCodeConfig {
+  param(
+    [Parameter(Mandatory = $true)][string]$ClaudeCommand,
+    [Parameter(Mandatory = $true)][string]$Scope,
+    [Parameter(Mandatory = $true)][string]$NodeExe,
+    [Parameter(Mandatory = $true)][string]$ServerEntry,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory
+  )
+
+  $command = Get-Command $ClaudeCommand -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $command) {
+    Write-Warning "Claude Code CLI not found on PATH: $ClaudeCommand. Install Claude Code, then rerun setup.ps1 to register DinoBrain."
+    return $false
+  }
+
+  $claudeExe = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $ClaudeCommand }
+  $removeResult = Invoke-NativeCommandResult -FilePath $claudeExe -ArgumentList @("mcp", "remove", "dinobrain") -WorkingDirectory $WorkingDirectory
+  if ($removeResult.ExitCode -eq 0) {
+    Write-Host "Removed previous Claude Code MCP registration: dinobrain"
+  }
+
+  Invoke-NativeCommand -FilePath $claudeExe -ArgumentList @(
+    "mcp",
+    "add",
+    "--env",
+    "DINOBRAIN_DATA_DIR=$VaultPath",
+    "--transport",
+    "stdio",
+    "--scope",
+    $Scope,
+    "dinobrain",
+    "--",
+    $NodeExe,
+    $ServerEntry
+  ) -WorkingDirectory $WorkingDirectory
+
+  $listResult = Invoke-NativeCommandResult -FilePath $claudeExe -ArgumentList @("mcp", "list") -WorkingDirectory $WorkingDirectory
+  if ($listResult.ExitCode -ne 0 -or $listResult.Output -notmatch "(?i)\bdinobrain\b") {
+    throw "Claude Code MCP registration did not appear in 'claude mcp list'."
+  }
+
+  Write-Host "Claude Code MCP registered: dinobrain (scope=$Scope)"
+  return $true
+}
+
 function Invoke-DinoBrainVerify {
   param(
     [Parameter(Mandatory = $true)][string]$NodeRoot,
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$VaultPath
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$ClaudeCommand,
+    [switch]$RequireClaudeCode
   )
 
   $npmCmd = Join-Path $NodeRoot "npm.cmd"
   $oldConfig = $env:DINOBRAIN_CODEX_CONFIG_PATH
   $oldData = $env:DINOBRAIN_DATA_DIR
+  $oldClaudeCommand = $env:DINOBRAIN_CLAUDE_COMMAND
+  $oldRequireClaude = $env:DINOBRAIN_REQUIRE_CLAUDE_CODE
   $oldPath = $env:PATH
   $env:DINOBRAIN_CODEX_CONFIG_PATH = $ConfigPath
   $env:DINOBRAIN_DATA_DIR = $VaultPath
+  $env:DINOBRAIN_CLAUDE_COMMAND = $ClaudeCommand
+  if ($RequireClaudeCode) { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue }
   $env:PATH = "$NodeRoot;$oldPath"
   try {
     Invoke-NativeCommand -FilePath $npmCmd -ArgumentList @("run", "verify:os") -WorkingDirectory $AppPath
   } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:\DINOBRAIN_CODEX_CONFIG_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_CONFIG_PATH = $oldConfig }
     if ($null -eq $oldData) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldData }
+    if ($null -eq $oldClaudeCommand) { Remove-Item Env:\DINOBRAIN_CLAUDE_COMMAND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CLAUDE_COMMAND = $oldClaudeCommand }
+    if ($null -eq $oldRequireClaude) { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = $oldRequireClaude }
     $env:PATH = $oldPath
   }
 }
@@ -274,8 +351,13 @@ if (-not $SkipCodexConfig) {
   Set-DinoBrainCodexConfig -ConfigPath $CodexConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir
 }
 
+$claudeCodeConfigured = $false
+if (-not $SkipClaudeCodeConfig) {
+  $claudeCodeConfigured = Set-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand -Scope $ClaudeScope -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -WorkingDirectory $AppDir
+}
+
 if (-not $SkipVerify) {
-  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -VaultPath $DataDir
+  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireClaudeCode:$claudeCodeConfigured
 }
 
 Write-Host ""
@@ -284,3 +366,4 @@ Write-Host "App: $AppDir"
 Write-Host "Data: $DataDir"
 Write-Host "Node: $nodeExe"
 Write-Host "Codex config: $CodexConfigPath"
+Write-Host "Claude Code MCP scope: $ClaudeScope"

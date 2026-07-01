@@ -4,7 +4,7 @@ Date: 2026-07-01
 
 This document explains how to install DinoBrain on a Windows PC.
 
-The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes the Codex MCP config block, and runs verification.
+The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes the Codex MCP config block, registers Claude Code when its CLI is installed, and runs verification.
 
 ## Prerequisites
 
@@ -15,8 +15,11 @@ The installer is idempotent. Running it again updates existing repos, reinstalls
   - `clockmansy/dinobrain-data`
 - Codex installed or a writable Codex config path at:
   - `C:\Users\<you>\.codex\config.toml`
+- Optional: Claude Code CLI on `PATH` as `claude`
 
 The installer downloads portable Node.js into the user profile. It does not require global Node.js.
+
+If Claude Code is installed after DinoBrain, rerun `.\setup.ps1` from the DinoBrain repo to register the same local MCP server with Claude Code.
 
 ## Fresh Install
 
@@ -59,9 +62,20 @@ startup_timeout_sec = 120
 DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
 ```
 
-7. Runs `npm run verify:os`.
+7. Registers DinoBrain in Claude Code when `claude` is available:
 
-`verify:os` uses the configured MCP command, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
+```powershell
+claude mcp add `
+  --env DINOBRAIN_DATA_DIR=C:\Users\<you>\Documents\dinobrain-data `
+  --transport stdio `
+  --scope user `
+  dinobrain `
+  -- C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64\node.exe C:\Users\<you>\Documents\dinobrain\dist\index.js
+```
+
+8. Runs `npm run verify:os`.
+
+`verify:os` uses the configured MCP command, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
 
 The repository also contains a project Codex hook at `.codex/hooks.json`. Codex requires you to review and trust this hook before it runs in a live session.
 
@@ -71,7 +85,20 @@ The repository also contains a project Codex hook at `.codex/hooks.json`. Codex 
 .\install.ps1 `
   -InstallRoot "D:\AI" `
   -ToolsDir "D:\AI\tools" `
-  -CodexConfigPath "$HOME\.codex\config.toml"
+  -CodexConfigPath "$HOME\.codex\config.toml" `
+  -ClaudeScope user
+```
+
+Skip either client registration when testing:
+
+```powershell
+.\install.ps1 -SkipCodexConfig -SkipClaudeCodeConfig
+```
+
+Use a non-default Claude Code command name or path:
+
+```powershell
+.\install.ps1 -ClaudeCommand "C:\Tools\Claude\claude.exe"
 ```
 
 Custom repo sources are supported for testing or forks:
@@ -95,6 +122,7 @@ This uses the same idempotent flow as install:
 - `npm install`
 - `npm run build`
 - Codex MCP config refresh
+- Claude Code MCP registration when `claude` is available
 - `npm run verify:os`
 
 ## Reinstall
@@ -107,7 +135,7 @@ Reinstall is the same as install, but passes `-Force` so a changed repo origin U
 
 ## Uninstall
 
-Default uninstall only removes the Codex MCP registration and creates a config backup:
+Default uninstall removes the Codex MCP registration, removes the Claude Code MCP registration when `claude` is available, and creates a Codex config backup:
 
 ```powershell
 .\uninstall.ps1

@@ -26,6 +26,7 @@ The current verification focus is proving that the system behaves like a compoun
 - quarantined memories are excluded from later Context Packs
 - `git_sync` classifies safe, conditional, and blocked data without committing or pushing
 - Codex has a local MCP server configuration for DinoBrain
+- Claude Code can be registered to the same local MCP server when the `claude` CLI is installed
 - Codex can run a `UserPromptSubmit` hook that starts a task and injects a Context Pack before the model turn
 
 ## Ground Rules
@@ -78,6 +79,8 @@ Update, reinstall, and uninstall entrypoints:
 
 See `docs/INSTALL.md` for custom paths, private repo prerequisites, and removal flags.
 
+The installer configures Codex directly and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
+
 ## MCP Development
 
 The MCP server skeleton lives in `src/index.ts`.
@@ -114,7 +117,7 @@ npm run observatory
 
 Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.
 
-`npm run verify:os` is the strongest local gate. It verifies the compounding loop and the Codex MCP configuration described in `docs/VERIFICATION.md`.
+`npm run verify:os` is the strongest local gate. It verifies the compounding loop, the Codex MCP configuration, and Claude Code registration when the installer configured it, as described in `docs/VERIFICATION.md`.
 
 `npm run graph:vault` writes a local Obsidian-style graph report to `reports/dinobrain-vault-graph.html` and `reports/dinobrain-vault-graph.svg`. It counts handwritten wikilinks separately from DinoBrain OS relationships such as folders, tags, golden evaluation cases, traces, review records, accepted instances, and quarantine targets.
 

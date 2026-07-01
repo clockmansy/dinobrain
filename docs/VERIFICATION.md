@@ -8,6 +8,7 @@ The verification target has two parts:
 
 1. Knowledge compounds: completed work can become reviewed memory, appear in a later Context Pack, and be removed if it becomes unsafe or wrong.
 2. Codex can use it: the local Codex MCP configuration points at the DinoBrain server and the configured server can list the DinoBrain tools.
+3. Claude Code can use it when configured by the installer: `claude mcp list` includes the `dinobrain` MCP server.
 
 ## Commands
 
@@ -24,7 +25,7 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 ## What `verify:os` Proves
 
-`npm run verify:os` performs three independent checks.
+`npm run verify:os` performs four independent checks.
 
 ### Codex MCP Integration
 
@@ -48,6 +49,18 @@ Then the script starts the configured MCP command and verifies that these tools 
 - `quarantine_record`
 
 If Codex was already running before the MCP block was added, the app may need to restart or reload before the new tool appears in future thread tool surfaces. The verifier still proves that the configured command is startable by an MCP client.
+
+### Claude Code MCP Integration
+
+The installer registers DinoBrain with Claude Code when the `claude` CLI is available:
+
+```powershell
+claude mcp add --env DINOBRAIN_DATA_DIR=<vault> --transport stdio --scope user dinobrain -- <node.exe> <dist\index.js>
+```
+
+During installer verification, `DINOBRAIN_REQUIRE_CLAUDE_CODE=1` is set only after that registration succeeds. In that mode `verify:os` requires `claude mcp list` to include `dinobrain`.
+
+When running `npm run verify:os` manually on a PC without Claude Code, this check is reported as skipped and does not fail the OS verification.
 
 ### Compounding Knowledge Loop
 
@@ -86,7 +99,7 @@ It checks `git_sync` in the temporary vault:
 
 A green `verify:os` run is stronger than the smoke test because it validates the full feedback loop, not only individual tool behavior.
 
-It does not prove that every future Codex answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server and that an MCP client can retrieve reviewed memories through that server.
+It does not prove that every future Codex or Claude Code answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, Claude Code is registered when the installer configured it, and that an MCP client can retrieve reviewed memories through that server.
 
 ## Codex Hook Verification
 
