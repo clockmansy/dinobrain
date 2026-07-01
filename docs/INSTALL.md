@@ -21,6 +21,15 @@ The installer downloads portable Node.js into the user profile. It does not requ
 
 If Claude Code is installed after DinoBrain, rerun `.\setup.ps1` from the DinoBrain repo to register the same local MCP server with Claude Code.
 
+After install, the installer creates a double-click launcher in both:
+
+```text
+<install-root>\DinoBrain Observatory.cmd
+<install-root>\dinobrain\DinoBrain Observatory.cmd
+```
+
+Run either launcher to open the live Observatory at `http://127.0.0.1:3847/`. The page includes a live LLM Wiki graph view backed by the SQLite/JSON Wiki index, plus task, context pack, trace, and memory audit logs.
+
 ## Fresh Install
 
 Recommended path from a release asset:
@@ -135,6 +144,7 @@ claude mcp add `
 ```
 
 10. Runs `npm run verify:os`.
+11. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
 
 `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
 

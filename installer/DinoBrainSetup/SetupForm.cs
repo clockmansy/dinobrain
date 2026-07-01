@@ -592,6 +592,17 @@ internal sealed class SetupForm : Form
             return;
         }
 
+        var launcher = Path.Combine(_installedAppPath, "DinoBrain Observatory.cmd");
+        if (File.Exists(launcher))
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = launcher,
+                UseShellExecute = true,
+            });
+            return;
+        }
+
         var command = "$toolsDir = Join-Path $env:LOCALAPPDATA 'DinoBrain\\tools'; " +
                       "$nodeDir = Get-ChildItem -LiteralPath $toolsDir -Directory -Filter 'node-v*-win-x64' | Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName; " +
                       "if (-not $nodeDir) { throw 'Portable Node was not found.' }; " +

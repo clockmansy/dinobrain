@@ -465,6 +465,40 @@ function Set-DinoBrainCodexUserHook {
   Write-Host "Codex user hook registered: $HooksPath"
 }
 
+function New-DinoBrainObservatoryLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot
+  )
+
+  $launcherScript = Join-Path $AppPath "scripts\start-dinobrain-observatory.ps1"
+  if (-not (Test-Path -LiteralPath $launcherScript)) {
+    Write-Warning "Observatory launcher script not found: $launcherScript"
+    return @()
+  }
+
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Observatory.cmd"),
+    (Join-Path $AppPath "DinoBrain Observatory.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$launcherScript" -DataDir "$VaultPath" -NodeRoot "$NodeRoot"
+if errorlevel 1 pause
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Observatory launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
 function Set-DinoBrainClaudeCodeConfig {
   param(
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
@@ -607,6 +641,8 @@ if (-not $SkipCodexHookConfig) {
   Set-DinoBrainCodexUserHook -HooksPath $CodexHooksPath -AppPath $AppDir -VaultPath $DataDir
 }
 
+$observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
+
 $claudeCodeConfigured = $false
 if (-not $SkipClaudeCodeConfig) {
   $claudeCodeConfigured = Set-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand -Scope $ClaudeScope -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -WorkingDirectory $AppDir
@@ -623,4 +659,7 @@ Write-Host "Data: $DataDir"
 Write-Host "Node: $nodeExe"
 Write-Host "Codex config: $CodexConfigPath"
 Write-Host "Codex user hooks: $CodexHooksPath"
+foreach ($launcher in $observatoryLaunchers) {
+  Write-Host "Observatory launcher: $launcher"
+}
 Write-Host "Claude Code MCP scope: $ClaudeScope"

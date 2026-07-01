@@ -23,6 +23,7 @@
     "index:verify": "node scripts/verify-wiki-index.mjs",
     "index:wiki": "node dist/build-wiki-index.js",
     "observatory": "node scripts/dinobrain-observatory.mjs",
+    "observatory:verify": "node scripts/verify-observatory-live-graph.mjs",
     "session:verify": "node scripts/verify-session-ingest.mjs",
     "verify:os": "node scripts/verify-dinobrain-os.mjs",
     "start": "node dist/index.js",
