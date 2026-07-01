@@ -90,7 +90,7 @@ $release = Get-GitHubReleaseByTag -ReleaseTag $Tag
 $releaseBody = @"
 DinoBrain Windows installer.
 
-Release target: $TargetCommitish
+Asset source commit: $TargetCommitish
 Installer app ref: $InstallerAppRef
 Installer data ref: $DataRef
 "@
