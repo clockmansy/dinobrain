@@ -5,6 +5,7 @@ param(
   [string]$Tag = "",
   [string]$Name = "",
   [string]$TargetCommitish = "",
+  [string]$InstallerAppRef = "main",
   [string]$AssetPath = "",
   [string]$Token = "",
   [string]$DataRef = "main",
@@ -36,7 +37,7 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
 }
 
 if (-not $SkipBuild) {
-  & (Join-Path $PSScriptRoot "build-windows-installer.ps1") -AppRef $TargetCommitish -DataRef $DataRef -SetupVersion ([string]$package.version)
+  & (Join-Path $PSScriptRoot "build-windows-installer.ps1") -AppRef $InstallerAppRef -DataRef $DataRef -SetupVersion ([string]$package.version)
   if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 }
 
@@ -86,23 +87,30 @@ function Get-GitHubReleaseByTag {
 }
 
 $release = Get-GitHubReleaseByTag -ReleaseTag $Tag
-if ($null -eq $release) {
-  $body = @"
+$releaseBody = @"
 DinoBrain Windows installer.
 
-App ref: $TargetCommitish
-Data ref: $DataRef
+Release target: $TargetCommitish
+Installer app ref: $InstallerAppRef
+Installer data ref: $DataRef
 "@
+if ($null -eq $release) {
   $release = Invoke-GitHubJson -Method "Post" -Uri "https://api.github.com/repos/$Repository/releases" -Body @{
     tag_name = $Tag
     target_commitish = $TargetCommitish
     name = $Name
-    body = $body
+    body = $releaseBody
     draft = [bool]$Draft
     prerelease = [bool]$Prerelease
   }
   Write-Host "Created GitHub release: $($release.html_url)"
 } else {
+  $release = Invoke-GitHubJson -Method "Patch" -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" -Body @{
+    name = $Name
+    body = $releaseBody
+    draft = [bool]$Draft
+    prerelease = [bool]$Prerelease
+  }
   Write-Host "Using existing GitHub release: $($release.html_url)"
 }
 

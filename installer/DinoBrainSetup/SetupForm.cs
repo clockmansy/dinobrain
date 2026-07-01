@@ -162,7 +162,7 @@ internal sealed class SetupForm : Form
         panel.Controls.Add(_dataRepoBox);
         AddLabel(panel, "App ref");
         panel.Controls.Add(_appRefBox);
-        AddHint(panel, "App ref defaults to the installer build ref. Use a tag or commit for repeatable installs.");
+        AddHint(panel, "App ref defaults to main so local installs track GitHub. Use a tag or commit only for deliberate rollback/recovery.");
         AddLabel(panel, "Data ref");
         panel.Controls.Add(_dataRefBox);
         AddHint(panel, "Data ref usually stays on main unless you are restoring a specific baseline.");

@@ -3,7 +3,7 @@
 param(
   [string]$Configuration = "Release",
   [string]$Runtime = "win-x64",
-  [string]$AppRef = "",
+  [string]$AppRef = "main",
   [string]$DataRef = "main",
   [string]$SetupVersion = "",
   [string]$OutputDir = ""
@@ -14,12 +14,7 @@ $ErrorActionPreference = "Stop"
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $root "installer\DinoBrainSetup\DinoBrainSetup.csproj"
-if ([string]::IsNullOrWhiteSpace($AppRef)) {
-  $AppRef = (& git -C $root rev-parse HEAD 2>$null)
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($AppRef)) {
-    $AppRef = "main"
-  }
-}
+if ([string]::IsNullOrWhiteSpace($AppRef)) { $AppRef = "main" }
 if ([string]::IsNullOrWhiteSpace($SetupVersion)) {
   $package = Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json
   $SetupVersion = [string]$package.version
@@ -86,6 +81,9 @@ try {
   $probeText = [System.IO.File]::ReadAllText($probePath)
   if ($probeText -notmatch "DinoBrain install complete") {
     throw "Extracted install.ps1 did not look like the DinoBrain installer"
+  }
+  if ($probeText -notmatch "Assert-DinoBrainRepoAligned") {
+    throw "Extracted install.ps1 did not include version alignment verification"
   }
 } finally {
   Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue

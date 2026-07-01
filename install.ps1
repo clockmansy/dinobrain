@@ -203,6 +203,57 @@ function Checkout-DinoBrainRef {
   Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "checkout", "--detach", $Ref) -WorkingDirectory $TargetDir
 }
 
+function Get-DinoBrainGitText {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string[]]$ArgumentList
+  )
+  $result = Invoke-NativeCommandResult -FilePath "git" -ArgumentList (@("-C", $TargetDir) + $ArgumentList) -WorkingDirectory $TargetDir
+  if ($result.ExitCode -ne 0) {
+    throw "Git command failed in ${TargetDir}: git $($ArgumentList -join ' ')`n$($result.Output)"
+  }
+  return ($result.Output -split "`n" | Select-Object -First 1).Trim()
+}
+
+function Test-DinoBrainRemoteBranch {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$Ref
+  )
+  $result = Invoke-NativeCommandResult -FilePath "git" -ArgumentList @("-C", $TargetDir, "rev-parse", "--verify", "origin/$Ref") -WorkingDirectory $TargetDir
+  return $result.ExitCode -eq 0
+}
+
+function Assert-DinoBrainRepoAligned {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$Ref
+  )
+
+  if (-not (Test-Path -LiteralPath (Join-Path $TargetDir ".git"))) {
+    Write-Warning "$Name is not a git checkout; version drift cannot be verified: $TargetDir"
+    return
+  }
+
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "fetch", "origin", "--prune", "--tags") -WorkingDirectory $TargetDir
+  $head = Get-DinoBrainGitText -TargetDir $TargetDir -ArgumentList @("rev-parse", "HEAD")
+  if (Test-DinoBrainRemoteBranch -TargetDir $TargetDir -Ref $Ref) {
+    $remote = Get-DinoBrainGitText -TargetDir $TargetDir -ArgumentList @("rev-parse", "origin/$Ref")
+    if ($head -ne $remote) {
+      throw "$Name version drift detected. Local HEAD $head does not match origin/$Ref $remote. Re-run setup/update after resolving local changes."
+    }
+    Write-Host "$Name version aligned: HEAD=$head origin/$Ref=$remote"
+    return
+  }
+
+  $expected = Get-DinoBrainGitText -TargetDir $TargetDir -ArgumentList @("rev-parse", "--verify", $Ref)
+  if ($head -ne $expected) {
+    throw "$Name version drift detected. Local HEAD $head does not match requested ref $Ref ($expected)."
+  }
+  Write-Warning "$Name is pinned to detached ref $Ref. This is reproducible, but it will not automatically track origin/main."
+}
+
 function Sync-DinoBrainRepo {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -692,6 +743,10 @@ if (-not $gitAvailable) {
 
 Sync-DinoBrainRepo -Name "dinobrain" -RepoUrl $AppRepo -TargetDir $AppDir -Ref $AppRef -Token $archiveToken -AllowOriginChange:$Force
 Sync-DinoBrainRepo -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir -Ref $DataRef -Token $archiveToken -AllowOriginChange:$Force
+if ($gitAvailable) {
+  Assert-DinoBrainRepoAligned -Name "dinobrain" -TargetDir $AppDir -Ref $AppRef
+  Assert-DinoBrainRepoAligned -Name "dinobrain-data" -TargetDir $DataDir -Ref $DataRef
+}
 
 $nodeRoot = Install-PortableNode -Version $NodeVersion -DestinationRoot $ToolsDir
 $nodeExe = Join-Path $nodeRoot "node.exe"

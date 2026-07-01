@@ -105,6 +105,8 @@ See `docs/INSTALL.md` for custom paths, private repo prerequisites, and removal 
 
 The installer configures Codex MCP, registers a user-level Codex prompt hook, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
 
+By default the Windows installer tracks the app and data repositories at `main` and verifies that the local checkouts match their requested GitHub refs after update. A tag or commit can still be passed deliberately for rollback/recovery, but normal installs should not leave Codex running a stale DinoBrain app against newer GitHub data.
+
 ## MCP Development
 
 The MCP server skeleton lives in `src/index.ts`.

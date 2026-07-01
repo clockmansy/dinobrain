@@ -40,7 +40,9 @@ Recommended path from a release asset:
 
 `DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories and downloads portable Node.js.
 
-The EXE embeds an app ref at build time. By default `npm run installer:win` sets that ref to the current git commit SHA, so a release installer keeps installing the app version it was built from even if `main` moves later. The data repo defaults to `main` unless `-DataRef` is passed during build.
+The EXE embeds default refs at build time. By default `npm run installer:win` sets the app ref to `main`, so a release installer updates the local app checkout to the current GitHub `main` instead of pinning the PC to the installer build commit. The data repo also defaults to `main` unless `-DataRef` is passed during build.
+
+After cloning or updating, the installer fetches GitHub again and verifies that each git checkout matches the requested remote ref. If local `dinobrain` or `dinobrain-data` differs from `origin/<ref>`, installation stops instead of leaving Codex connected to a stale app/data pair. Explicit tag or commit refs are still allowed for rollback/recovery, but they are reported as pinned and will not track `origin/main`.
 
 Git is recommended because it enables normal repo updates and `git_sync` backup workflows. If Git is not installed, the installer can perform a fresh install by downloading GitHub ZIP archives. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
 
@@ -72,7 +74,7 @@ Build a self-contained Windows installer from this repo:
 npm run installer:win
 ```
 
-Build with explicit refs:
+Build a deliberately pinned installer with explicit refs:
 
 ```powershell
 $ref = (git rev-parse HEAD)
