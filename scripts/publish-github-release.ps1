@@ -120,7 +120,7 @@ if ($existingAsset.Count -gt 0) {
 $uploadBase = [string]$release.upload_url
 $uploadBase = $uploadBase -replace "\{\?name,label\}$", ""
 $encodedName = [System.Uri]::EscapeDataString($assetName)
-$uploadUrl = "$uploadBase?name=$encodedName"
+$uploadUrl = "${uploadBase}?name=$encodedName"
 Invoke-RestMethod `
   -Method Post `
   -Uri $uploadUrl `
