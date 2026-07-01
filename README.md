@@ -74,6 +74,13 @@ Build the release EXE from this repo:
 npm run installer:win
 ```
 
+Publish the EXE to GitHub Releases:
+
+```powershell
+$env:GITHUB_TOKEN="<token-with-repo-release-access>"
+npm run release:win -- -Tag v0.1.0 -ReplaceAsset
+```
+
 Fresh Windows setup from PowerShell:
 
 ```powershell

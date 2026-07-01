@@ -10,11 +10,29 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Version>0.1.0</Version>
+    <SetupVersion Condition="'$(SetupVersion)' == ''">0.1.0</SetupVersion>
+    <InstallerAppRef Condition="'$(InstallerAppRef)' == ''">main</InstallerAppRef>
+    <InstallerDataRef Condition="'$(InstallerDataRef)' == ''">main</InstallerDataRef>
     <Authors>DinoBrain</Authors>
     <Description>DinoBrain Windows installer bootstrapper</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\install.ps1" LogicalName="install.ps1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SetupVersion</_Parameter1>
+      <_Parameter2>$(SetupVersion)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>InstallerAppRef</_Parameter1>
+      <_Parameter2>$(InstallerAppRef)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>InstallerDataRef</_Parameter1>
+      <_Parameter2>$(InstallerDataRef)</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

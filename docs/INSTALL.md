@@ -31,6 +31,10 @@ Recommended path from a release asset:
 
 `DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories and downloads portable Node.js.
 
+The EXE embeds an app ref at build time. By default `npm run installer:win` sets that ref to the current git commit SHA, so a release installer keeps installing the app version it was built from even if `main` moves later. The data repo defaults to `main` unless `-DataRef` is passed during build.
+
+Git is recommended because it enables normal repo updates and `git_sync` backup workflows. If Git is not installed, the installer can perform a fresh install by downloading GitHub ZIP archives. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
+
 From a downloaded `install.ps1`:
 
 ```powershell
@@ -59,6 +63,15 @@ Build a self-contained Windows installer from this repo:
 npm run installer:win
 ```
 
+Build with explicit refs:
+
+```powershell
+$ref = (git rev-parse HEAD)
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1 `
+  -AppRef $ref `
+  -DataRef main
+```
+
 Output:
 
 ```text
@@ -68,6 +81,17 @@ artifacts\DinoBrainSetup.exe
 The build uses `installer\DinoBrainSetup`, embeds the repo's current `install.ps1`, publishes a single-file `win-x64` executable, then self-tests that the EXE can extract the embedded installer. Upload `artifacts\DinoBrainSetup.exe` as the GitHub Release asset for installation on another PC.
 
 The EXE runs without requiring .NET on the target PC because it is published self-contained. It does not remove SmartScreen warnings by itself; production distribution still needs code signing if that matters.
+
+## Publish The Release Asset
+
+Set a token with permission to create releases and upload release assets, then run:
+
+```powershell
+$env:GITHUB_TOKEN="<token-with-repo-release-access>"
+npm run release:win -- -Tag v0.1.0 -ReplaceAsset
+```
+
+This script builds `artifacts\DinoBrainSetup.exe`, creates or reuses the GitHub release for the tag, deletes the old `DinoBrainSetup.exe` asset when `-ReplaceAsset` is passed, and uploads the new EXE. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
 
 ## What Install Does
 

@@ -4,6 +4,9 @@ param(
   [string]$InstallRoot = "",
   [string]$AppRepo = "https://github.com/clockmansy/dinobrain.git",
   [string]$DataRepo = "https://github.com/clockmansy/dinobrain-data.git",
+  [string]$AppRef = "main",
+  [string]$DataRef = "main",
+  [string]$GitHubToken = "",
   [string]$AppDir = "",
   [string]$DataDir = "",
   [string]$NodeVersion = "24.18.0",
@@ -54,6 +57,11 @@ function Assert-Command {
   }
 }
 
+function Test-Command {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
 function Invoke-NativeCommand {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -92,13 +100,120 @@ function Invoke-NativeCommandResult {
   }
 }
 
+function Get-DinoBrainGitHubToken {
+  param([string]$ExplicitToken)
+  if (-not [string]::IsNullOrWhiteSpace($ExplicitToken)) { return $ExplicitToken }
+  if (-not [string]::IsNullOrWhiteSpace($env:DINOBRAIN_GITHUB_TOKEN)) { return $env:DINOBRAIN_GITHUB_TOKEN }
+  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) { return $env:GITHUB_TOKEN }
+  if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { return $env:GH_TOKEN }
+  return ""
+}
+
+function Get-GitHubRepoParts {
+  param([Parameter(Mandatory = $true)][string]$RepoUrl)
+
+  $trimmed = $RepoUrl.Trim()
+  $match = [regex]::Match($trimmed, "^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
+  if (-not $match.Success) {
+    $match = [regex]::Match($trimmed, "^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$")
+  }
+  if (-not $match.Success) {
+    throw "GitHub ZIP fallback only supports github.com repositories: $RepoUrl"
+  }
+
+  return [pscustomobject]@{
+    Owner = $match.Groups[1].Value
+    Repo = $match.Groups[2].Value
+  }
+}
+
+function Install-GitHubArchive {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$RepoUrl,
+    [Parameter(Mandatory = $true)][string]$Ref,
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [string]$Token = ""
+  )
+
+  if (Test-Path -LiteralPath $TargetDir) {
+    throw "$Name target already exists and Git is not available for safe update: $TargetDir"
+  }
+
+  $repo = Get-GitHubRepoParts -RepoUrl $RepoUrl
+  $encodedRef = [System.Uri]::EscapeDataString($Ref)
+  $archiveUrl = "https://api.github.com/repos/$($repo.Owner)/$($repo.Repo)/zipball/$encodedRef"
+  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-archive-" + [guid]::NewGuid().ToString("N"))
+  $zipPath = Join-Path $tempRoot "$Name.zip"
+  $extractDir = Join-Path $tempRoot "extract"
+  $headers = @{
+    "Accept" = "application/vnd.github+json"
+    "User-Agent" = "DinoBrainInstaller"
+    "X-GitHub-Api-Version" = "2022-11-28"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Token)) {
+    $headers["Authorization"] = "Bearer $Token"
+  }
+
+  Write-Warning "Git was not found. Installing $Name from GitHub ZIP archive at ref '$Ref'. Git-backed sync/update will require Git later."
+  New-Item -ItemType Directory -Force -Path $tempRoot, $extractDir | Out-Null
+  try {
+    $oldProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+      Invoke-WebRequest -Uri $archiveUrl -Headers $headers -OutFile $zipPath
+    } finally {
+      $ProgressPreference = $oldProgress
+    }
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    $roots = @(Get-ChildItem -LiteralPath $extractDir -Directory)
+    if ($roots.Count -ne 1) {
+      throw "Unexpected GitHub archive shape for $Name."
+    }
+    $parent = Split-Path -Parent $TargetDir
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+    Get-ChildItem -LiteralPath $roots[0].FullName -Force | ForEach-Object {
+      Move-Item -LiteralPath $_.FullName -Destination (Join-Path $TargetDir $_.Name)
+    }
+  } finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Checkout-DinoBrainRef {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$Ref
+  )
+
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "fetch", "origin", "--prune", "--tags") -WorkingDirectory $TargetDir
+  $branchResult = Invoke-NativeCommandResult -FilePath "git" -ArgumentList @("-C", $TargetDir, "rev-parse", "--verify", "origin/$Ref") -WorkingDirectory $TargetDir
+  if ($branchResult.ExitCode -eq 0) {
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "checkout", "-B", $Ref, "origin/$Ref") -WorkingDirectory $TargetDir
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "pull", "--ff-only", "origin", $Ref) -WorkingDirectory $TargetDir
+    return
+  }
+
+  Write-Host "$Name installing detached ref: $Ref"
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "checkout", "--detach", $Ref) -WorkingDirectory $TargetDir
+}
+
 function Sync-DinoBrainRepo {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
     [Parameter(Mandatory = $true)][string]$RepoUrl,
     [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$Ref,
+    [string]$Token = "",
     [switch]$AllowOriginChange
   )
+
+  if (-not (Test-Command "git")) {
+    Install-GitHubArchive -Name $Name -RepoUrl $RepoUrl -Ref $Ref -TargetDir $TargetDir -Token $Token
+    return
+  }
 
   if (Test-Path -LiteralPath $TargetDir) {
     if (-not (Test-Path -LiteralPath (Join-Path $TargetDir ".git"))) {
@@ -117,14 +232,14 @@ function Sync-DinoBrainRepo {
       }
     }
 
-    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "fetch", "origin", "--prune") -WorkingDirectory $TargetDir
-    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "pull", "--ff-only", "origin", "main") -WorkingDirectory $TargetDir
+    Checkout-DinoBrainRef -Name $Name -TargetDir $TargetDir -Ref $Ref
     return
   }
 
   $parent = Split-Path -Parent $TargetDir
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
   Invoke-NativeCommand -FilePath "git" -ArgumentList @("clone", $RepoUrl, $TargetDir) -WorkingDirectory $parent
+  Checkout-DinoBrainRef -Name $Name -TargetDir $TargetDir -Ref $Ref
 }
 
 function Install-PortableNode {
@@ -401,7 +516,8 @@ function Invoke-DinoBrainVerify {
     [Parameter(Mandatory = $true)][string]$VaultPath,
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
     [switch]$RequireCodexUserHook,
-    [switch]$RequireClaudeCode
+    [switch]$RequireClaudeCode,
+    [switch]$AllowNoGit
   )
 
   $npmCmd = Join-Path $NodeRoot "npm.cmd"
@@ -411,6 +527,7 @@ function Invoke-DinoBrainVerify {
   $oldData = $env:DINOBRAIN_DATA_DIR
   $oldClaudeCommand = $env:DINOBRAIN_CLAUDE_COMMAND
   $oldRequireClaude = $env:DINOBRAIN_REQUIRE_CLAUDE_CODE
+  $oldAllowNoGit = $env:DINOBRAIN_ALLOW_NO_GIT
   $oldPath = $env:PATH
   $env:DINOBRAIN_CODEX_CONFIG_PATH = $ConfigPath
   $env:DINOBRAIN_CODEX_HOOKS_PATH = $HooksPath
@@ -418,6 +535,7 @@ function Invoke-DinoBrainVerify {
   $env:DINOBRAIN_DATA_DIR = $VaultPath
   $env:DINOBRAIN_CLAUDE_COMMAND = $ClaudeCommand
   if ($RequireClaudeCode) { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue }
+  if ($AllowNoGit) { $env:DINOBRAIN_ALLOW_NO_GIT = "1" } else { Remove-Item Env:\DINOBRAIN_ALLOW_NO_GIT -ErrorAction SilentlyContinue }
   $env:PATH = "$NodeRoot;$oldPath"
   try {
     Invoke-NativeCommand -FilePath $npmCmd -ArgumentList @("run", "verify:os") -WorkingDirectory $AppPath
@@ -428,6 +546,7 @@ function Invoke-DinoBrainVerify {
     if ($null -eq $oldData) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldData }
     if ($null -eq $oldClaudeCommand) { Remove-Item Env:\DINOBRAIN_CLAUDE_COMMAND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CLAUDE_COMMAND = $oldClaudeCommand }
     if ($null -eq $oldRequireClaude) { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = $oldRequireClaude }
+    if ($null -eq $oldAllowNoGit) { Remove-Item Env:\DINOBRAIN_ALLOW_NO_GIT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_ALLOW_NO_GIT = $oldAllowNoGit }
     $env:PATH = $oldPath
   }
 }
@@ -450,11 +569,17 @@ Write-Host "DinoBrain install root: $InstallRoot"
 Write-Host "App repo target: $AppDir"
 Write-Host "Data repo target: $DataDir"
 Write-Host "Tools target: $ToolsDir"
+Write-Host "App ref: $AppRef"
+Write-Host "Data ref: $DataRef"
 
-Assert-Command "git"
+$gitAvailable = Test-Command "git"
+$archiveToken = Get-DinoBrainGitHubToken -ExplicitToken $GitHubToken
+if (-not $gitAvailable) {
+  Write-Warning "Git was not found on PATH. DinoBrain will use GitHub ZIP fallback for fresh installs. Install Git later for repo updates and git_sync backup workflows."
+}
 
-Sync-DinoBrainRepo -Name "dinobrain" -RepoUrl $AppRepo -TargetDir $AppDir -AllowOriginChange:$Force
-Sync-DinoBrainRepo -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir -AllowOriginChange:$Force
+Sync-DinoBrainRepo -Name "dinobrain" -RepoUrl $AppRepo -TargetDir $AppDir -Ref $AppRef -Token $archiveToken -AllowOriginChange:$Force
+Sync-DinoBrainRepo -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir -Ref $DataRef -Token $archiveToken -AllowOriginChange:$Force
 
 $nodeRoot = Install-PortableNode -Version $NodeVersion -DestinationRoot $ToolsDir
 $nodeExe = Join-Path $nodeRoot "node.exe"
@@ -484,7 +609,7 @@ if (-not $SkipClaudeCodeConfig) {
 }
 
 if (-not $SkipVerify) {
-  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudeCode:$claudeCodeConfigured
+  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudeCode:$claudeCodeConfigured -AllowNoGit:(-not $gitAvailable)
 }
 
 Write-Host ""

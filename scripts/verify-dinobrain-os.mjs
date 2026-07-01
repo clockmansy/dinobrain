@@ -17,6 +17,7 @@ const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? pa
 const requireCodexUserHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CODEX_USER_HOOK ?? "");
 const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
 const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
+const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
 
 const expectedTools = [
   "audit_memory_use",
@@ -34,6 +35,8 @@ const expectedTools = [
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+const gitAvailable = commandExists("git");
 
 function parseTool(result) {
   const text = result.content?.find((part) => part.type === "text")?.text;
@@ -235,7 +238,9 @@ last_verified: 2026-07-01
   );
   writeFileSync(path.join(dataRoot, "20_Wiki", "Sensitive-Pattern.md"), `api_${"key"}: pretend\n`, "utf8");
 
-  spawnSync("git", ["init"], { cwd: dataRoot, stdio: "ignore" });
+  if (gitAvailable) {
+    spawnSync("git", ["init"], { cwd: dataRoot, stdio: "ignore" });
+  }
 }
 
 async function verifyConfiguredCodexMcp(config) {
@@ -266,6 +271,9 @@ async function verifyConfiguredCodexMcp(config) {
 }
 
 async function verifyCompoundingLoop() {
+  if (!gitAvailable && !allowNoGit) {
+    throw new Error("git_missing: install Git or set DINOBRAIN_ALLOW_NO_GIT=1 for partial verification");
+  }
   const tempDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-verify-os-"));
   seedVault(tempDataRoot);
 
@@ -390,21 +398,31 @@ async function verifyCompoundingLoop() {
         "Quarantined accepted instance still appeared in a later Context Pack",
       );
 
-      const gitSync = parseTool(
-        await client.callTool({
-          name: "git_sync",
-          arguments: { include_sensitive_scan: true },
-        }),
-      );
-      assert(gitSync.dry_run === true, "git_sync did not stay dry-run");
-      assert(gitSync.manual_approval_required === true, "git_sync did not require manual approval");
-      assert(gitSync.commit_allowed_by_tool === false, "git_sync allowed tool-driven commit");
+      let gitSyncSummary;
+      if (gitAvailable) {
+        const gitSync = parseTool(
+          await client.callTool({
+            name: "git_sync",
+            arguments: { include_sensitive_scan: true },
+          }),
+        );
+        assert(gitSync.dry_run === true, "git_sync did not stay dry-run");
+        assert(gitSync.manual_approval_required === true, "git_sync did not require manual approval");
+        assert(gitSync.commit_allowed_by_tool === false, "git_sync allowed tool-driven commit");
 
-      const syncFiles = new Map(gitSync.files.map((file) => [file.path, file]));
-      assert(syncFiles.get("20_Wiki/Syncable-Change.md")?.classification === "syncable", "Syncable file failed");
-      assert(syncFiles.get("80_Review_Queue/review-needed.md")?.classification === "conditional", "Review file failed");
-      assert(syncFiles.get(".dino/secrets.json")?.classification === "blocked", "Local secret path failed");
-      assert(syncFiles.get("20_Wiki/Sensitive-Pattern.md")?.classification === "blocked", "Sensitive pattern failed");
+        const syncFiles = new Map(gitSync.files.map((file) => [file.path, file]));
+        assert(syncFiles.get("20_Wiki/Syncable-Change.md")?.classification === "syncable", "Syncable file failed");
+        assert(syncFiles.get("80_Review_Queue/review-needed.md")?.classification === "conditional", "Review file failed");
+        assert(syncFiles.get(".dino/secrets.json")?.classification === "blocked", "Local secret path failed");
+        assert(syncFiles.get("20_Wiki/Sensitive-Pattern.md")?.classification === "blocked", "Sensitive pattern failed");
+        gitSyncSummary = gitSync.summary;
+      } else {
+        gitSyncSummary = {
+          skipped: true,
+          reason: "git_missing",
+          note: "Install Git to enable git_sync backup verification.",
+        };
+      }
 
       return {
         ok: true,
@@ -418,7 +436,7 @@ async function verifyCompoundingLoop() {
         accepted_instance_reasons: acceptedItem.reasons,
         quarantined_path: quarantine.target_path,
         quarantine_excluded_from_later_pack: true,
-        git_sync_summary: gitSync.summary,
+        git_sync_summary: gitSyncSummary,
       };
     },
   );

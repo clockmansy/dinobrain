@@ -1051,10 +1051,38 @@ server.registerTool(
     },
   },
   async ({ include_sensitive_scan }) => {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-      cwd: DATA_ROOT,
-      windowsHide: true,
-    });
+    let stdout = "";
+    try {
+      const result = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+        cwd: DATA_ROOT,
+        windowsHide: true,
+      });
+      stdout = result.stdout;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return jsonResult({
+        ok: false,
+        unavailable: true,
+        reason: code === "ENOENT" ? "git_missing" : "data_root_not_git_repository",
+        dry_run: true,
+        data_root: DATA_ROOT,
+        changed_file_count: 0,
+        would_commit: false,
+        would_push: false,
+        manual_approval_required: true,
+        commit_allowed_by_tool: false,
+        policy_version: "phase-6-dry-run",
+        files: [],
+        summary: {
+          syncable: 0,
+          conditional: 0,
+          blocked: 0,
+          ready_for_manual_commit: 0,
+          requires_review: 0,
+          do_not_sync: 0,
+        },
+      });
+    }
     const changes = parseGitStatus(stdout);
     const files = [];
     for (const change of changes) {

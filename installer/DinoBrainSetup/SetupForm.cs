@@ -8,6 +8,9 @@ internal sealed class SetupForm : Form
     private readonly TextBox _installRootBox = new();
     private readonly TextBox _appRepoBox = new();
     private readonly TextBox _dataRepoBox = new();
+    private readonly TextBox _appRefBox = new();
+    private readonly TextBox _dataRefBox = new();
+    private readonly TextBox _githubTokenBox = new();
     private readonly TextBox _claudeCommandBox = new();
     private readonly TextBox _logBox = new();
     private readonly Label _statusLabel = new();
@@ -128,11 +131,11 @@ internal sealed class SetupForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 20,
+            RowCount = 28,
             Padding = new Padding(0, 0, 16, 0),
         };
         panel.RowStyles.Clear();
-        for (var index = 0; index < 20; index += 1)
+        for (var index = 0; index < 28; index += 1)
         {
             panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
@@ -140,16 +143,32 @@ internal sealed class SetupForm : Form
         _installRootBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         _appRepoBox.Text = "https://github.com/clockmansy/dinobrain.git";
         _dataRepoBox.Text = "https://github.com/clockmansy/dinobrain-data.git";
+        _appRefBox.Text = Program.DefaultAppRef;
+        _dataRefBox.Text = Program.DefaultDataRef;
+        _githubTokenBox.UseSystemPasswordChar = true;
         _claudeCommandBox.Text = "claude";
+        foreach (var textBox in new[] { _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox })
+        {
+            textBox.Dock = DockStyle.Top;
+        }
 
         AddLabel(panel, "Install root");
-        panel.Controls.Add(WithButton(_installRootBox, "Browse", BrowseInstallRoot), 0, 1);
+        panel.Controls.Add(WithButton(_installRootBox, "Browse", BrowseInstallRoot));
         AddHint(panel, "Creates dinobrain and dinobrain-data folders under this path.");
 
         AddLabel(panel, "App repository");
-        panel.Controls.Add(_appRepoBox, 0, 4);
+        panel.Controls.Add(_appRepoBox);
         AddLabel(panel, "Data repository");
-        panel.Controls.Add(_dataRepoBox, 0, 6);
+        panel.Controls.Add(_dataRepoBox);
+        AddLabel(panel, "App ref");
+        panel.Controls.Add(_appRefBox);
+        AddHint(panel, "App ref defaults to the installer build ref. Use a tag or commit for repeatable installs.");
+        AddLabel(panel, "Data ref");
+        panel.Controls.Add(_dataRefBox);
+        AddHint(panel, "Data ref usually stays on main unless you are restoring a specific baseline.");
+        AddLabel(panel, "GitHub token");
+        panel.Controls.Add(_githubTokenBox);
+        AddHint(panel, "Optional. Needed for private repos when Git is not installed. It is passed through the child process environment only.");
 
         _codexConfigCheck.Text = "Register Codex MCP";
         _codexConfigCheck.Checked = true;
@@ -163,26 +182,26 @@ internal sealed class SetupForm : Form
         _forceCheck.Checked = false;
 
         AddSpacer(panel, 8);
-        panel.Controls.Add(_codexConfigCheck, 0, 9);
-        panel.Controls.Add(_codexHookCheck, 0, 10);
-        panel.Controls.Add(_claudeCodeCheck, 0, 11);
-        panel.Controls.Add(_verifyCheck, 0, 12);
-        panel.Controls.Add(_forceCheck, 0, 13);
+        panel.Controls.Add(_codexConfigCheck);
+        panel.Controls.Add(_codexHookCheck);
+        panel.Controls.Add(_claudeCodeCheck);
+        panel.Controls.Add(_verifyCheck);
+        panel.Controls.Add(_forceCheck);
 
         AddLabel(panel, "Claude command");
-        panel.Controls.Add(_claudeCommandBox, 0, 15);
+        panel.Controls.Add(_claudeCommandBox);
 
         _checksLabel.Dock = DockStyle.Top;
         _checksLabel.AutoSize = true;
         _checksLabel.Padding = new Padding(0, 12, 0, 0);
         _checksLabel.ForeColor = Color.FromArgb(70, 70, 70);
-        panel.Controls.Add(_checksLabel, 0, 16);
+        panel.Controls.Add(_checksLabel);
 
         _openCodexFolderButton.Text = "Open .codex Folder";
         _openCodexFolderButton.Width = 150;
         _openCodexFolderButton.Height = 30;
         _openCodexFolderButton.Click += (_, _) => OpenCodexFolder();
-        panel.Controls.Add(_openCodexFolderButton, 0, 17);
+        panel.Controls.Add(_openCodexFolderButton);
 
         return panel;
     }
@@ -423,6 +442,11 @@ internal sealed class SetupForm : Form
             CreateNoWindow = true,
             WorkingDirectory = Path.GetDirectoryName(installScript) ?? Environment.CurrentDirectory,
         };
+        var githubToken = _githubTokenBox.Text.Trim();
+        if (!string.IsNullOrWhiteSpace(githubToken))
+        {
+            startInfo.Environment["DINOBRAIN_GITHUB_TOKEN"] = githubToken;
+        }
 
         foreach (var argument in BuildInstallArguments(installScript, installRoot))
         {
@@ -467,6 +491,10 @@ internal sealed class SetupForm : Form
         yield return _appRepoBox.Text.Trim();
         yield return "-DataRepo";
         yield return _dataRepoBox.Text.Trim();
+        yield return "-AppRef";
+        yield return string.IsNullOrWhiteSpace(_appRefBox.Text) ? "main" : _appRefBox.Text.Trim();
+        yield return "-DataRef";
+        yield return string.IsNullOrWhiteSpace(_dataRefBox.Text) ? "main" : _dataRefBox.Text.Trim();
         yield return "-ClaudeCommand";
         yield return string.IsNullOrWhiteSpace(_claudeCommandBox.Text) ? "claude" : _claudeCommandBox.Text.Trim();
 
@@ -512,7 +540,7 @@ internal sealed class SetupForm : Form
         _progressBar.Style = installing ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
         _progressBar.MarqueeAnimationSpeed = installing ? 30 : 0;
 
-        foreach (var control in new Control[] { _installRootBox, _appRepoBox, _dataRepoBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
+        foreach (var control in new Control[] { _installRootBox, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
         {
             control.Enabled = !installing;
         }
@@ -564,7 +592,9 @@ internal sealed class SetupForm : Form
             return;
         }
 
-        var command = "$nodeDir = Join-Path $env:LOCALAPPDATA 'DinoBrain\\tools\\node-v24.18.0-win-x64'; " +
+        var command = "$toolsDir = Join-Path $env:LOCALAPPDATA 'DinoBrain\\tools'; " +
+                      "$nodeDir = Get-ChildItem -LiteralPath $toolsDir -Directory -Filter 'node-v*-win-x64' | Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName; " +
+                      "if (-not $nodeDir) { throw 'Portable Node was not found.' }; " +
                       "$env:PATH = \"$nodeDir;$env:PATH\"; " +
                       $"Set-Location -LiteralPath '{_installedAppPath.Replace("'", "''")}'; " +
                       "npm run observatory";

@@ -4,7 +4,9 @@ namespace DinoBrainSetup;
 
 internal static class Program
 {
-    internal const string SetupVersion = "0.1.0";
+    internal static string SetupVersion => AssemblyMetadata("SetupVersion", "0.1.0");
+    internal static string DefaultAppRef => AssemblyMetadata("InstallerAppRef", "main");
+    internal static string DefaultDataRef => AssemblyMetadata("InstallerDataRef", "main");
 
     [STAThread]
     private static int Main(string[] args)
@@ -57,6 +59,15 @@ internal static class Program
         }
 
         return false;
+    }
+
+    private static string AssemblyMetadata(string key, string fallback)
+    {
+        return Assembly
+            .GetExecutingAssembly()
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => string.Equals(attribute.Key, key, StringComparison.OrdinalIgnoreCase))
+            ?.Value ?? fallback;
     }
 }
 

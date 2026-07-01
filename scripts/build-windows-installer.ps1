@@ -3,6 +3,9 @@
 param(
   [string]$Configuration = "Release",
   [string]$Runtime = "win-x64",
+  [string]$AppRef = "",
+  [string]$DataRef = "main",
+  [string]$SetupVersion = "",
   [string]$OutputDir = ""
 )
 
@@ -11,6 +14,16 @@ $ErrorActionPreference = "Stop"
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $root "installer\DinoBrainSetup\DinoBrainSetup.csproj"
+if ([string]::IsNullOrWhiteSpace($AppRef)) {
+  $AppRef = (& git -C $root rev-parse HEAD 2>$null)
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($AppRef)) {
+    $AppRef = "main"
+  }
+}
+if ([string]::IsNullOrWhiteSpace($SetupVersion)) {
+  $package = Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json
+  $SetupVersion = [string]$package.version
+}
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $root "artifacts"
 }
@@ -28,6 +41,9 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Write-Host "Publishing DinoBrainSetup.exe"
 Write-Host "Project: $project"
 Write-Host "Runtime: $Runtime"
+Write-Host "App ref: $AppRef"
+Write-Host "Data ref: $DataRef"
+Write-Host "Setup version: $SetupVersion"
 Write-Host "Output: $publishDir"
 
 dotnet publish $project `
@@ -39,6 +55,9 @@ dotnet publish $project `
   -p:EnableCompressionInSingleFile=true `
   -p:DebugType=none `
   -p:DebugSymbols=false `
+  -p:InstallerAppRef=$AppRef `
+  -p:InstallerDataRef=$DataRef `
+  -p:SetupVersion=$SetupVersion `
   --output $publishDir
 if ($LASTEXITCODE -ne 0) {
   throw "dotnet publish failed with exit code $LASTEXITCODE"
