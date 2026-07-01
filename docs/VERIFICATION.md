@@ -16,6 +16,7 @@ npm run build
 npm run check
 npm run smoke
 npm run eval:context
+npm run hook:verify
 npm run verify:os
 ```
 
@@ -86,3 +87,17 @@ It checks `git_sync` in the temporary vault:
 A green `verify:os` run is stronger than the smoke test because it validates the full feedback loop, not only individual tool behavior.
 
 It does not prove that every future Codex answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server and that an MCP client can retrieve reviewed memories through that server.
+
+## Codex Hook Verification
+
+`npm run hook:verify` simulates a Codex `UserPromptSubmit` event against a temporary vault.
+
+It verifies:
+
+- `.codex/hooks.json` contains a `UserPromptSubmit` hook.
+- the hook wrapper can start the DinoBrain preflight script.
+- `start_task` creates a task.
+- `get_context_pack` creates a trace and returns relevant memory.
+- the hook returns `hookSpecificOutput.additionalContext`.
+- obvious secret-shaped prompt text is redacted before it reaches hook stdout or task records.
+- live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, and `codex_preflight_completed`.

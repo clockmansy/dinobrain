@@ -36,11 +36,14 @@ npm install
 npm run build
 npm run check
 npm run smoke
+npm run hook:verify
 ```
 
 `npm run smoke` starts the compiled MCP server through `StdioClientTransport`, lists tools, and calls each Phase 2 tool against a temporary data vault.
 
 `npm run verify:os` runs the stronger OS-level verification from `docs/VERIFICATION.md`. It checks the Codex MCP configuration and proves that an approved accepted instance can be retrieved by a later Context Pack, then excluded after quarantine.
+
+`npm run observatory` starts a local file-backed live view of DinoBrain events at `http://127.0.0.1:3847/`.
 
 ## Tools
 

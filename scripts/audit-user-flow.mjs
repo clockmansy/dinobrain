@@ -12,6 +12,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
 const dataRepoPath = path.resolve(root, "..", "dinobrain-data");
 const reportPath = path.resolve(process.env.DINOBRAIN_FLOW_AUDIT_OUT ?? path.join(root, "reports", "dinobrain-flow-audit.json"));
+const hookConfigPath = path.join(root, ".codex", "hooks.json");
+const hookScriptPath = path.join(root, "scripts", "dinobrain-user-prompt-hook.mjs");
 const codexCliCandidates = [
   process.env.CODEX_CLI_PATH,
   path.join(process.env.LOCALAPPDATA ?? "", "OpenAI", "Codex", "bin", "aec6b7c6fcdfb66a", "codex.exe"),
@@ -137,6 +139,102 @@ The narrow lookup phrase is zeta-lattice-only. It should appear through wiki_sea
   spawnSync("git", ["init"], { cwd: dataRoot, stdio: "ignore" });
 }
 
+function verifyCodexHookBridge(dataRoot) {
+  const claim = "사용자 요청이 들어오면 OS 훅이 먼저 감지한다.";
+  if (!existsSync(hookConfigPath) || !existsSync(hookScriptPath)) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      "No project Codex hook or DinoBrain UserPromptSubmit hook script is present.",
+      "The agent must intentionally call MCP tools until a hook or agent protocol exists.",
+    );
+  }
+
+  let hookConfig;
+  try {
+    hookConfig = JSON.parse(readFileSync(hookConfigPath, "utf8"));
+  } catch (error) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      `Hook config exists but is not valid JSON: ${error.message}`,
+      "Fix .codex/hooks.json before Codex can load it.",
+    );
+  }
+
+  if (!hookConfig.hooks?.UserPromptSubmit) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      ".codex/hooks.json exists but does not configure UserPromptSubmit.",
+      "Add a UserPromptSubmit hook that calls DinoBrain preflight.",
+    );
+  }
+
+  const hookReportRoot = path.join(dataRoot, "hook-reports");
+  const run = spawnSync(process.execPath, [hookScriptPath], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DINOBRAIN_DATA_DIR: dataRoot,
+      DINOBRAIN_HOOK_REPORT_DIR: hookReportRoot,
+      DINOBRAIN_HOOK_CONTEXT_LIMIT: "6",
+      DINOBRAIN_HOOK_PROJECT: "dinobrain-flow-audit",
+    },
+    input: JSON.stringify({
+      hookEventName: "UserPromptSubmit",
+      prompt: "Korean user preference DinoBrain flow Codex hook context pack",
+    }),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+
+  if (run.status !== 0) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      `UserPromptSubmit hook simulation exited with ${run.status}: ${run.stderr}`,
+      "Codex can load the hook config only after the hook command itself works.",
+    );
+  }
+
+  let output;
+  try {
+    output = JSON.parse(run.stdout.trim());
+  } catch (error) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      `Hook simulation returned invalid JSON: ${error.message}`,
+      "Hooks must write valid JSON to stdout for Codex to inject context.",
+    );
+  }
+
+  const additionalContext = output.hookSpecificOutput?.additionalContext ?? "";
+  if (!additionalContext.includes("DinoBrain OS preflight completed")) {
+    return status(
+      1,
+      claim,
+      "not_implemented",
+      `Hook simulation ran but did not inject DinoBrain context: ${additionalContext.slice(0, 240)}`,
+      "The hook must call start_task and get_context_pack before the agent turn.",
+    );
+  }
+
+  return status(
+    1,
+    claim,
+    "verified",
+    "Project .codex/hooks.json configures UserPromptSubmit, and the hook simulation called DinoBrain preflight and returned additionalContext.",
+    "Codex must still trust the project hook before it runs in a live session.",
+  );
+}
+
 async function withClient(dataRoot, callback) {
   const client = new Client({ name: "dinobrain-flow-audit", version: "0.1.0" });
   const transport = new StdioClientTransport({
@@ -185,6 +283,9 @@ async function auditFlow() {
         "The agent must intentionally call MCP tools until a hook or agent protocol exists.",
       ),
     );
+
+    checks.pop();
+    checks.push(verifyCodexHookBridge(tempDataRoot));
 
     assert(missingTools.length === 0, `Missing MCP tools: ${missingTools.join(", ")}`);
     const start = parseTool(
@@ -271,8 +372,8 @@ async function auditFlow() {
           summary: `Used Context Pack ${contextPack.trace_path} and wiki_search result 20_Wiki/Rare-Search-Memory.md.`,
           outcome: "completed",
           changed_files: ["scripts/audit-user-flow.mjs"],
-          decisions: ["Context retrieval is verified; automatic request hook is not implemented."],
-          next_steps: ["Add a real pre-task hook or agent protocol if automatic capture is required."],
+          decisions: ["Context retrieval is verified; a Codex UserPromptSubmit hook now simulates automatic preflight."],
+          next_steps: ["Trust the project hook in Codex so the live session can run it automatically."],
         },
       }),
     );

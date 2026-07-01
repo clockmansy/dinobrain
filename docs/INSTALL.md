@@ -63,6 +63,8 @@ DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
 
 `verify:os` uses the configured MCP command, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
 
+The repository also contains a project Codex hook at `.codex/hooks.json`. Codex requires you to review and trust this hook before it runs in a live session.
+
 ## Custom Paths
 
 ```powershell
@@ -131,6 +133,8 @@ After install, run:
 
 ```powershell
 npm run verify:os
+npm run hook:verify
+npm run observatory
 ```
 
 When testing with a non-default Codex config path:

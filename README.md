@@ -26,6 +26,7 @@ The current verification focus is proving that the system behaves like a compoun
 - quarantined memories are excluded from later Context Packs
 - `git_sync` classifies safe, conditional, and blocked data without committing or pushing
 - Codex has a local MCP server configuration for DinoBrain
+- Codex can run a `UserPromptSubmit` hook that starts a task and injects a Context Pack before the model turn
 
 ## Ground Rules
 
@@ -105,8 +106,10 @@ npm run flow:audit
 npm run check
 npm run smoke
 npm run eval:context
+npm run hook:verify
 npm run verify:os
 npm run graph:vault
+npm run observatory
 ```
 
 Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `../dinobrain-data`.
@@ -114,3 +117,7 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 `npm run verify:os` is the strongest local gate. It verifies the compounding loop and the Codex MCP configuration described in `docs/VERIFICATION.md`.
 
 `npm run graph:vault` writes a local Obsidian-style graph report to `reports/dinobrain-vault-graph.html` and `reports/dinobrain-vault-graph.svg`. It counts handwritten wikilinks separately from DinoBrain OS relationships such as folders, tags, golden evaluation cases, traces, review records, accepted instances, and quarantine targets.
+
+`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns.
+
+`npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events can be watched while working. See `docs/CODEX_HOOKS.md`.

@@ -25,13 +25,13 @@ reports/dinobrain-flow-audit.json
 
 ## Current Result Shape
 
-The current MVP is not a fully automatic OS hook. It is a working MCP memory system that an agent can call.
+The current MVP now has a project Codex hook bridge plus the MCP memory system. A live Codex session must trust the project hook before automatic preflight runs.
 
 Expected states:
 
 | Step | Current state | Meaning |
 | --- | --- | --- |
-| 1. User request detection | `not_implemented` | No pre-task Codex hook automatically calls DinoBrain yet. |
+| 1. User request detection | `verified` | `.codex/hooks.json` configures `UserPromptSubmit`, and the hook verifier simulates `start_task` -> `get_context_pack` -> `additionalContext`. |
 | 2. Start task record | `verified` | `start_task` creates task/event records. |
 | 3. Context Pack | `verified` | `get_context_pack` returns focused records and writes a trace. |
 | 4. Agent uses context with current instruction priority | `partially_verified` | Memory can state the rule, but model behavior is not enforced by DinoBrain runtime. |
@@ -44,7 +44,7 @@ Expected states:
 
 To upgrade this from MCP-assisted memory to an automatic OS loop:
 
-1. Add an agent protocol or Codex hook that calls `start_task` and `get_context_pack` before work.
+1. Trust the project hook in Codex and restart or open a new thread if the current session was already running.
 2. Add a structured `used_memory_paths` field to `finish_task`.
 3. Add a `search_memory` alias or broader memory search tool if non-Wiki records need a first-class search surface.
 4. Add explicit growth record types:
@@ -61,6 +61,7 @@ To upgrade this from MCP-assisted memory to an automatic OS loop:
 It verifies:
 
 - tools are listable
+- the Codex `UserPromptSubmit` hook can call DinoBrain preflight and return `additionalContext`
 - `start_task` creates records
 - `get_context_pack` retrieves user preference and project flow records
 - `wiki_search` performs narrow body search
