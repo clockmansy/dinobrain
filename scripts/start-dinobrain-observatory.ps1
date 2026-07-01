@@ -9,6 +9,38 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ExpectedObservatoryVersion = "2026-07-01-activity-fossil-graph-v2"
+
+function Get-PortOwnerProcess {
+  param([Parameter(Mandatory = $true)][int]$LocalPort)
+  $connection = Get-NetTCPConnection -LocalPort $LocalPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $connection) {
+    return $null
+  }
+  $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($connection.OwningProcess)" -ErrorAction SilentlyContinue
+  return [pscustomobject]@{
+    ProcessId = $connection.OwningProcess
+    CommandLine = if ($process) { [string]$process.CommandLine } else { "" }
+  }
+}
+
+function Test-CurrentObservatory {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][string]$ExpectedDataDir,
+    [Parameter(Mandatory = $true)][string]$ExpectedVersion
+  )
+  try {
+    $health = Invoke-RestMethod -Uri "$BaseUrl/api/health" -TimeoutSec 2 -ErrorAction Stop
+    if (-not $health.ok -or [string]$health.observatory_version -ne $ExpectedVersion) {
+      return $false
+    }
+    $actualDataDir = [System.IO.Path]::GetFullPath([string]$health.data_root)
+    return $actualDataDir -ieq $ExpectedDataDir
+  } catch {
+    return $false
+  }
+}
 
 $appRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 if ([string]::IsNullOrWhiteSpace($DataDir)) {
@@ -56,6 +88,23 @@ try {
   Write-Host "App: $appRoot"
   Write-Host "Data: $DataDir"
   Write-Host "URL: $url"
+  $portOwner = Get-PortOwnerProcess -LocalPort $Port
+  if ($portOwner) {
+    if (Test-CurrentObservatory -BaseUrl $url -ExpectedDataDir $DataDir -ExpectedVersion $ExpectedObservatoryVersion) {
+      Write-Host "Current DinoBrain Observatory is already running on $url"
+      if (-not $NoBrowser) {
+        Start-Process $url
+      }
+      return
+    }
+    if ($portOwner.CommandLine -match "dinobrain-observatory\.mjs") {
+      Write-Warning "Stale DinoBrain Observatory is already using port $Port. Restarting it with the current app."
+      Stop-Process -Id $portOwner.ProcessId -Force -ErrorAction Stop
+      Start-Sleep -Milliseconds 700
+    } else {
+      throw "Port $Port is already in use by process $($portOwner.ProcessId): $($portOwner.CommandLine)"
+    }
+  }
   if (-not $NoBrowser) {
     Start-Job -ScriptBlock {
       param([string]$TargetUrl)

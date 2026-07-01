@@ -59,6 +59,8 @@ function waitForServer(child) {
 
 try {
   mkdirSync(path.join(dataRoot, "20_Wiki"), { recursive: true });
+  mkdirSync(path.join(dataRoot, ".dino", "tasks"), { recursive: true });
+  mkdirSync(path.join(dataRoot, ".dino", "events"), { recursive: true });
   writeFileSync(
     path.join(dataRoot, "20_Wiki", "Graph-Speed.md"),
     `---
@@ -83,6 +85,36 @@ tags: [context-pack]
 # Context Pack
 `,
   );
+  writeFileSync(
+    path.join(dataRoot, ".dino", "tasks", "task-active-observatory.json"),
+    `${JSON.stringify(
+      {
+        task_id: "task-active-observatory",
+        status: "started",
+        request: "Verify active tasks appear in the DinoBrain Fossil Graph.",
+        project: "observatory-verify",
+        mode: "standard",
+        sensitivity: "unknown",
+        created_at: "2026-07-01T00:00:00.000Z",
+        updated_at: "2026-07-01T00:00:00.000Z",
+        data_root: dataRoot,
+        sync_policy: "blocked_until_review",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  writeFileSync(
+    path.join(dataRoot, ".dino", "events", "2026-07-01.jsonl"),
+    `${JSON.stringify({
+      event: "task_started",
+      task_id: "task-active-observatory",
+      at: "2026-07-01T00:00:00.000Z",
+      path: ".dino/tasks/task-active-observatory.json",
+    })}\n`,
+    "utf8",
+  );
 
   await run(process.execPath, [path.join(root, "dist", "build-sqlite-shards.js")]);
   const server = spawn(process.execPath, [path.join(root, "scripts", "dinobrain-observatory.mjs"), `--port=${port}`], {
@@ -97,8 +129,14 @@ tags: [context-pack]
     assert(graph.stats.records >= 2, "Graph did not include seeded records");
     assert(graph.nodes.some((node) => node.label === "Graph Speed"), "Graph Speed node missing");
     assert(graph.edges.some((edge) => edge.type === "wiki_link"), "wiki_link edge missing");
+    assert(graph.stats.active_tasks === 1, "Graph did not report active task count");
+    assert(graph.nodes.some((node) => node.type === "active_task"), "Graph did not include active task node");
+    assert(graph.edges.some((edge) => edge.type === "active_task"), "Graph did not include active task edge");
     const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
     assert(state.ok === true, "State endpoint did not return ok=true");
+    assert(state.summary.active_task_count === 1, "State endpoint did not report active task count");
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    assert(health.ok === true && health.observatory_version, "Health endpoint did not report Observatory version");
     console.log("observatory live graph verification ok");
   } finally {
     server.kill();

@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
+const observatoryVersion = "2026-07-01-activity-fossil-graph-v2";
 
 function rel(filePath) {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
@@ -101,6 +102,11 @@ function graphColor(node) {
     kind: "#d7a84f",
     record: "#e6dcc2",
     wikilink: "#8f9488",
+    activity_root: "#f0a83a",
+    active_task: "#ffcc66",
+    task: "#d99a3d",
+    context_pack: "#8ac7ff",
+    event: "#b99a69",
   };
   return colors[node.type] ?? "#cfc4a6";
 }
@@ -246,7 +252,7 @@ async function readEvents(limit = 100) {
     .slice(-limit);
 }
 
-async function readJsonDir(relativeDir, limit = 50) {
+async function readJsonDir(relativeDir, limit = 50, preserveRecord = () => false) {
   const dir = path.join(dataRoot, relativeDir);
   const files = await readDirFiles(dir, ".json");
   const records = [];
@@ -254,13 +260,20 @@ async function readJsonDir(relativeDir, limit = 50) {
     const value = await readJson(file);
     if (value) records.push({ ...value, _path: rel(file) });
   }
-  return records
-    .sort((a, b) =>
+  const sorted = records.sort((a, b) =>
       String(b.updated_at ?? b.created_at ?? b.finished_at ?? b.audited_at ?? "").localeCompare(
         String(a.updated_at ?? a.created_at ?? a.finished_at ?? a.audited_at ?? ""),
       ),
-    )
-    .slice(0, limit);
+    );
+  const selected = sorted.slice(0, limit);
+  const selectedPaths = new Set(selected.map((record) => record._path));
+  for (const record of sorted) {
+    if (!selectedPaths.has(record._path) && preserveRecord(record)) {
+      selected.push(record);
+      selectedPaths.add(record._path);
+    }
+  }
+  return selected;
 }
 
 async function readAuditLogs(limit = 50) {
@@ -325,58 +338,233 @@ function withTraceDisplay(record) {
   };
 }
 
+function recordKey(record) {
+  return String(record?._path ?? record?.path ?? record?.task_id ?? record?.pack_id ?? record?.trace_path ?? "");
+}
+
+function recordTime(record) {
+  return String(record?.updated_at ?? record?.created_at ?? record?.finished_at ?? record?.audited_at ?? record?.at ?? "");
+}
+
+function sortRecent(records) {
+  return records.sort((a, b) => recordTime(b).localeCompare(recordTime(a)));
+}
+
+function mergeByPath(indexedRecords = [], liveRecords = [], limit = 50) {
+  const byKey = new Map();
+  for (const record of indexedRecords) {
+    const key = recordKey(record);
+    if (key) byKey.set(key, withDisplayPath(record));
+  }
+  for (const record of liveRecords) {
+    const key = recordKey(record);
+    if (key) byKey.set(key, withDisplayPath(record));
+  }
+  return sortRecent([...byKey.values()]).slice(0, limit);
+}
+
+function eventKey(event) {
+  return [
+    event?._path ?? "",
+    event?.event ?? "",
+    event?.at ?? "",
+    event?.task_id ?? event?.pack_id ?? event?.audit_id ?? event?.path ?? "",
+  ].join("|");
+}
+
+function mergeEvents(indexedEvents = [], liveEvents = [], limit = 100) {
+  const byKey = new Map();
+  for (const event of indexedEvents) byKey.set(eventKey(event), event);
+  for (const event of liveEvents) byKey.set(eventKey(event), event);
+  return [...byKey.values()].sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? ""))).slice(0, limit);
+}
+
+async function readLiveOperations() {
+  const [events, tasks, packs, traces] = await Promise.all([
+    readEvents(),
+    readJsonDir(".dino/tasks", 80, (task) => task.status === "started"),
+    readJsonDir(".dino/context-packs"),
+    readJsonDir(".dino/traces"),
+  ]);
+  return {
+    events: events.slice().reverse(),
+    tasks,
+    context_packs: packs,
+    traces: traces.map(withTraceDisplay),
+  };
+}
+
+function activityNodeLabel(text, max = 34) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
+function withActivityGraph(wikiGraph, operationState) {
+  if (!wikiGraph.ok) return wikiGraph;
+  const nodes = [...wikiGraph.nodes];
+  const edges = [...wikiGraph.edges];
+  const seen = new Set(nodes.map((node) => node.id));
+  const addNode = (node) => {
+    if (seen.has(node.id)) return;
+    seen.add(node.id);
+    nodes.push({ count: 1, color: graphColor(node), ...node });
+  };
+  const addEdge = (source, target, type) => {
+    if (seen.has(source) && seen.has(target)) edges.push({ source, target, type });
+  };
+
+  const tasks = Array.isArray(operationState?.tasks) ? operationState.tasks : [];
+  const events = Array.isArray(operationState?.events) ? operationState.events : [];
+  const packs = Array.isArray(operationState?.context_packs) ? operationState.context_packs : [];
+  const activeTasks = tasks.filter((task) => task.status === "started");
+  const displayedTasks = [...activeTasks, ...tasks.filter((task) => task.status !== "started")].slice(0, 14);
+  const displayedPacks = packs.slice(0, 8);
+  const displayedEvents = events.slice(0, 18);
+  const rootId = "activity:root";
+
+  addNode({
+    id: rootId,
+    type: "activity_root",
+    label: `Live Activity (${activeTasks.length})`,
+    path: ".dino",
+    count: Math.max(1, activeTasks.length + displayedEvents.length),
+    active_count: activeTasks.length,
+  });
+
+  for (const task of displayedTasks) {
+    const taskId = String(task.task_id ?? task.path ?? task._path ?? "");
+    if (!taskId) continue;
+    const nodeId = `task:${taskId}`;
+    const active = task.status === "started";
+    addNode({
+      id: nodeId,
+      type: active ? "active_task" : "task",
+      label: active ? `Active: ${activityNodeLabel(task.request)}` : activityNodeLabel(task.request || taskId),
+      path: task._path ?? task.path ?? null,
+      record_id: taskId,
+      count: active ? 8 : 3,
+      status: task.status,
+      updated_at: task.updated_at ?? task.created_at ?? null,
+    });
+    addEdge(rootId, nodeId, active ? "active_task" : "recent_task");
+  }
+
+  for (const pack of displayedPacks) {
+    const packPath = String(pack._path ?? pack.path ?? pack.pack_id ?? "");
+    if (!packPath) continue;
+    const nodeId = `pack:${packPath}`;
+    addNode({
+      id: nodeId,
+      type: "context_pack",
+      label: activityNodeLabel(pack.question || pack.pack_id || "Context Pack"),
+      path: pack._path ?? pack.path ?? null,
+      record_id: pack.pack_id ?? null,
+      count: Math.max(1, Number(pack.item_count ?? 1)),
+      updated_at: pack.created_at ?? null,
+    });
+    addEdge(rootId, nodeId, "context_pack");
+  }
+
+  for (const event of displayedEvents) {
+    const eventId = eventKey(event);
+    if (!eventId.trim()) continue;
+    const nodeId = `event:${eventId}`;
+    const eventName = String(event.event ?? "event");
+    addNode({
+      id: nodeId,
+      type: "event",
+      label: activityNodeLabel(eventName.replaceAll("_", " ")),
+      path: event._path ?? null,
+      count: eventName === "task_started" ? 3 : 1,
+      event: eventName,
+      updated_at: event.at ?? null,
+    });
+    const taskId = event.task_id ? `task:${event.task_id}` : null;
+    if (taskId && seen.has(taskId)) addEdge(taskId, nodeId, "task_event");
+    else addEdge(rootId, nodeId, "event");
+  }
+
+  return {
+    ...wikiGraph,
+    index_mode: `${wikiGraph.index_mode}+operations_activity_v1`,
+    stats: {
+      ...wikiGraph.stats,
+      nodes: nodes.length,
+      edges: edges.length,
+      shown_nodes: nodes.length,
+      shown_edges: edges.length,
+      operation_nodes: nodes.length - wikiGraph.nodes.length,
+      active_tasks: activeTasks.length,
+    },
+    nodes,
+    edges,
+  };
+}
+
 async function state() {
   const audits = await readAuditLogs();
+  const live = await readLiveOperations();
   const sqlite = await readSqliteOperations();
   if (sqlite) {
+    const events = mergeEvents(sqlite.events, live.events, 120);
+    const tasks = mergeByPath(sqlite.tasks, live.tasks, 80);
+    const contextPacks = mergeByPath(sqlite.context_packs, live.context_packs, 80);
+    const traces = mergeByPath(sqlite.traces, live.traces, 80).map(withTraceDisplay);
     return {
       ok: true,
       summary: {
         data_root: dataRoot,
         generated_at: sqlite.generated_at,
-        index_mode: sqlite.index_mode,
-        event_count: sqlite.counts.events,
-        task_count: sqlite.counts.tasks,
-        context_pack_count: sqlite.counts.context_packs,
+        index_mode: `${sqlite.index_mode}+live_files`,
+        event_count: Math.max(sqlite.counts.events, events.length),
+        task_count: Math.max(sqlite.counts.tasks, tasks.length),
+        context_pack_count: Math.max(sqlite.counts.context_packs, contextPacks.length),
         memory_audit_count: audits.length,
-        today_event_count: sqlite.events.filter((event) => String(event.at ?? "").startsWith(new Date().toISOString().slice(0, 10))).length,
-        active_task_count: sqlite.tasks.filter((task) => task.status === "started").length,
-        last_event_at: sqlite.events[0]?.at ?? null,
+        today_event_count: events.filter((event) => String(event.at ?? "").startsWith(new Date().toISOString().slice(0, 10))).length,
+        active_task_count: tasks.filter((task) => task.status === "started").length,
+        last_event_at: events[0]?.at ?? null,
       },
-      events: sqlite.events,
-      tasks: sqlite.tasks,
-      context_packs: sqlite.context_packs,
-      traces: sqlite.traces,
+      events,
+      tasks,
+      context_packs: contextPacks,
+      traces,
       memory_audits: audits,
     };
   }
 
   const index = await readOperationIndex();
   if (index) {
+    const events = mergeEvents(index.recent_events ?? [], live.events, 120);
+    const tasks = mergeByPath((index.recent_tasks ?? []).map(withDisplayPath), live.tasks, 80);
+    const contextPacks = mergeByPath((index.recent_context_packs ?? []).map(withDisplayPath), live.context_packs, 80);
+    const traces = mergeByPath((index.recent_traces ?? []).map(withTraceDisplay), live.traces, 80).map(withTraceDisplay);
     return {
       ok: true,
-      summary: { ...summarizeIndex(index), memory_audit_count: audits.length },
-      events: (index.recent_events ?? []).slice(0, 100),
-      tasks: (index.recent_tasks ?? []).slice(0, 50).map(withDisplayPath),
-      context_packs: (index.recent_context_packs ?? []).slice(0, 50).map(withDisplayPath),
-      traces: (index.recent_traces ?? []).slice(0, 50).map(withTraceDisplay),
+      summary: {
+        ...summarizeIndex(index),
+        index_mode: "operations_index_v0+live_files",
+        event_count: Math.max(index.counts?.events ?? 0, events.length),
+        task_count: Math.max(index.counts?.tasks ?? 0, tasks.length),
+        context_pack_count: Math.max(index.counts?.context_packs ?? 0, contextPacks.length),
+        active_task_count: tasks.filter((task) => task.status === "started").length,
+        last_event_at: events[0]?.at ?? null,
+        memory_audit_count: audits.length,
+      },
+      events,
+      tasks,
+      context_packs: contextPacks,
+      traces,
       memory_audits: audits,
     };
   }
 
-  const [events, tasks, packs, traces] = await Promise.all([
-    readEvents(),
-    readJsonDir(".dino/tasks"),
-    readJsonDir(".dino/context-packs"),
-    readJsonDir(".dino/traces"),
-  ]);
   return {
     ok: true,
-    summary: { ...summarize(events, tasks, packs), memory_audit_count: audits.length },
-    events: events.slice().reverse(),
-    tasks,
-    context_packs: packs,
-    traces: traces.map(withTraceDisplay),
+    summary: { ...summarize(live.events.slice().reverse(), live.tasks, live.context_packs), memory_audit_count: audits.length },
+    events: live.events,
+    tasks: live.tasks,
+    context_packs: live.context_packs,
+    traces: live.traces,
     memory_audits: audits,
   };
 }
@@ -701,6 +889,7 @@ function html() {
               <span class="legend-chip"><span class="legend-dot" style="background:#4fb6a4"></span>folder</span>
               <span class="legend-chip"><span class="legend-dot" style="background:#7cc66a"></span>tag</span>
               <span class="legend-chip"><span class="legend-dot" style="background:#d99a3d"></span>core</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#ffcc66"></span>active</span>
             </span>
             <input id="graph-search" placeholder="Search">
           </div>
@@ -716,6 +905,10 @@ function html() {
       <div class="block">
         <h2>Latest Task</h2>
         <div id="latest-task" class="kv"></div>
+      </div>
+      <div class="block">
+        <h2>Active Tasks</h2>
+        <div id="active-tasks" class="list"></div>
       </div>
       <div class="block">
         <h2>Latest Context Pack</h2>
@@ -736,6 +929,7 @@ function html() {
     const rootEl = document.getElementById("root");
     const timelineEl = document.getElementById("timeline");
     const latestTaskEl = document.getElementById("latest-task");
+    const activeTasksEl = document.getElementById("active-tasks");
     const latestPackEl = document.getElementById("latest-pack");
     const latestTraceEl = document.getElementById("latest-trace");
     const latestAuditEl = document.getElementById("latest-audit");
@@ -777,6 +971,11 @@ function html() {
     }
     function graphRadius(node) {
       if (node.type === "root") return 9.5;
+      if (node.type === "activity_root") return 10.2;
+      if (node.type === "active_task") return 8.4;
+      if (node.type === "task") return 6.1;
+      if (node.type === "context_pack") return 5.9;
+      if (node.type === "event") return 3.8;
       if (node.type === "folder") return 6.8;
       if (node.type === "tag") return 5.9;
       if (node.type === "kind") return 5.7;
@@ -786,6 +985,11 @@ function html() {
     function graphNodeStroke(node, active) {
       if (active) return "rgba(238, 230, 210, .98)";
       if (node.type === "record") return "rgba(84, 70, 44, .9)";
+      if (node.type === "active_task") return "rgba(255, 231, 154, .98)";
+      if (node.type === "activity_root") return "rgba(245, 188, 91, .98)";
+      if (node.type === "task") return "rgba(217, 154, 61, .78)";
+      if (node.type === "context_pack") return "rgba(138, 199, 255, .74)";
+      if (node.type === "event") return "rgba(185, 154, 105, .58)";
       if (node.type === "root") return "rgba(245, 188, 91, .95)";
       if (node.type === "tag") return "rgba(138, 216, 119, .78)";
       if (node.type === "folder") return "rgba(101, 212, 192, .78)";
@@ -795,11 +999,14 @@ function html() {
     function graphEdgeStyle(edge, active) {
       if (active) {
         return {
-          color: edge.type === "has_tag" ? "rgba(124, 198, 106, .82)" : "rgba(217, 154, 61, .86)",
+          color: edge.type === "has_tag" ? "rgba(124, 198, 106, .82)" : "rgba(255, 204, 102, .9)",
           width: 1.65,
           bead: true,
         };
       }
+      if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .46)", width: 1.8, bead: true, moving: true };
+      if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .28)", width: 1.1, bead: true, moving: true };
+      if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .24)", width: 1.1, bead: true, moving: false };
       if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .28)", width: 1.15, bead: true };
       if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .20)", width: 1, bead: false };
       if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .18)", width: 1, bead: false };
@@ -812,9 +1019,9 @@ function html() {
     }
     function renderGraph(graph) {
       graphStatsEl.textContent = graph.ok
-        ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges"
+        ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges" + (graph.stats.active_tasks ? " / active " + graph.stats.active_tasks : "")
         : "index missing";
-      const signature = graph.nodes.map((node) => node.id).join("\\n") + "\\n---\\n" + graph.edges.map((edge) => edge.source + ">" + edge.target + ":" + edge.type).join("\\n");
+      const signature = graph.nodes.map((node) => [node.id, node.type, node.label, node.status, node.updated_at].join(":")).join("\\n") + "\\n---\\n" + graph.edges.map((edge) => edge.source + ">" + edge.target + ":" + edge.type).join("\\n");
       if (signature === graphSignature) return;
       graphSignature = signature;
       const size = graphSize();
@@ -841,7 +1048,9 @@ function html() {
       const size = graphSize();
       const centerX = size.width / 2;
       const centerY = size.height / 2;
-      for (const edge of graphEdges) {
+      const now = performance.now();
+      for (let edgeIndex = 0; edgeIndex < graphEdges.length; edgeIndex += 1) {
+        const edge = graphEdges[edgeIndex];
         const a = edge.sourceNode;
         const b = edge.targetNode;
         const dx = b.x - a.x;
@@ -899,11 +1108,12 @@ function html() {
         graphCtx.lineTo(b.x, b.y);
         graphCtx.stroke();
         if (style.bead) {
-          const midX = (a.x + b.x) / 2;
-          const midY = (a.y + b.y) / 2;
+          const beadT = style.moving ? ((now / 1150 + edgeIndex * 0.071) % 1) : 0.5;
+          const midX = a.x + (b.x - a.x) * beadT;
+          const midY = a.y + (b.y - a.y) * beadT;
           graphCtx.beginPath();
           graphCtx.fillStyle = highlighted ? "rgba(238, 230, 210, .82)" : "rgba(230, 220, 194, .22)";
-          graphCtx.arc(midX, midY, highlighted ? 2.2 * size.dpr : 1.4 * size.dpr, 0, Math.PI * 2);
+          graphCtx.arc(midX, midY, highlighted || style.moving ? 2.2 * size.dpr : 1.4 * size.dpr, 0, Math.PI * 2);
           graphCtx.fill();
         }
       }
@@ -912,11 +1122,13 @@ function html() {
         const hovered = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y) <= node.r + 5;
         if (hovered || highlighted) focus = node;
         const active = highlighted || hovered;
-        const radius = active ? node.r + 2.4 : node.r;
-        if (active) {
+        const livePulse = node.type === "active_task" || node.type === "activity_root";
+        const pulse = livePulse ? 1.6 + Math.sin(now / 260 + node.x * 0.01) * 1.2 : 0;
+        const radius = active ? node.r + 2.4 : node.r + Math.max(0, pulse * 0.35);
+        if (active || livePulse) {
           graphCtx.beginPath();
           graphCtx.fillStyle = node.type === "tag" ? "rgba(124, 198, 106, .14)" : "rgba(217, 154, 61, .16)";
-          graphCtx.arc(node.x, node.y, radius + 6 * size.dpr, 0, Math.PI * 2);
+          graphCtx.arc(node.x, node.y, radius + (6 + pulse) * size.dpr, 0, Math.PI * 2);
           graphCtx.fill();
         }
         graphCtx.beginPath();
@@ -927,7 +1139,7 @@ function html() {
         graphCtx.lineWidth = Math.max(1, (node.type === "root" ? 2 : 1.25) * size.dpr);
         graphCtx.strokeStyle = graphNodeStroke(node, active);
         graphCtx.stroke();
-        if (node.type === "record" || node.type === "root") {
+        if (node.type === "record" || node.type === "root" || node.type === "activity_root" || node.type === "active_task") {
           graphCtx.beginPath();
           graphCtx.globalAlpha = graphSearch && !highlighted && !hovered ? 0.28 : 0.9;
           graphCtx.strokeStyle = node.type === "root" ? "rgba(91, 55, 20, .68)" : "rgba(91, 78, 54, .54)";
@@ -942,7 +1154,7 @@ function html() {
           graphCtx.fill();
         }
         graphCtx.globalAlpha = 1;
-        if (highlighted || hovered || node.type === "root") {
+        if (highlighted || hovered || node.type === "root" || node.type === "activity_root" || node.type === "active_task") {
           graphCtx.font = Math.round(11 * size.dpr) + "px Segoe UI, sans-serif";
           const label = node.label.slice(0, 34);
           const labelX = node.x + node.r + 5;
@@ -1012,6 +1224,12 @@ function html() {
         ["path", task._path],
         ["request", compact(task.request, 220)]
       ] : []);
+      const activeTasks = data.tasks.filter((item) => item.status === "started");
+      activeTasksEl.innerHTML = activeTasks.length
+        ? activeTasks.slice(0, 8).map((item) => \`
+          <div class="item"><code>\${esc(item.task_id)}</code><div class="muted">\${esc(compact(item.request, 160))}</div><code>\${esc(item._path || item.path || "")}</code></div>
+        \`).join("")
+        : '<p class="muted">No active task.</p>';
       const pack = data.context_packs[0];
       latestPackEl.innerHTML = pack ? [
         \`<div class="item"><code>\${esc(pack._path)}</code></div>\`,
@@ -1055,6 +1273,21 @@ function html() {
 }
 
 const server = http.createServer(async (request, response) => {
+  if (request.url === "/api/health") {
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    response.end(JSON.stringify({
+      ok: true,
+      observatory_version: observatoryVersion,
+      app_root: root,
+      data_root: dataRoot,
+      endpoints: ["/api/health", "/api/state", "/api/graph"],
+    }, null, 2));
+    return;
+  }
+
   if (request.url === "/api/state") {
     response.writeHead(200, {
       "content-type": "application/json; charset=utf-8",
@@ -1069,7 +1302,7 @@ const server = http.createServer(async (request, response) => {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
     });
-    response.end(JSON.stringify(await readWikiGraph(), null, 2));
+    response.end(JSON.stringify(withActivityGraph(await readWikiGraph(), await state()), null, 2));
     return;
   }
 
