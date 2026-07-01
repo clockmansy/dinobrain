@@ -534,7 +534,7 @@ function Set-DinoBrainClaudeCodeConfig {
     "--",
     $NodeExe,
     $ServerEntry
-  ) -WorkingDirectory $WorkingDirectory
+  ) -WorkingDirectory $WorkingDirectory | Out-Host
 
   $listResult = Invoke-NativeCommandResult -FilePath $claudeExe -ArgumentList @("mcp", "list") -WorkingDirectory $WorkingDirectory
   if ($listResult.ExitCode -ne 0 -or $listResult.Output -notmatch "(?i)\bdinobrain\b") {

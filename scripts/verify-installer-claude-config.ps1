@@ -28,6 +28,7 @@ if "%1"=="mcp" if "%2"=="remove" (
   exit /b 1
 )
 if "%1"=="mcp" if "%2"=="add" (
+  echo Added stdio MCP server dinobrain with command node.exe
   exit /b 0
 )
 if "%1"=="mcp" if "%2"=="list" (
@@ -51,6 +52,9 @@ exit /b 2
 
   if (-not $configured) {
     throw "Expected fake Claude Code config to succeed."
+  }
+  if (-not ($configured -is [bool])) {
+    throw "Expected Claude Code config to return a single bool, got $($configured.GetType().FullName)"
   }
 
   Write-Host "installer Claude config verification ok"
