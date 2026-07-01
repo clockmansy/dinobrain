@@ -147,6 +147,31 @@ Important boundaries:
 - events contain ids, paths, counts, and redaction summaries, not message text
 - `get_context_pack` and `wiki_search` exclude raw archives, candidates, and review queue items
 
+### `audit_memory_use`
+
+Creates a short audit instance for a finished task trace.
+
+Creates:
+
+- `.dino/audits/<audit_id>.json`
+- `.dino/events/<date>.jsonl`
+
+The audit separates:
+
+- `provided_memory_paths`: memories present in Context Pack traces
+- `declared_used_memory_paths`: memories the agent wrote into `finish_task.used_memory_paths`
+- `observed_used_memory_paths`: declared memories whose path/title hints appear in the trace or supplied observed summary
+
+It also records:
+
+- `trust_score`
+- `verdict`
+- `missing_expected_memory`
+- `hallucinated_memory_reference`
+- `graph_health_snapshot`
+
+This is evidence of observable memory use, not proof of private model attention.
+
 ### `git_sync`
 
 Dry-run only.

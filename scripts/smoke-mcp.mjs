@@ -122,6 +122,7 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   const expected = [
+    "audit_memory_use",
     "create_candidate_instance",
     "finish_task",
     "get_context_pack",
@@ -308,6 +309,165 @@ try {
     throw new Error("finish_task did not preserve structured used_memory_paths");
   }
 
+  const memoryAudit = parseTool(
+    await client.callTool({
+      name: "audit_memory_use",
+      arguments: {
+        task_id: start.task_id,
+        expected_memory_paths: ["20_Wiki/DinoBrain-MCP.md"],
+        observed_summary: "Smoke test used DinoBrain MCP memory and its Context Pack trace.",
+        auditor: "smoke-test",
+        notes: "Verify short memory-use audit logs.",
+      },
+    }),
+  );
+  if (!memoryAudit.audit_path || !existsSync(path.join(tempDataRoot, memoryAudit.audit_path))) {
+    throw new Error(`Missing memory audit log: ${memoryAudit.audit_path}`);
+  }
+  if (memoryAudit.trust_score < 70) {
+    throw new Error(`Unexpectedly low memory audit trust score: ${memoryAudit.trust_score}`);
+  }
+  const memoryAuditRecord = JSON.parse(readFileSync(path.join(tempDataRoot, memoryAudit.audit_path), "utf8"));
+  if (!memoryAuditRecord.graph_health_snapshot || typeof memoryAuditRecord.graph_health_snapshot.score !== "number") {
+    throw new Error("Memory audit did not record graph health snapshot");
+  }
+  if (memoryAuditRecord.graph_health_snapshot.referenced_unresolved_wiki_link_count == null) {
+    throw new Error("Memory audit did not distinguish referenced graph health from global graph health");
+  }
+  if (memoryAuditRecord.observed_summary_preview.includes("sk-")) {
+    throw new Error("Memory audit did not redact observed summary preview");
+  }
+
+  const duplicateMemoryAudit = parseTool(
+    await client.callTool({
+      name: "audit_memory_use",
+      arguments: {
+        task_id: start.task_id,
+        expected_memory_paths: ["20_Wiki/DinoBrain-MCP.md"],
+        observed_summary: "Second audit for the same task should create a separate instance audit log.",
+        auditor: "smoke-test",
+        notes: "Duplicate id guard.",
+      },
+    }),
+  );
+  if (duplicateMemoryAudit.audit_path === memoryAudit.audit_path) {
+    throw new Error("audit_memory_use reused an audit path for the same task");
+  }
+
+  const mismatchAudit = parseTool(
+    await client.callTool({
+      name: "audit_memory_use",
+      arguments: {
+        task_id: start.task_id,
+        expected_memory_paths: ["20_Wiki/Missing-Expected.md"],
+        observed_summary: "Smoke test mismatch audit should report missing expected memory. sk-proj-example-secret-token-12345",
+        auditor: "smoke-test",
+        notes: "Missing expected memory path.",
+      },
+    }),
+  );
+  const mismatchAuditRecord = JSON.parse(readFileSync(path.join(tempDataRoot, mismatchAudit.audit_path), "utf8"));
+  if (!mismatchAuditRecord.missing_expected_memory?.includes("20_Wiki/Missing-Expected.md")) {
+    throw new Error("audit_memory_use did not report missing expected memory");
+  }
+  if (mismatchAuditRecord.observed_summary_preview.includes("sk-proj-example-secret-token-12345")) {
+    throw new Error("audit_memory_use leaked raw observed summary secret text");
+  }
+
+  const ghostTask = parseTool(
+    await client.callTool({
+      name: "start_task",
+      arguments: {
+        request: "Smoke test unfinished audit rejection",
+        project: "dinobrain",
+        mode: "standard",
+        sensitivity: "normal",
+      },
+    }),
+  );
+  let unfinishedRejected = false;
+  try {
+    const unfinishedAudit = parseTool(
+      await client.callTool({
+        name: "audit_memory_use",
+        arguments: {
+          task_id: ghostTask.task_id,
+          observed_summary: "This should fail because the task has not produced a finished trace.",
+        },
+      }),
+    );
+    unfinishedRejected = unfinishedAudit.ok === false;
+  } catch {
+    unfinishedRejected = true;
+  }
+  if (!unfinishedRejected) {
+    throw new Error("audit_memory_use accepted an unfinished task without a trace");
+  }
+
+  writeFileSync(
+    path.join(tempDataRoot, ".dino", "traces", "unfinished-audit.json"),
+    `${JSON.stringify(
+      {
+        task_id: "unfinished-audit",
+        outcome: "started",
+        summary: "This trace exists but is not a finished task trace.",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  let unfinishedTraceRejected = false;
+  try {
+    const unfinishedTraceAudit = parseTool(
+      await client.callTool({
+        name: "audit_memory_use",
+        arguments: {
+          trace_path: ".dino/traces/unfinished-audit.json",
+          observed_summary: "This should fail because the trace has no finished_at and terminal outcome.",
+        },
+      }),
+    );
+    unfinishedTraceRejected = unfinishedTraceAudit.ok === false;
+  } catch {
+    unfinishedTraceRejected = true;
+  }
+  if (!unfinishedTraceRejected) {
+    throw new Error("audit_memory_use accepted a non-terminal trace");
+  }
+
+  const hallucinatedTracePath = path.join(tempDataRoot, ".dino", "traces", "hallucinated-audit.json");
+  writeFileSync(
+    hallucinatedTracePath,
+    `${JSON.stringify(
+      {
+        task_id: "hallucinated-audit",
+        outcome: "completed",
+        summary: "This trace claims a ghost memory was used.",
+        used_memory_paths: ["20_Wiki/Ghost-Memory.md"],
+        context_pack_paths: [contextPack.trace_path],
+        finished_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const hallucinatedAudit = parseTool(
+    await client.callTool({
+      name: "audit_memory_use",
+      arguments: {
+        trace_path: ".dino/traces/hallucinated-audit.json",
+        observed_summary: "The ghost memory was supposedly used.",
+        auditor: "smoke-test",
+      },
+    }),
+  );
+  const hallucinatedAuditRecord = JSON.parse(readFileSync(path.join(tempDataRoot, hallucinatedAudit.audit_path), "utf8"));
+  if (!hallucinatedAuditRecord.hallucinated_memory_reference?.includes("20_Wiki/Ghost-Memory.md")) {
+    throw new Error("audit_memory_use did not flag a missing declared memory path");
+  }
+
   const gitSync = parseTool(
     await client.callTool({
       name: "git_sync",
@@ -356,6 +516,8 @@ try {
         candidate_path: candidate.candidate_path,
         accepted_path: review.accepted_path,
         quarantine_path: quarantine.quarantine_path,
+        memory_audit_path: memoryAudit.audit_path,
+        memory_audit_score: memoryAudit.trust_score,
         context_items: contextPack.item_count,
         search_results: search.result_count,
         git_sync_changed_files: gitSync.changed_file_count,

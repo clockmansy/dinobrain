@@ -33,6 +33,7 @@ These paths may be synced only when the records are curated and non-sensitive:
 - `.dino/events`
 - `.dino/traces`
 - `.dino/context-packs`
+- `.dino/audits`
 - `.dino/quarantine`
 
 ## Local Only By Default

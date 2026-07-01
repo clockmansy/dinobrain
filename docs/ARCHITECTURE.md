@@ -47,6 +47,7 @@ The MCP server exposes the approved write/read surface:
 - `get_context_pack`
 - `wiki_search`
 - `import_session`
+- `audit_memory_use`
 - `git_sync` as dry-run only
 - `create_candidate_instance`
 - `review_candidate`
@@ -112,7 +113,7 @@ Every context decision should eventually leave a trace record explaining:
 - what was excluded
 - which policy allowed or blocked the action
 
-The Phase 1 trace target is documentation only. Implementation begins in Phase 2.
+`audit_memory_use` adds a short audit instance over task traces. It separates memory evidence into `provided`, `declared_used`, and `observed_used`, records a trust score, and snapshots graph health without storing raw conversation logs.
 
 ## Deferred Work
 

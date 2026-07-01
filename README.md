@@ -55,6 +55,7 @@ The current verification focus is proving that the system behaves like a compoun
 - `docs/OPERATIONS_INDEX.md`
 - `docs/SQLITE_SHARDS.md`
 - `docs/SESSION_INGEST.md`
+- `docs/MEMORY_AUDIT.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
@@ -96,6 +97,7 @@ Available tools:
 - `get_context_pack`
 - `wiki_search`
 - `import_session`
+- `audit_memory_use`
 - `git_sync` as dry-run only
 - `create_candidate_instance`
 - `review_candidate`

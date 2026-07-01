@@ -17,6 +17,7 @@ const {
   getSqliteShardPath,
   querySqliteWiki,
   upsertSqliteOperationTask,
+  upsertSqliteOperationTrace,
 } = await import(sqliteModulePath);
 const { getContextPackItems, searchWiki } = await import(retrievalModulePath);
 
@@ -88,6 +89,10 @@ tags: [synthetic, sqlite]
       task_id: taskId,
       outcome: "completed",
       summary: `Synthetic SQLite trace ${index}`,
+      used_memory_paths: index === count - 1 ? ["20_Wiki/SQLite-Shard-Target.md"] : [],
+      context_pack_paths: index === count - 1 ? [".dino/context-packs/pack-01199.json"] : [],
+      session_archive_paths: [],
+      candidate_paths: [],
       finished_at: iso(index),
     };
     writeFileSync(path.join(dataRoot, ".dino/tasks", `${taskId}.json`), `${JSON.stringify(task, null, 2)}\n`, "utf8");
@@ -119,8 +124,19 @@ const operationDb = new DatabaseSync(operationsShardPath, { readOnly: true });
 try {
   const taskRows = operationDb.prepare("SELECT COUNT(*) AS count FROM tasks").get().count;
   const eventRows = operationDb.prepare("SELECT COUNT(*) AS count FROM events").get().count;
+  const latestTrace = operationDb
+    .prepare("SELECT used_memory_paths_json, context_pack_paths_json FROM traces WHERE task_id = ?")
+    .get("task-01199");
   assert(taskRows === 1200, `sqlite task rows were capped unexpectedly: ${taskRows}`);
   assert(eventRows === 1200, `sqlite event rows were capped unexpectedly: ${eventRows}`);
+  assert(
+    JSON.parse(latestTrace.used_memory_paths_json).includes("20_Wiki/SQLite-Shard-Target.md"),
+    "SQLite trace shard did not preserve used_memory_paths",
+  );
+  assert(
+    JSON.parse(latestTrace.context_pack_paths_json).includes(".dino/context-packs/pack-01199.json"),
+    "SQLite trace shard did not preserve context_pack_paths",
+  );
 } finally {
   operationDb.close();
 }
@@ -159,8 +175,35 @@ await appendSqliteOperationEvent(dataRoot, {
   at: iso(1200),
   _path: ".dino/events/2026-07-01.jsonl",
 });
+await upsertSqliteOperationTrace(dataRoot, {
+  path: ".dino/traces/task-1200.json",
+  task_id: "task-1200",
+  outcome: "completed",
+  summary: "Incremental SQLite operation trace",
+  finished_at: iso(1200),
+  used_memory_paths: ["20_Wiki/SQLite-Shard-Target.md"],
+  context_pack_paths: [".dino/context-packs/pack-1200.json"],
+  session_archive_paths: [],
+  candidate_paths: [],
+});
 const updatedRecent = await collectRecentTaskRecordsFromSqlite(dataRoot, 1);
 assert(updatedRecent?.[0]?.path === ".dino/tasks/task-1200.json", "SQLite incremental task update was not visible");
+const updatedOperationDb = new DatabaseSync(operationsShardPath, { readOnly: true });
+try {
+  const updatedTrace = updatedOperationDb
+    .prepare("SELECT used_memory_paths_json, context_pack_paths_json FROM traces WHERE task_id = ?")
+    .get("task-1200");
+  assert(
+    JSON.parse(updatedTrace.used_memory_paths_json).includes("20_Wiki/SQLite-Shard-Target.md"),
+    "SQLite incremental trace update did not preserve used_memory_paths",
+  );
+  assert(
+    JSON.parse(updatedTrace.context_pack_paths_json).includes(".dino/context-packs/pack-1200.json"),
+    "SQLite incremental trace update did not preserve context_pack_paths",
+  );
+} finally {
+  updatedOperationDb.close();
+}
 
 console.log(
   JSON.stringify(

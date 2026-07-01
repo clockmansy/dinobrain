@@ -48,6 +48,7 @@ Then the script starts the configured MCP command and verifies that these tools 
 - `get_context_pack`
 - `wiki_search`
 - `import_session`
+- `audit_memory_use`
 - `git_sync`
 - `create_candidate_instance`
 - `review_candidate`
@@ -128,6 +129,17 @@ It verifies:
 - hot/warm/cold labels are present
 - raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`
 - `git_sync` blocks raw archives and marks candidates/review records as conditional
+
+### Memory Use Audit
+
+`npm run smoke` calls `audit_memory_use` after a completed task.
+
+It verifies:
+
+- a short `.dino/audits/<audit_id>.json` record is created
+- the audit links provided Context Pack memories to declared `finish_task.used_memory_paths`
+- the audit includes a trust score and graph health snapshot
+- the audit does not need raw conversation logs
 
 ### Index And Shard Verification
 

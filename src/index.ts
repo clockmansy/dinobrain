@@ -9,6 +9,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
+import { buildMemoryAudit } from "./memory-audit.js";
 import {
   type OperationContextPackEntry,
   type OperationEventEntry,
@@ -250,6 +251,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/events/",
     ".dino/traces/",
     ".dino/context-packs/",
+    ".dino/audits/",
     ".dino/quarantine/",
   ];
   const syncablePrefixes = [
@@ -494,6 +496,87 @@ server.registerTool(
       task_path: taskRelativePath,
       trace_path: traceRelativePath,
       event_log: eventLog,
+    });
+  },
+);
+
+server.registerTool(
+  "audit_memory_use",
+  {
+    title: "Audit Memory Use",
+    description: "Create a short trust audit for whether provided DinoBrain memories were declared and observably used.",
+    inputSchema: {
+      task_id: z.string().optional(),
+      trace_path: z.string().optional(),
+      context_pack_paths: z.array(z.string()).default([]),
+      expected_memory_paths: z.array(z.string()).default([]),
+      observed_artifact_paths: z.array(z.string()).default([]),
+      observed_summary: z.string().default(""),
+      auditor: z.string().default("memory-audit"),
+      notes: z.string().default(""),
+    },
+  },
+  async ({
+    task_id,
+    trace_path,
+    context_pack_paths,
+    expected_memory_paths,
+    observed_artifact_paths,
+    observed_summary,
+    auditor,
+    notes,
+  }) => {
+    let plan;
+    try {
+      plan = await buildMemoryAudit(DATA_ROOT, {
+        taskId: task_id,
+        tracePath: trace_path,
+        contextPackPaths: context_pack_paths,
+        expectedMemoryPaths: expected_memory_paths,
+        observedArtifactPaths: observed_artifact_paths,
+        observedSummary: observed_summary,
+        auditor,
+        notes,
+      });
+    } catch (error) {
+      return jsonResult({
+        ok: false,
+        error: (error as Error).message,
+      });
+    }
+
+    const auditPath = dataPath(plan.auditPath);
+    await writeJson(auditPath, plan.audit);
+    const eventLog = await appendEvent({
+      event: "memory_use_audited",
+      audit_id: plan.auditId,
+      at: typeof plan.audit.audited_at === "string" ? plan.audit.audited_at : nowIso(),
+      task_id: plan.audit.task_id,
+      trace_path: plan.audit.trace_path,
+      audit_path: plan.auditPath,
+      trust_score: plan.audit.trust_score,
+      verdict: plan.audit.verdict,
+      graph_health_score:
+        typeof plan.audit.graph_health_snapshot === "object" &&
+        plan.audit.graph_health_snapshot !== null &&
+        "score" in plan.audit.graph_health_snapshot
+          ? (plan.audit.graph_health_snapshot as { score?: unknown }).score
+          : null,
+    });
+
+    return jsonResult({
+      ok: true,
+      audit_id: plan.auditId,
+      audit_path: plan.auditPath,
+      event_log: eventLog,
+      trust_score: plan.audit.trust_score,
+      verdict: plan.audit.verdict,
+      provided_memory_count: (plan.audit.counts as { provided?: number }).provided ?? 0,
+      declared_used_count: (plan.audit.counts as { declared_used?: number }).declared_used ?? 0,
+      observed_used_count: (plan.audit.counts as { observed_used?: number }).observed_used ?? 0,
+      graph_health_snapshot: plan.audit.graph_health_snapshot,
+      missing_expected_memory: plan.audit.missing_expected_memory,
+      hallucinated_memory_reference: plan.audit.hallucinated_memory_reference,
     });
   },
 );

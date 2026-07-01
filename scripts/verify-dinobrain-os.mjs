@@ -19,6 +19,7 @@ const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
 const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
 
 const expectedTools = [
+  "audit_memory_use",
   "create_candidate_instance",
   "finish_task",
   "get_context_pack",

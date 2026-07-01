@@ -65,7 +65,7 @@ async function readSqliteOperations() {
     const traces = db
       .prepare("SELECT * FROM traces ORDER BY finished_at DESC, path ASC LIMIT 50")
       .all()
-      .map(withDisplayPath);
+      .map(withTraceDisplay);
     const packs = db
       .prepare("SELECT * FROM context_packs ORDER BY created_at DESC, path ASC LIMIT 50")
       .all()
@@ -122,8 +122,16 @@ async function readJsonDir(relativeDir, limit = 50) {
     if (value) records.push({ ...value, _path: rel(file) });
   }
   return records
-    .sort((a, b) => String(b.updated_at ?? b.created_at ?? b.finished_at ?? "").localeCompare(String(a.updated_at ?? a.created_at ?? a.finished_at ?? "")))
+    .sort((a, b) =>
+      String(b.updated_at ?? b.created_at ?? b.finished_at ?? b.audited_at ?? "").localeCompare(
+        String(a.updated_at ?? a.created_at ?? a.finished_at ?? a.audited_at ?? ""),
+      ),
+    )
     .slice(0, limit);
+}
+
+async function readAuditLogs(limit = 50) {
+  return await readJsonDir(".dino/audits", limit);
 }
 
 function summarize(events, tasks, packs) {
@@ -162,7 +170,30 @@ function withDisplayPath(record) {
   return { ...record, _path: record._path ?? record.path };
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function withTraceDisplay(record) {
+  const displayed = withDisplayPath(record);
+  return {
+    ...displayed,
+    used_memory_paths: parseJsonArray(record.used_memory_paths ?? record.used_memory_paths_json),
+    context_pack_paths: parseJsonArray(record.context_pack_paths ?? record.context_pack_paths_json),
+    session_archive_paths: parseJsonArray(record.session_archive_paths ?? record.session_archive_paths_json),
+    candidate_paths: parseJsonArray(record.candidate_paths ?? record.candidate_paths_json),
+  };
+}
+
 async function state() {
+  const audits = await readAuditLogs();
   const sqlite = await readSqliteOperations();
   if (sqlite) {
     return {
@@ -174,6 +205,7 @@ async function state() {
         event_count: sqlite.counts.events,
         task_count: sqlite.counts.tasks,
         context_pack_count: sqlite.counts.context_packs,
+        memory_audit_count: audits.length,
         today_event_count: sqlite.events.filter((event) => String(event.at ?? "").startsWith(new Date().toISOString().slice(0, 10))).length,
         active_task_count: sqlite.tasks.filter((task) => task.status === "started").length,
         last_event_at: sqlite.events[0]?.at ?? null,
@@ -182,6 +214,7 @@ async function state() {
       tasks: sqlite.tasks,
       context_packs: sqlite.context_packs,
       traces: sqlite.traces,
+      memory_audits: audits,
     };
   }
 
@@ -189,11 +222,12 @@ async function state() {
   if (index) {
     return {
       ok: true,
-      summary: summarizeIndex(index),
+      summary: { ...summarizeIndex(index), memory_audit_count: audits.length },
       events: (index.recent_events ?? []).slice(0, 100),
       tasks: (index.recent_tasks ?? []).slice(0, 50).map(withDisplayPath),
       context_packs: (index.recent_context_packs ?? []).slice(0, 50).map(withDisplayPath),
-      traces: (index.recent_traces ?? []).slice(0, 50).map(withDisplayPath),
+      traces: (index.recent_traces ?? []).slice(0, 50).map(withTraceDisplay),
+      memory_audits: audits,
     };
   }
 
@@ -205,11 +239,12 @@ async function state() {
   ]);
   return {
     ok: true,
-    summary: summarize(events, tasks, packs),
+    summary: { ...summarize(events, tasks, packs), memory_audit_count: audits.length },
     events: events.slice().reverse(),
     tasks,
     context_packs: packs,
-    traces,
+    traces: traces.map(withTraceDisplay),
+    memory_audits: audits,
   };
 }
 
@@ -279,7 +314,7 @@ function html() {
     }
     .stats {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
       margin-bottom: 18px;
     }
@@ -352,6 +387,7 @@ function html() {
     .task_started .badge { color: var(--green); border-color: rgba(80, 216, 144, .45); }
     .context_pack_created .badge { color: var(--blue); border-color: rgba(106, 169, 255, .45); }
     .task_finished .badge { color: var(--violet); border-color: rgba(179, 148, 255, .45); }
+    .memory_use_audited .badge { color: var(--amber); border-color: rgba(242, 188, 87, .45); }
     .codex_preflight_failed .badge { color: var(--red); border-color: rgba(255, 107, 107, .45); }
     .details {
       display: grid;
@@ -410,6 +446,7 @@ function html() {
         <div class="stat"><strong id="stat-events">0</strong><span>events</span></div>
         <div class="stat"><strong id="stat-tasks">0</strong><span>tasks</span></div>
         <div class="stat"><strong id="stat-packs">0</strong><span>context packs</span></div>
+        <div class="stat"><strong id="stat-audits">0</strong><span>memory audits</span></div>
         <div class="stat"><strong id="stat-active">0</strong><span>active tasks</span></div>
       </div>
       <div id="timeline" class="timeline"></div>
@@ -427,6 +464,10 @@ function html() {
         <h2>Latest Trace</h2>
         <div id="latest-trace" class="kv"></div>
       </div>
+      <div class="block">
+        <h2>Latest Memory Audit</h2>
+        <div id="latest-audit" class="kv"></div>
+      </div>
     </section>
   </main>
   <script>
@@ -436,6 +477,7 @@ function html() {
     const latestTaskEl = document.getElementById("latest-task");
     const latestPackEl = document.getElementById("latest-pack");
     const latestTraceEl = document.getElementById("latest-trace");
+    const latestAuditEl = document.getElementById("latest-audit");
     const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const compact = (value, max = 180) => {
@@ -443,13 +485,13 @@ function html() {
       return text.length > max ? text.slice(0, max - 3) + "..." : text;
     };
     function kv(target, rows) {
-      target.innerHTML = rows.map(([key, value]) => \`<span>\${esc(key)}</span><code>\${esc(value || "--")}</code>\`).join("");
+      target.innerHTML = rows.map(([key, value]) => \`<span>\${esc(key)}</span><code>\${esc(value ?? "--")}</code>\`).join("");
     }
     function eventTitle(event) {
       return String(event.event || "event").replaceAll("_", " ");
     }
     function eventDetail(event) {
-      return event.prompt_preview || event.task_id || event.pack_id || event.trace_path || event.context_pack_trace || event.path || event.error || "";
+      return event.prompt_preview || event.audit_id || event.task_id || event.pack_id || event.trace_path || event.context_pack_trace || event.path || event.error || "";
     }
     function render(data) {
       statusEl.textContent = "live · " + formatTime(data.summary.generated_at);
@@ -457,6 +499,7 @@ function html() {
       document.getElementById("stat-events").textContent = data.summary.event_count;
       document.getElementById("stat-tasks").textContent = data.summary.task_count;
       document.getElementById("stat-packs").textContent = data.summary.context_pack_count;
+      document.getElementById("stat-audits").textContent = data.summary.memory_audit_count ?? 0;
       document.getElementById("stat-active").textContent = data.summary.active_task_count;
       timelineEl.innerHTML = data.events.map((event) => \`
         <article class="event \${esc(event.event)}">
@@ -486,7 +529,17 @@ function html() {
         ["task", trace.task_id],
         ["outcome", trace.outcome],
         ["path", trace._path],
+        ["used", Array.isArray(trace.used_memory_paths) ? trace.used_memory_paths.length : 0],
         ["summary", compact(trace.summary, 220)]
+      ] : []);
+      const audit = data.memory_audits && data.memory_audits[0];
+      kv(latestAuditEl, audit ? [
+        ["audit", audit.audit_id],
+        ["task", audit.task_id],
+        ["score", audit.trust_score],
+        ["verdict", audit.verdict],
+        ["graph", audit.graph_health_snapshot && audit.graph_health_snapshot.score],
+        ["path", audit._path]
       ] : []);
     }
     async function tick() {

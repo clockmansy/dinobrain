@@ -37,7 +37,7 @@ Expected states:
 | 4. Agent uses context with current instruction priority | `partially_verified` | Memory can state the rule, but model behavior is not enforced by DinoBrain runtime. |
 | 5. Narrow extra search | `partially_verified` | `wiki_search` works; no separate `search_memory` tool exists yet. |
 | 6. Finish task record | `verified` | `finish_task` writes summary/decisions/next steps plus structured `used_memory_paths` and `context_pack_paths`. |
-| 7. Knowledge growth | `partially_verified` | Candidate -> accepted instance -> later Context Pack works; Wiki/semantic/correction/proposal flows are not separate yet. |
+| 7. Knowledge growth | `partially_verified` | Memory-use audit and candidate -> accepted instance -> later Context Pack work; Wiki/semantic/correction/proposal flows are not separate yet. |
 | 8. Backup/restore | `partially_verified` | Installer and repos exist; data sync remains dry-run/manual approval. |
 
 ## What Would Make It Fully True
@@ -65,6 +65,7 @@ It verifies:
 - `get_context_pack` retrieves user preference and project flow records
 - `wiki_search` performs narrow body search
 - `finish_task` writes trace data, including structured memory-use paths
+- `audit_memory_use` writes a short trust log for provided/declared/observed memory use
 - candidate approval produces an accepted instance
 - the accepted instance is retrieved in a later Context Pack
 - installer files and Git remotes are present

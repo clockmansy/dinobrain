@@ -140,6 +140,10 @@ function run(stmt: ReturnType<DatabaseSync["prepare"]>, ...values: SqlValue[]): 
   stmt.run(...values);
 }
 
+function jsonArray(values: string[]): string {
+  return JSON.stringify(values);
+}
+
 function writeMetadata(db: DatabaseSync, metadata: Record<string, SqlValue>): void {
   db.exec("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const insert = db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)");
@@ -278,7 +282,11 @@ function writeOperationsShard(
       task_id TEXT NOT NULL,
       outcome TEXT NOT NULL,
       summary TEXT NOT NULL,
-      finished_at TEXT
+      finished_at TEXT,
+      used_memory_paths_json TEXT NOT NULL DEFAULT '[]',
+      context_pack_paths_json TEXT NOT NULL DEFAULT '[]',
+      session_archive_paths_json TEXT NOT NULL DEFAULT '[]',
+      candidate_paths_json TEXT NOT NULL DEFAULT '[]'
     );
     CREATE INDEX idx_traces_finished_at ON traces(finished_at DESC);
     CREATE TABLE context_packs (
@@ -325,7 +333,9 @@ function writeOperationsShard(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTrace = db.prepare(`
-    INSERT OR REPLACE INTO traces (path, task_id, outcome, summary, finished_at) VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO traces
+      (path, task_id, outcome, summary, finished_at, used_memory_paths_json, context_pack_paths_json, session_archive_paths_json, candidate_paths_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertPack = db.prepare(`
     INSERT OR REPLACE INTO context_packs
@@ -375,7 +385,31 @@ function insertOperationTask(stmt: ReturnType<DatabaseSync["prepare"]>, task: Op
 }
 
 function insertOperationTrace(stmt: ReturnType<DatabaseSync["prepare"]>, trace: OperationTraceEntry): void {
-  run(stmt, trace.path, trace.task_id, trace.outcome, trace.summary, trace.finished_at);
+  run(
+    stmt,
+    trace.path,
+    trace.task_id,
+    trace.outcome,
+    trace.summary,
+    trace.finished_at,
+    jsonArray(trace.used_memory_paths),
+    jsonArray(trace.context_pack_paths),
+    jsonArray(trace.session_archive_paths),
+    jsonArray(trace.candidate_paths),
+  );
+}
+
+function ensureTraceMemoryColumns(db: DatabaseSync): void {
+  const rows = db.prepare("PRAGMA table_info(traces)").all() as Array<{ name: string }>;
+  const existing = new Set(rows.map((row) => String(row.name)));
+  for (const column of [
+    "used_memory_paths_json",
+    "context_pack_paths_json",
+    "session_archive_paths_json",
+    "candidate_paths_json",
+  ]) {
+    if (!existing.has(column)) db.exec(`ALTER TABLE traces ADD COLUMN ${column} TEXT NOT NULL DEFAULT '[]'`);
+  }
 }
 
 function insertOperationPack(
@@ -614,8 +648,13 @@ export async function upsertSqliteOperationTrace(
   if (!(await sqliteShardExists(dataRoot, "operations"))) return;
   const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"));
   try {
+    ensureTraceMemoryColumns(db);
     insertOperationTrace(
-      db.prepare("INSERT OR REPLACE INTO traces (path, task_id, outcome, summary, finished_at) VALUES (?, ?, ?, ?, ?)"),
+      db.prepare(`
+        INSERT OR REPLACE INTO traces
+          (path, task_id, outcome, summary, finished_at, used_memory_paths_json, context_pack_paths_json, session_archive_paths_json, candidate_paths_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `),
       trace,
     );
   } finally {

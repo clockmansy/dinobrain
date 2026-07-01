@@ -30,6 +30,7 @@ The core value is not storing notes. The core value is selecting the right memor
 5. Show trace logs explaining why a memory was used.
 6. Classify safe data for git sync.
 7. Import chat sessions as safe source material and extract reviewable LLM Wiki candidates.
+8. Audit whether provided LLM Wiki memories were declared and observably used.
 
 ## Repository Roles
 
@@ -189,6 +190,25 @@ Completion criteria:
 - Candidates are never auto-promoted.
 - Reviewed accepted instances remain the only imported session knowledge that can enter default retrieval.
 - Completed task traces preserve `used_memory_paths` and `context_pack_paths`.
+
+## Phase 8: Memory Use Audit
+
+Goal: Make DinoBrain trust measurable instead of assuming that an agent really used the provided LLM Wiki memory.
+
+Initial behavior:
+
+- `audit_memory_use` reads a finished task trace and related Context Pack traces.
+- It writes a short audit instance under `.dino/audits`.
+- It separates memory state into `provided`, `declared_used`, and `observed_used`.
+- It computes `trust_score` and `verdict`.
+- It records `missing_expected_memory`, `hallucinated_memory_reference`, and a `graph_health_snapshot`.
+- Observatory shows recent memory audit scores.
+
+Completion criteria:
+
+- Audit logs do not store raw full conversations.
+- Audit logs preserve enough evidence to explain the trust score.
+- Observatory displays the latest memory audit result.
 
 ## Work Rules
 

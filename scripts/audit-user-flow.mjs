@@ -20,6 +20,7 @@ const codexCliCandidates = [
 ].filter(Boolean);
 
 const expectedTools = [
+  "audit_memory_use",
   "create_candidate_instance",
   "finish_task",
   "get_context_pack",
@@ -400,6 +401,20 @@ async function auditFlow() {
         null,
       ),
     );
+
+    const memoryAudit = parseTool(
+      await client.callTool({
+        name: "audit_memory_use",
+        arguments: {
+          task_id: start.task_id,
+          expected_memory_paths: ["20_Wiki/Rare-Search-Memory.md"],
+          observed_summary: "The audit used the zeta-lattice-only Wiki search result and the Context Pack trace.",
+          auditor: "flow-audit",
+          notes: "Verify provided, declared, and observed memory use evidence.",
+        },
+      }),
+    );
+    assert(memoryAudit.trust_score >= 60, `memory audit trust score too low: ${memoryAudit.trust_score}`);
 
     const candidate = parseTool(
       await client.callTool({

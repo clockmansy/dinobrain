@@ -5,7 +5,7 @@ Date: 2026-07-01
 DinoBrain can show how it interacts with Codex by combining two pieces:
 
 1. A Codex `UserPromptSubmit` hook that runs before the model turn.
-2. A local Observatory page that polls DinoBrain event, task, trace, and Context Pack files.
+2. A local Observatory page that polls DinoBrain event, task, trace, Context Pack, and memory audit files.
 
 ## Flow
 
@@ -22,6 +22,9 @@ flowchart LR
   ingest --> events
   pack --> injected["additionalContext injected into Codex"]
   events --> observatory["DinoBrain Observatory"]
+  finish --> audit["audit_memory_use"]
+  audit --> audits[".dino/audits"]
+  audits --> observatory
   injected --> agent["Codex work"]
   agent --> finish["finish_task by agent protocol"]
   finish --> events
@@ -91,4 +94,5 @@ Environment variables:
 - The current already-running session may not retroactively load this hook.
 - Automatic import currently sees the submitted user prompt, not the later assistant response.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work, but the injected protocol now includes structured `context_pack_paths`, `used_memory_paths`, `session_archive_paths`, and `candidate_paths` values to preserve.
+- After `finish_task`, `audit_memory_use` can create a short trust log that Observatory displays as the latest memory audit.
 - The Observatory shows file-backed events in near real time by polling; it is not a remote telemetry service.
