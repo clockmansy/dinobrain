@@ -62,7 +62,19 @@ The current verification focus is proving that the system behaves like a compoun
 
 ## Install And Update
 
-Fresh Windows setup:
+Recommended Windows setup from a release asset:
+
+```powershell
+.\DinoBrainSetup.exe
+```
+
+Build the release EXE from this repo:
+
+```powershell
+npm run installer:win
+```
+
+Fresh Windows setup from PowerShell:
 
 ```powershell
 .\install.ps1

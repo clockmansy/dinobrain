@@ -23,6 +23,14 @@ If Claude Code is installed after DinoBrain, rerun `.\setup.ps1` from the DinoBr
 
 ## Fresh Install
 
+Recommended path from a release asset:
+
+```powershell
+.\DinoBrainSetup.exe
+```
+
+`DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories and downloads portable Node.js.
+
 From a downloaded `install.ps1`:
 
 ```powershell
@@ -42,6 +50,24 @@ C:\Users\<you>\Documents\dinobrain
 C:\Users\<you>\Documents\dinobrain-data
 C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64
 ```
+
+## Build The Windows EXE
+
+Build a self-contained Windows installer from this repo:
+
+```powershell
+npm run installer:win
+```
+
+Output:
+
+```text
+artifacts\DinoBrainSetup.exe
+```
+
+The build uses `installer\DinoBrainSetup`, embeds the repo's current `install.ps1`, publishes a single-file `win-x64` executable, then self-tests that the EXE can extract the embedded installer. Upload `artifacts\DinoBrainSetup.exe` as the GitHub Release asset for installation on another PC.
+
+The EXE runs without requiring .NET on the target PC because it is published self-contained. It does not remove SmartScreen warnings by itself; production distribution still needs code signing if that matters.
 
 ## What Install Does
 

@@ -14,6 +14,7 @@
     "eval:context": "node dist/evaluate-context.js",
     "graph:vault": "node scripts/export-vault-graph.mjs",
     "hook:verify": "node scripts/verify-codex-hook.mjs",
+    "installer:win": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1",
     "index:operations": "node dist/build-operations-index.js",
     "index:sqlite": "node dist/build-sqlite-shards.js",
     "index:verify:sqlite": "node scripts/verify-sqlite-shards.mjs",

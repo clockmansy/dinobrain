@@ -23,9 +23,12 @@ npm run index:verify:operations
 npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run installer:win
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
+
+`npm run installer:win` builds `artifacts\DinoBrainSetup.exe` and verifies that the generated EXE can extract the embedded `install.ps1`.
 
 ## What `verify:os` Proves
 
