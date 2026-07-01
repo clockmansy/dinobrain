@@ -27,6 +27,7 @@ import {
   upsertSqliteOperationTask,
   upsertSqliteOperationTrace,
 } from "./sqlite-shards.js";
+import { buildSessionImportPlan, type SessionMessageInput } from "./session-ingest.js";
 import { invalidateWikiIndex } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
@@ -290,6 +291,10 @@ async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
       ["password_assignment", /password\s*[:=]/i],
       ["private_key_block", /BEGIN [A-Z ]*PRIVATE KEY/],
       ["openai_key_shape", /sk-[A-Za-z0-9]{20,}/],
+      ["github_token_shape", /(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})/],
+      ["aws_access_key_shape", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
+      ["jwt_shape", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+      ["cookie_assignment", /(session|sessionid|cookie)\s*[:=]/i],
     ];
     const hits: SensitivityHit[] = [];
     const lines = text.split(/\r?\n/);
@@ -540,6 +545,90 @@ server.registerTool(
       matching_terms: stats.matching_terms,
       result_count: ranked.length,
       results: ranked,
+    });
+  },
+);
+
+server.registerTool(
+  "import_session",
+  {
+    title: "Import Session",
+    description: "Import a redacted session excerpt and extract pending-review memory candidates.",
+    inputSchema: {
+      source: z.string().min(1).default("manual"),
+      project: z.string().optional(),
+      title: z.string().optional(),
+      transcript: z.string().optional(),
+      messages: z
+        .array(
+          z.object({
+            role: z.enum(["user", "assistant", "system", "tool", "unknown"]).default("unknown"),
+            content: z.string().min(1),
+            at: z.string().optional(),
+          }),
+        )
+        .optional(),
+      sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
+      max_candidates: z.number().int().min(1).max(50).default(12),
+      raw_retention: z.enum(["metadata_only", "redacted_excerpt"]).default("redacted_excerpt"),
+    },
+  },
+  async ({ source, project, title, transcript, messages, sensitivity, max_candidates, raw_retention }) => {
+    let plan;
+    try {
+      plan = buildSessionImportPlan({
+        source,
+        project,
+        title,
+        transcript,
+        messages: messages as SessionMessageInput[] | undefined,
+        sensitivity,
+        maxCandidates: max_candidates,
+        rawRetention: raw_retention,
+      });
+    } catch (error) {
+      return jsonResult({
+        ok: false,
+        error: (error as Error).message,
+      });
+    }
+
+    await writeJson(dataPath(plan.archivePath), plan.archive);
+    for (const candidate of plan.candidates) {
+      await writeJson(dataPath(candidate.candidatePath), candidate.candidate);
+      await writeJson(dataPath(candidate.reviewPath), candidate.review);
+    }
+    const importedAt = typeof plan.archive.imported_at === "string" ? plan.archive.imported_at : nowIso();
+    const eventLog = await appendEvent({
+      event: "session_imported",
+      session_id: plan.sessionId,
+      at: importedAt,
+      source,
+      project: project ?? null,
+      archive_path: plan.archivePath,
+      raw_retention,
+      raw_full_transcript_stored: false,
+      candidate_count: plan.candidates.length,
+      temperature_counts: plan.stats.temperature_counts,
+      category_counts: plan.stats.category_counts,
+      redaction_hits: plan.stats.redaction_hits,
+    });
+
+    return jsonResult({
+      ok: true,
+      session_id: plan.sessionId,
+      archive_path: plan.archivePath,
+      event_log: eventLog,
+      raw_retention,
+      raw_full_transcript_stored: false,
+      sync_policy: "local_only",
+      candidate_count: plan.candidates.length,
+      candidate_paths: plan.candidates.map((candidate) => candidate.candidatePath),
+      review_paths: plan.candidates.map((candidate) => candidate.reviewPath),
+      temperature_counts: plan.stats.temperature_counts,
+      category_counts: plan.stats.category_counts,
+      redaction_hits: plan.stats.redaction_hits,
+      next_step: "Review candidates with review_candidate before they can enter accepted memory.",
     });
   },
 );

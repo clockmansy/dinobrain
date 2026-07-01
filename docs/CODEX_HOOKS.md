@@ -56,7 +56,7 @@ If global `npm` is not available, use the portable Node runtime installed by `in
 
 ## What The Hook Stores
 
-The hook records bounded task and event data, not raw full conversation logs. It redacts obvious secret patterns such as OpenAI key shapes, API key assignments, token assignments, secret assignments, password assignments, and private-key blocks before calling DinoBrain MCP tools.
+The hook records bounded task and event data, not raw full conversation logs. It redacts obvious secret patterns such as OpenAI key shapes, GitHub token shapes, AWS access key shapes, bearer/JWT tokens, API key assignments, token assignments, secret assignments, password assignments, cookie assignments, and private-key blocks before calling DinoBrain MCP tools.
 
 It writes:
 

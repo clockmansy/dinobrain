@@ -36,13 +36,16 @@ npm install
 npm run build
 npm run check
 npm run smoke
+npm run session:verify
 npm run hook:verify
 npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
 ```
 
-`npm run smoke` starts the compiled MCP server through `StdioClientTransport`, lists tools, and calls each Phase 2 tool against a temporary data vault.
+`npm run smoke` starts the compiled MCP server through `StdioClientTransport`, lists tools, and calls the core MCP tools against a temporary data vault.
+
+`npm run session:verify` verifies the session import pipeline: redaction, local-only raw archives, hot/warm/cold candidates, retrieval exclusion, and git sync classification.
 
 `npm run verify:os` runs the stronger OS-level verification from `docs/VERIFICATION.md`. It checks the Codex MCP configuration and proves that an approved accepted instance can be retrieved by a later Context Pack, then excluded after quarantine.
 
@@ -118,6 +121,25 @@ The Context Pack trace records:
 Searches the same curated roots as `get_context_pack`.
 
 It uses the same persistent Wiki retrieval path, preferring SQLite shards, but may rank excerpt matches because `wiki_search` is an explicit narrow lookup tool.
+
+### `import_session`
+
+Imports a chat session as a redacted local-only source archive and extracts pending-review memory candidates.
+
+Creates:
+
+- `10_Conversations/raw/<session_id>.json`
+- `50_Instances/candidates/<candidate_id>.json`
+- `80_Review_Queue/promotion/<candidate_id>.json`
+- `.dino/events/<date>.jsonl`
+
+Important boundaries:
+
+- raw archives are cold and local-only
+- unredacted full transcripts are not stored
+- candidates are hot/warm/cold labeled but stay `pending_review`
+- events contain ids, paths, counts, and redaction summaries, not message text
+- `get_context_pack` and `wiki_search` exclude raw archives, candidates, and review queue items
 
 ### `git_sync`
 

@@ -34,22 +34,25 @@ Owns durable local knowledge:
 - review queue
 - error book
 - trace/event logs
+- redacted local-only session archives
 
 The app repo may read and write the data repo only through approved tools and policies.
 
-## Phase 2 Tool Boundary
+## MCP Tool Boundary
 
-The first MCP server skeleton will expose these tools:
+The MCP server exposes the approved write/read surface:
 
 - `start_task`
 - `finish_task`
 - `get_context_pack`
 - `wiki_search`
+- `import_session`
 - `git_sync` as dry-run only
+- `create_candidate_instance`
+- `review_candidate`
+- `quarantine_record`
 
-No other tools are approved until the plan is updated.
-
-The Phase 2 skeleton is implemented as a stdio MCP server in `src/index.ts`.
+The server is implemented as a stdio MCP server in `src/index.ts`.
 
 ## Write Boundary
 
@@ -92,6 +95,14 @@ SQLite shards are the preferred speed layer over the JSON manifests.
 
 The app writes `.dino/index/sqlite/wiki.sqlite`, `.dino/index/sqlite/operations.sqlite`, and `.dino/index/sqlite/manifest.json`. Runtime retrieval uses the SQLite shards first, then falls back to JSON indexes when shards are missing. See `docs/SQLITE_SHARDS.md`.
 
+## Session Ingest Boundary
+
+Sessions can be used as source material through `import_session`.
+
+The tool stores only redacted local-only archives under `10_Conversations/raw`, extracts review candidates under `50_Instances/candidates`, and writes promotion review records under `80_Review_Queue/promotion`.
+
+Raw archives, candidates, and review records are excluded from default retrieval. Only reviewed accepted instances can become normal Context Pack input. See `docs/SESSION_INGEST.md`.
+
 ## Trace Boundary
 
 Every context decision should eventually leave a trace record explaining:
@@ -112,6 +123,7 @@ The following are intentionally deferred:
 - external fact ingestion
 - automatic push without policy checks
 - vector search before keyword/frontmatter retrieval is proven
+- unredacted full transcript storage
 
 ## Phase 5 Promotion And Demotion Boundary
 

@@ -48,6 +48,7 @@ These data types are local-only unless the plan is explicitly changed:
 - API keys and access tokens
 - `.dino/secrets.json`
 - `.dino/local.json`
+- `10_Conversations/raw`
 
 ## `git_sync` MVP Behavior
 

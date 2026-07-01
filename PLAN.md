@@ -29,6 +29,7 @@ The core value is not storing notes. The core value is selecting the right memor
 4. Create promotion candidates from completed work.
 5. Show trace logs explaining why a memory was used.
 6. Classify safe data for git sync.
+7. Import chat sessions as safe source material and extract reviewable LLM Wiki candidates.
 
 ## Repository Roles
 
@@ -44,6 +45,7 @@ The core value is not storing notes. The core value is selecting the right memor
 ### `dinobrain-data`
 
 - `00_Home`
+- `10_Conversations`
 - `20_Wiki`
 - `30_Sources`
 - `40_Projects`
@@ -165,6 +167,26 @@ Later behavior:
 - Commit after manual approval.
 - Push after the commit policy is stable.
 
+## Phase 7: Session Ingest and LLM Wiki Growth
+
+Goal: Use user/agent sessions as the root source of knowledge without making the vault slow or unsafe.
+
+Initial behavior:
+
+- `import_session` stores redacted local-only session archives under `10_Conversations/raw`.
+- Raw full conversation logs are not stored in git.
+- The extractor creates pending candidates under `50_Instances/candidates`.
+- Each candidate has evidence, sensitivity, confidence, and hot/warm/cold temperature.
+- Review records are written under `80_Review_Queue/promotion`.
+- Raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`.
+
+Completion criteria:
+
+- Redaction happens inside the MCP tool boundary.
+- `git_sync` blocks raw session archives.
+- Candidates are never auto-promoted.
+- Reviewed accepted instances remain the only imported session knowledge that can enter default retrieval.
+
 ## Work Rules
 
 - Do not do work outside this plan.
@@ -180,4 +202,3 @@ Later behavior:
 3. Create the initial `dinobrain-data` vault structure.
 4. Add README and policy documents.
 5. Commit and push the initial repo state.
-

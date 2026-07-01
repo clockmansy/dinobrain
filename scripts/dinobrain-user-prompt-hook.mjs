@@ -110,7 +110,27 @@ function redactPrompt(prompt) {
     return "[REDACTED_OPENAI_KEY]";
   });
 
-  text = text.replace(/\b(api[_-]?key|secret|token|password)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
+  text = text.replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})\b/g, () => {
+    redactions.push("github_token_shape");
+    return "[REDACTED_GITHUB_TOKEN]";
+  });
+
+  text = text.replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, () => {
+    redactions.push("aws_access_key_shape");
+    return "[REDACTED_AWS_ACCESS_KEY]";
+  });
+
+  text = text.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, () => {
+    redactions.push("jwt_shape");
+    return "[REDACTED_JWT]";
+  });
+
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, () => {
+    redactions.push("bearer_token");
+    return "Bearer [REDACTED_TOKEN]";
+  });
+
+  text = text.replace(/\b(api[_-]?key|secret|token|password|session|sessionid|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
     redactions.push(`${String(key).toLowerCase()}_assignment`);
     return `${key}: [REDACTED]`;
   });

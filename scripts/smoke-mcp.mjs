@@ -126,6 +126,7 @@ try {
     "finish_task",
     "get_context_pack",
     "git_sync",
+    "import_session",
     "quarantine_record",
     "review_candidate",
     "start_task",

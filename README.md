@@ -54,6 +54,7 @@ The current verification focus is proving that the system behaves like a compoun
 - `docs/LLM_WIKI_GRAPH.md`
 - `docs/OPERATIONS_INDEX.md`
 - `docs/SQLITE_SHARDS.md`
+- `docs/SESSION_INGEST.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
@@ -94,6 +95,7 @@ Available tools:
 - `finish_task`
 - `get_context_pack`
 - `wiki_search`
+- `import_session`
 - `git_sync` as dry-run only
 - `create_candidate_instance`
 - `review_candidate`
@@ -115,6 +117,7 @@ npm run eval:context
 npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
+npm run session:verify
 npm run hook:verify
 npm run verify:os
 npm run index:sqlite
@@ -135,6 +138,8 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 `npm run index:operations` rebuilds the operational index at `.dino/index/operations-index.json`; recent-task retrieval and Observatory use that index to avoid sorting every historical task/trace/pack/event file. `npm run index:verify:operations` checks this against a synthetic 2,500+ record vault.
 
 `npm run index:sqlite` rebuilds SQLite shards at `.dino/index/sqlite/wiki.sqlite` and `.dino/index/sqlite/operations.sqlite`. When present, `wiki_search`, `get_context_pack`, recent task lookup, and Observatory use the SQLite shards before JSON fallbacks. `npm run index:verify:sqlite` checks routed SQLite retrieval.
+
+`npm run session:verify` proves that `import_session` stores only redacted local-only session excerpts, extracts hot/warm/cold review candidates, excludes unreviewed imports from retrieval, and keeps raw archives blocked from git sync.
 
 `npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 

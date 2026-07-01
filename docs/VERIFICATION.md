@@ -16,6 +16,7 @@ The verification target has two parts:
 npm run build
 npm run check
 npm run smoke
+npm run session:verify
 npm run eval:context
 npm run index:verify:sqlite
 npm run index:verify:operations
@@ -46,6 +47,7 @@ Then the script starts the configured MCP command and verifies that these tools 
 - `finish_task`
 - `get_context_pack`
 - `wiki_search`
+- `import_session`
 - `git_sync`
 - `create_candidate_instance`
 - `review_candidate`
@@ -113,6 +115,19 @@ It checks `git_sync` in the temporary vault:
 - classifies ordinary Wiki paths as syncable
 
 Live hook task records under `.dino/tasks` and `.dino/context-packs` are reported as operational noise in retrieval evaluation, but they are not counted against the curated-memory noise target. They are expected to grow as the user-level hook runs.
+
+### Session Ingest Safety
+
+`npm run session:verify` creates a temporary vault and imports a synthetic session through MCP.
+
+It verifies:
+
+- redaction happens inside the `import_session` tool boundary
+- raw archives are written under `10_Conversations/raw` with `raw_full_transcript_stored: false`
+- candidates stay in `pending_review`
+- hot/warm/cold labels are present
+- raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`
+- `git_sync` blocks raw archives and marks candidates/review records as conditional
 
 ### Index And Shard Verification
 

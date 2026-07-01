@@ -59,8 +59,10 @@ The verifier creates a synthetic vault with more than 1,200 Wiki records and 1,2
 - recent task lookup comes from SQLite
 - incremental task/event writes are visible without rebuilding the shard
 
-## Remaining Boundary
+## Session Growth Boundary
 
 This is still a local single-user SQLite layer.
 
-Later large-scale work should add hot/warm/cold partitioning by time or project, plus a raw session import pipeline that writes extracted candidates into reviewable records instead of pushing raw transcripts into retrieval.
+The first hot/warm/cold session growth layer is implemented by `import_session`; see `docs/SESSION_INGEST.md`.
+
+Large-scale follow-up work should shard accepted memories by project, time, and temperature, and then rebuild SQLite indexes from reviewed records. Raw session archives remain local-only and outside retrieval.

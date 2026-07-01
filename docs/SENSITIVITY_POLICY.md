@@ -80,3 +80,9 @@ Candidates require:
 - last verified date
 
 Candidates enter Review Queue before they can become accepted instances.
+
+## Session Import Rule
+
+Imported sessions are source material, not durable memory.
+
+`import_session` may store only metadata or bounded redacted excerpts under `10_Conversations/raw`. It must not store unredacted full transcripts. Extracted claims enter `50_Instances/candidates` and `80_Review_Queue/promotion`; they cannot enter default retrieval until manual review accepts them.
