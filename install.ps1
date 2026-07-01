@@ -316,9 +316,10 @@ function ConvertTo-Hashtable {
   if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
     return @($Value | ForEach-Object { ConvertTo-Hashtable $_ })
   }
-  if ($Value.PSObject -and $Value.PSObject.Properties.Count -gt 0 -and $Value.GetType().Name -eq "PSCustomObject") {
+  if ($Value.GetType().Name -eq "PSCustomObject") {
+    $properties = @($Value.PSObject.Properties)
     $result = [ordered]@{}
-    foreach ($property in $Value.PSObject.Properties) {
+    foreach ($property in $properties) {
       $result[$property.Name] = ConvertTo-Hashtable $property.Value
     }
     return $result
@@ -436,7 +437,7 @@ function Set-DinoBrainCodexUserHook {
 
   $groups = @()
   if ($config["hooks"].Contains("UserPromptSubmit") -and $null -ne $config["hooks"]["UserPromptSubmit"]) {
-    $groups = @($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) }
+    $groups = @(@($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) })
   }
 
   $command = New-DinoBrainCodexHookCommand -AppPath $AppPath -VaultPath $VaultPath
