@@ -72,6 +72,14 @@ The Standard Pack is assembled from narrow metadata and recent records:
 
 Deep Pack behavior is deferred until the core retrieval path is working.
 
+## LLM Wiki Graph Index
+
+The Obsidian-style graph goal is represented by a persistent Wiki index, not by visual graph layout alone.
+
+The v0 implementation writes `.dino/index/wiki-index.json` and uses it to narrow `get_context_pack` and `wiki_search` candidates before ranking. The index stores curated records, token-to-record mappings, graph nodes, graph edges, hot recent records, and cold records.
+
+This keeps the default prompt path from reading every curated Wiki/Project/Source/Instance file on every request. See `docs/LLM_WIKI_GRAPH.md`.
+
 ## Trace Boundary
 
 Every context decision should eventually leave a trace record explaining:

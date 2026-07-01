@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { getStandardPackItems } from "./context.js";
+import { getIndexedPackItems } from "./wiki-index.js";
 
 type GoldenCase = {
   id: string;
@@ -50,7 +50,7 @@ function isOperationalNoisePath(returnedPath: string): boolean {
 }
 
 async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMaxNoise: number): Promise<CaseResult> {
-  const { ranked } = await getStandardPackItems(dataRoot, goldenCase.question, packLimit);
+  const { ranked } = await getIndexedPackItems(dataRoot, goldenCase.question, packLimit);
   const returnedPaths = unique(ranked.map((record) => record.path));
   const expectedPaths = unique(goldenCase.expected_paths);
   const missingPaths = expectedPaths.filter((expectedPath) => !returnedPaths.includes(expectedPath));

@@ -8,13 +8,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import {
-  SEARCH_ROOTS,
-  STANDARD_RANKING_INPUTS,
-  collectCuratedRecords,
-  getStandardPackItems,
-  rankRecords,
-} from "./context.js";
+import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
+import { getIndexedPackItems, invalidateWikiIndex, queryIndexedWiki } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -355,7 +350,7 @@ server.registerTool(
     },
   },
   async ({ question, limit }) => {
-    const { records, ranked } = await getStandardPackItems(DATA_ROOT, question, limit);
+    const { records, ranked, stats } = await getIndexedPackItems(DATA_ROOT, question, limit);
     const packId = makePackId(question);
     const createdAt = nowIso();
     const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
@@ -379,8 +374,14 @@ server.registerTool(
       candidate_records_excluded: true,
       review_queue_excluded: true,
       scanned_record_count: records.length,
+      retrieval_mode: stats.retrieval_mode,
+      index_path: stats.index_path,
+      indexed_record_count: stats.index_record_count,
+      index_candidate_count: stats.candidate_record_count,
+      index_total_candidate_count: stats.total_candidate_count,
+      index_matching_terms: stats.matching_terms,
       included_item_count: items.length,
-      excluded_record_count: Math.max(0, records.length - ranked.length),
+      excluded_record_count: Math.max(0, stats.index_record_count + (stats.recent_task_count ?? 0) - ranked.length),
       items,
     };
     await writeJson(packPath, trace);
@@ -401,10 +402,16 @@ server.registerTool(
       event_log: `.dino/events/${dateStamp()}.jsonl`,
       ranking_inputs: trace.ranking_inputs,
       scanned_record_count: records.length,
+      retrieval_mode: stats.retrieval_mode,
+      index_path: stats.index_path,
+      indexed_record_count: stats.index_record_count,
+      index_candidate_count: stats.candidate_record_count,
+      index_total_candidate_count: stats.total_candidate_count,
       item_count: items.length,
       items,
       caveats: [
-        "Context Pack v0 uses keyword/frontmatter/recent-task matching only.",
+        "Context Pack v0 uses a persistent Wiki index for candidate selection.",
+        "Final Context Pack ranking still uses keyword/frontmatter/recent-task matching only.",
         "Candidate and review queue records are excluded from default packs.",
       ],
     });
@@ -422,11 +429,16 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const records = await collectCuratedRecords(DATA_ROOT);
-    const ranked = rankRecords(records, query, { includeExcerpt: true }).slice(0, limit);
+    const { ranked, stats } = await queryIndexedWiki(DATA_ROOT, query, limit);
     return jsonResult({
       ok: true,
       query,
+      retrieval_mode: stats.retrieval_mode,
+      index_path: stats.index_path,
+      indexed_record_count: stats.index_record_count,
+      candidate_record_count: stats.candidate_record_count,
+      total_candidate_count: stats.total_candidate_count,
+      matching_terms: stats.matching_terms,
       result_count: ranked.length,
       results: ranked,
     });
@@ -591,6 +603,7 @@ server.registerTool(
         accepted_at: reviewedAt,
         source_candidate_path: relDataPath(candidatePath),
       });
+      await invalidateWikiIndex(DATA_ROOT);
     }
 
     await writeJson(reviewPath, {
@@ -684,6 +697,7 @@ server.registerTool(
       target_path: targetPath,
       at: createdAt,
     });
+    await invalidateWikiIndex(DATA_ROOT);
 
     return jsonResult({
       ok: true,

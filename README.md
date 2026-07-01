@@ -51,6 +51,7 @@ The current verification focus is proving that the system behaves like a compoun
 - `docs/MCP_SERVER.md`
 - `docs/INSTALL.md`
 - `docs/FLOW_AUDIT.md`
+- `docs/LLM_WIKI_GRAPH.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
@@ -109,8 +110,10 @@ npm run flow:audit
 npm run check
 npm run smoke
 npm run eval:context
+npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run index:wiki
 npm run graph:vault
 npm run observatory
 ```
@@ -120,6 +123,8 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 `npm run verify:os` is the strongest local gate. It verifies the compounding loop, the Codex MCP configuration, and Claude Code registration when the installer configured it, as described in `docs/VERIFICATION.md`.
 
 `npm run graph:vault` writes a local Obsidian-style graph report to `reports/dinobrain-vault-graph.html` and `reports/dinobrain-vault-graph.svg`. It counts handwritten wikilinks separately from DinoBrain OS relationships such as folders, tags, golden evaluation cases, traces, review records, accepted instances, and quarantine targets.
+
+`npm run index:wiki` rebuilds the persistent LLM Wiki graph index at `.dino/index/wiki-index.json`; `get_context_pack` and `wiki_search` use that index to avoid full curated-vault scans on every request. `npm run index:verify` checks the indexed path against a synthetic 1,500+ record vault.
 
 `npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 

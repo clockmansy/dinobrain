@@ -1,0 +1,91 @@
+# LLM Wiki Graph Index
+
+Date: 2026-07-01
+Status: v0 implemented
+
+## Goal
+
+The DinoBrain Wiki should stay fast as session-derived knowledge grows.
+
+The raw source is the user's AI sessions, but raw sessions are not the working memory layer. The intended shape is:
+
+```text
+Codex/Claude sessions
+-> raw session archive
+-> extracted candidates
+-> reviewed Wiki/Project/Source/Instance records
+-> persistent graph index
+-> narrow Context Pack
+```
+
+## Obsidian Graph Lesson
+
+An Obsidian-style graph is useful because it gives the system stable nodes and edges:
+
+- records
+- folders
+- tags
+- kinds
+- wikilinks
+- hot and cold sets
+
+The graph alone does not guarantee speed. Speed comes from using the graph with an index so a query does not read every note on every prompt.
+
+## Current Implementation
+
+The v0 index is written to:
+
+```text
+.dino/index/wiki-index.json
+```
+
+It contains:
+
+- normalized curated records from `20_Wiki`, `30_Sources`, `40_Projects`, `50_Instances/accepted`, `60_Operations`, and `70_Error_Book`
+- an inverted index from token to record ids
+- graph nodes and edges for folders, tags, kinds, and wikilinks
+- a recent hot set and a cold record set
+
+`get_context_pack` and `wiki_search` now use this index for candidate selection.
+
+The final `get_context_pack` ranking still follows the narrow Phase 3 boundary:
+
+- file name
+- frontmatter
+- title
+- summary
+- tags
+- recent task records
+
+`wiki_search` may use excerpts because it is an explicit narrow lookup tool.
+
+## Refresh Rules
+
+If no index exists, DinoBrain builds it automatically on the next indexed query.
+
+The MCP server invalidates the index when it writes data that changes curated retrieval:
+
+- accepted instance approval
+- quarantine record creation
+
+Direct manual vault edits can be refreshed with:
+
+```powershell
+npm run build
+npm run index:wiki
+```
+
+## Verification
+
+The focused index verifier creates a synthetic vault with more than 1,500 records and proves that a rare query is resolved through a smaller candidate set:
+
+```powershell
+npm run build
+npm run index:verify
+```
+
+## Next Step
+
+The next performance boundary is operational data growth.
+
+Tasks, traces, context packs, and event logs still need manifest files or append-only SQLite so "latest task" and Observatory views do not sort every historical file forever.

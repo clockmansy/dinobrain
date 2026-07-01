@@ -37,6 +37,7 @@ npm run build
 npm run check
 npm run smoke
 npm run hook:verify
+npm run index:verify
 ```
 
 `npm run smoke` starts the compiled MCP server through `StdioClientTransport`, lists tools, and calls each Phase 2 tool against a temporary data vault.
@@ -44,6 +45,8 @@ npm run hook:verify
 `npm run verify:os` runs the stronger OS-level verification from `docs/VERIFICATION.md`. It checks the Codex MCP configuration and proves that an approved accepted instance can be retrieved by a later Context Pack, then excluded after quarantine.
 
 `npm run observatory` starts a local file-backed live view of DinoBrain events at `http://127.0.0.1:3847/`.
+
+`npm run index:wiki` rebuilds the persistent Wiki graph index in the configured data vault.
 
 ## Tools
 
@@ -87,6 +90,8 @@ Search roots:
 
 It excludes candidates and review queue records by default.
 
+It uses `.dino/index/wiki-index.json` for candidate selection. If the index is missing, DinoBrain rebuilds it before answering.
+
 Creates:
 
 - `.dino/context-packs/<pack_id>.json`
@@ -97,6 +102,7 @@ The Context Pack trace records:
 - question
 - ranking inputs
 - scanned record count
+- retrieval mode and index candidate counts
 - included items
 - why each item was included
 - excluded record count
@@ -104,6 +110,8 @@ The Context Pack trace records:
 ### `wiki_search`
 
 Searches the same curated roots as `get_context_pack`.
+
+It uses the same persistent Wiki graph index, but may rank excerpt matches because `wiki_search` is an explicit narrow lookup tool.
 
 ### `git_sync`
 
@@ -208,7 +216,14 @@ The default pack excludes:
 
 Accepted instance JSON records under `50_Instances/accepted` are indexed by default so reviewed task knowledge can reappear in later Context Packs.
 
-`wiki_search` may inspect body excerpts for interactive search, but `get_context_pack` keeps to the narrower Phase 3 ranking inputs.
+`wiki_search` may inspect body excerpts for interactive search, but `get_context_pack` keeps to the narrower Phase 3 ranking inputs. Both tools use the persistent Wiki graph index for candidate selection.
+
+Manual index refresh:
+
+```powershell
+npm run build
+npm run index:wiki
+```
 
 ## Phase 4 Search Quality Evaluation
 
