@@ -96,6 +96,21 @@ function normalizeVaultPath(value: string): string {
   return normalized;
 }
 
+function normalizeVaultPaths(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => normalizeVaultPath(value)),
+    ),
+  );
+}
+
+function normalizeTextList(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
@@ -163,6 +178,10 @@ function traceEntryFromRecord(tracePath: string, trace: Record<string, unknown>)
     outcome: firstString(trace.outcome, "unknown"),
     summary: firstString(trace.summary),
     finished_at: firstString(trace.finished_at),
+    used_memory_paths: Array.isArray(trace.used_memory_paths) ? trace.used_memory_paths.map(String) : [],
+    context_pack_paths: Array.isArray(trace.context_pack_paths) ? trace.context_pack_paths.map(String) : [],
+    session_archive_paths: Array.isArray(trace.session_archive_paths) ? trace.session_archive_paths.map(String) : [],
+    candidate_paths: Array.isArray(trace.candidate_paths) ? trace.candidate_paths.map(String) : [],
   };
 }
 
@@ -388,9 +407,26 @@ server.registerTool(
       changed_files: z.array(z.string()).default([]),
       decisions: z.array(z.string()).default([]),
       next_steps: z.array(z.string()).default([]),
+      used_memory_paths: z.array(z.string()).default([]),
+      context_pack_paths: z.array(z.string()).default([]),
+      session_archive_paths: z.array(z.string()).default([]),
+      candidate_paths: z.array(z.string()).default([]),
+      search_queries: z.array(z.string()).default([]),
     },
   },
-  async ({ task_id, summary, outcome, changed_files, decisions, next_steps }) => {
+  async ({
+    task_id,
+    summary,
+    outcome,
+    changed_files,
+    decisions,
+    next_steps,
+    used_memory_paths,
+    context_pack_paths,
+    session_archive_paths,
+    candidate_paths,
+    search_queries,
+  }) => {
     const taskPath = dataPath(".dino", "tasks", `${safeSlug(task_id)}.json`);
     const existing = (await readJson<Record<string, unknown>>(taskPath)) ?? {
       task_id,
@@ -398,6 +434,11 @@ server.registerTool(
       created_at: null,
     };
     const finishedAt = nowIso();
+    const normalizedUsedMemoryPaths = normalizeVaultPaths(used_memory_paths);
+    const normalizedContextPackPaths = normalizeVaultPaths(context_pack_paths);
+    const normalizedSessionArchivePaths = normalizeVaultPaths(session_archive_paths);
+    const normalizedCandidatePaths = normalizeVaultPaths(candidate_paths);
+    const normalizedSearchQueries = normalizeTextList(search_queries);
     const trace = {
       task_id,
       outcome,
@@ -405,6 +446,18 @@ server.registerTool(
       changed_files,
       decisions,
       next_steps,
+      used_memory_paths: normalizedUsedMemoryPaths,
+      context_pack_paths: normalizedContextPackPaths,
+      session_archive_paths: normalizedSessionArchivePaths,
+      candidate_paths: normalizedCandidatePaths,
+      search_queries: normalizedSearchQueries,
+      memory_use: {
+        used_memory_count: normalizedUsedMemoryPaths.length,
+        context_pack_count: normalizedContextPackPaths.length,
+        session_archive_count: normalizedSessionArchivePaths.length,
+        candidate_count: normalizedCandidatePaths.length,
+        search_query_count: normalizedSearchQueries.length,
+      },
       finished_at: finishedAt,
     };
     const updated = {
@@ -429,6 +482,11 @@ server.registerTool(
       outcome,
       at: finishedAt,
       trace_path: relDataPath(tracePath),
+      used_memory_paths: normalizedUsedMemoryPaths,
+      context_pack_paths: normalizedContextPackPaths,
+      session_archive_paths: normalizedSessionArchivePaths,
+      candidate_paths: normalizedCandidatePaths,
+      search_query_count: normalizedSearchQueries.length,
     });
     return jsonResult({
       ok: true,

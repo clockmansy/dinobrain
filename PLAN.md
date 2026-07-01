@@ -180,6 +180,7 @@ Initial behavior:
 - Each candidate has evidence, sensitivity, confidence, and hot/warm/cold temperature.
 - Review records are written under `80_Review_Queue/promotion`.
 - Raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`.
+- `finish_task` records structured memory-use paths so later graph/index work can know which memories were actually used.
 
 Completion criteria:
 
@@ -187,6 +188,7 @@ Completion criteria:
 - `git_sync` blocks raw session archives.
 - Candidates are never auto-promoted.
 - Reviewed accepted instances remain the only imported session knowledge that can enter default retrieval.
+- Completed task traces preserve `used_memory_paths` and `context_pack_paths`.
 
 ## Work Rules
 

@@ -90,5 +90,5 @@ Environment variables:
 - Codex must trust the user-level hook before global preflight runs.
 - The current already-running session may not retroactively load this hook.
 - Automatic import currently sees the submitted user prompt, not the later assistant response.
-- The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work.
+- The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work, but the injected protocol now includes structured `context_pack_paths`, `used_memory_paths`, `session_archive_paths`, and `candidate_paths` values to preserve.
 - The Observatory shows file-backed events in near real time by polling; it is not a remote telemetry service.

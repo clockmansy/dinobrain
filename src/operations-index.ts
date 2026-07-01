@@ -31,6 +31,10 @@ export type OperationTraceEntry = {
   outcome: string;
   summary: string;
   finished_at: string;
+  used_memory_paths: string[];
+  context_pack_paths: string[];
+  session_archive_paths: string[];
+  candidate_paths: string[];
 };
 
 export type OperationContextPackEntry = {
@@ -116,6 +120,10 @@ function numericCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter((item) => item.trim().length > 0) : [];
+}
+
 async function readJson<T>(filePath: string): Promise<T | null> {
   try {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
@@ -161,6 +169,10 @@ function normalizeTraceEntry(dataRoot: string, filePath: string, trace: JsonObje
     outcome: firstString(trace.outcome, "unknown"),
     summary: firstString(trace.summary),
     finished_at: firstString(trace.finished_at),
+    used_memory_paths: stringArray(trace.used_memory_paths),
+    context_pack_paths: stringArray(trace.context_pack_paths),
+    session_archive_paths: stringArray(trace.session_archive_paths),
+    candidate_paths: stringArray(trace.candidate_paths),
   };
 }
 

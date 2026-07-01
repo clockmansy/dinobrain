@@ -154,6 +154,7 @@ async function verifyHook() {
   assert(additionalContext.includes("DinoBrain OS preflight completed"), "Hook did not inject preflight context.");
   assert(additionalContext.includes("Codex-Hook-Protocol.md"), "Hook did not include seeded memory.");
   assert(additionalContext.includes("session_import:"), "Hook did not report session import status.");
+  assert(additionalContext.includes("finish_task.used_memory_paths"), "Hook did not inject structured finish_task protocol.");
 
   const taskFiles = readdirSync(path.join(tempDataRoot, ".dino", "tasks")).filter((file) => file.endsWith(".json"));
   const packFiles = readdirSync(path.join(tempDataRoot, ".dino", "context-packs")).filter((file) => file.endsWith(".json"));

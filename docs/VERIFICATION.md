@@ -88,7 +88,7 @@ The script creates a temporary vault and calls the DinoBrain MCP server through 
 It verifies this sequence:
 
 1. `start_task` records a task.
-2. `finish_task` writes a trace.
+2. `finish_task` writes a trace with structured memory-use fields.
 3. `create_candidate_instance` creates an evidence-backed candidate.
 4. `review_candidate` approves it into `50_Instances/accepted`.
 5. `get_context_pack` retrieves that accepted instance for a later related question.

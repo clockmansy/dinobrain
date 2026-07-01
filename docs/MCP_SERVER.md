@@ -83,6 +83,12 @@ Purpose:
 
 - mark a task as completed, partial, or blocked
 - store a trace summary
+- store structured memory-use fields:
+  - `used_memory_paths`
+  - `context_pack_paths`
+  - `session_archive_paths`
+  - `candidate_paths`
+  - `search_queries`
 
 ### `get_context_pack`
 

@@ -375,18 +375,29 @@ async function auditFlow() {
           changed_files: ["scripts/audit-user-flow.mjs"],
           decisions: ["Context retrieval is verified; a Codex UserPromptSubmit hook now simulates automatic preflight."],
           next_steps: ["Trust the project hook in Codex so the live session can run it automatically."],
+          used_memory_paths: [...contextPaths, "20_Wiki/Rare-Search-Memory.md"],
+          context_pack_paths: [contextPack.trace_path],
+          search_queries: ["zeta-lattice-only"],
         },
       }),
     );
     const finishTrace = JSON.parse(readFileSync(path.join(tempDataRoot, finish.trace_path), "utf8"));
     assert(finishTrace.summary.includes(contextPack.trace_path), "finish_task trace did not preserve memory-use summary");
+    assert(
+      finishTrace.context_pack_paths?.includes(contextPack.trace_path),
+      "finish_task trace did not preserve structured context_pack_paths",
+    );
+    assert(
+      finishTrace.used_memory_paths?.includes("20_Wiki/Rare-Search-Memory.md"),
+      "finish_task trace did not preserve structured used_memory_paths",
+    );
     checks.push(
       status(
         6,
         "finish_task가 무엇을 했고 어떤 기억을 사용했으며 남은 일이 뭔지 기록한다.",
-        "partially_verified",
-        `Created ${finish.trace_path}; summary/decisions/next_steps are recorded.`,
-        "Used memories are only captured in free-text summary today. There is no structured used_memory_paths field.",
+        "verified",
+        `Created ${finish.trace_path}; summary/decisions/next_steps plus structured used_memory_paths/context_pack_paths are recorded.`,
+        null,
       ),
     );
 

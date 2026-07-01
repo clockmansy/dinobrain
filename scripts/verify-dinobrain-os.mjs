@@ -304,8 +304,15 @@ async function verifyCompoundingLoop() {
             changed_files: ["scripts/verify-dinobrain-os.mjs", "src/context.ts"],
             decisions: ["Accepted JSON instances must be indexed by Standard Context Packs."],
             next_steps: ["Use the accepted instance in the next Context Pack."],
+            used_memory_paths: ["20_Wiki/Compound-Base.md"],
+            search_queries: ["compound knowledge accepted instance"],
           },
         }),
+      );
+      const finishTrace = JSON.parse(readFileSync(path.join(tempDataRoot, finish.trace_path), "utf8"));
+      assert(
+        finishTrace.used_memory_paths?.includes("20_Wiki/Compound-Base.md"),
+        "finish_task did not preserve structured used_memory_paths",
       );
 
       const candidate = parseTool(

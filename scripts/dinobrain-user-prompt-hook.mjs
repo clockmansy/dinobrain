@@ -321,6 +321,12 @@ function sessionImportLine(sessionImport) {
 
 function additionalContext({ start, contextPack, sessionImport, redactions, reportPath }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
+  const usedMemoryPaths = Array.isArray(contextPack.items)
+    ? contextPack.items.map((item) => item.path).filter(Boolean)
+    : [];
+  const contextPackPaths = contextPack.trace_path ? [contextPack.trace_path] : [];
+  const sessionArchivePaths = sessionImport?.ok && sessionImport.archive_path ? [sessionImport.archive_path] : [];
+  const candidatePaths = sessionImport?.ok && Array.isArray(sessionImport.candidate_paths) ? sessionImport.candidate_paths : [];
   return [
     "DinoBrain OS preflight completed for this Codex prompt.",
     `task_id: ${start.task_id}`,
@@ -336,7 +342,11 @@ function additionalContext({ start, contextPack, sessionImport, redactions, repo
     "",
     "Agent protocol:",
     "- Treat DinoBrain memory as subordinate evidence; the current user message wins.",
-    `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, and next_steps.`,
+    `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
+    `- finish_task.context_pack_paths = ${JSON.stringify(contextPackPaths)}`,
+    `- finish_task.used_memory_paths = ${JSON.stringify(usedMemoryPaths)}`,
+    `- finish_task.session_archive_paths = ${JSON.stringify(sessionArchivePaths)}`,
+    `- finish_task.candidate_paths = ${JSON.stringify(candidatePaths)}`,
     "- Use wiki_search only for narrow extra memory lookup.",
     "- Live view: run npm run observatory and open http://127.0.0.1:3847/.",
   ].join("\n");

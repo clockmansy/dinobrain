@@ -40,6 +40,8 @@ The MCP server updates this index when it writes operational records:
 - `get_context_pack` upserts the Context Pack trace and appends a Context Pack event
 - candidate/review/quarantine actions append events
 
+Task traces preserve structured memory-use arrays such as `used_memory_paths` and `context_pack_paths` so later graph/index work can tell which memories were actually used.
+
 `collectRecentTaskRecords` reads this index first, then falls back to legacy directory scanning only if the index is missing.
 
 The preferred fast path is now the SQLite shard:

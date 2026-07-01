@@ -290,11 +290,22 @@ try {
         changed_files: ["src/index.ts", "scripts/smoke-mcp.mjs"],
         decisions: ["Use MCP SDK stdio transport for Phase 2."],
         next_steps: ["Wire the server into a real MCP client configuration."],
+        used_memory_paths: contextPack.items.map((item) => item.path),
+        context_pack_paths: [contextPack.trace_path],
+        candidate_paths: [candidate.candidate_path],
+        search_queries: ["MCP"],
       },
     }),
   );
   if (!existsSync(path.join(tempDataRoot, finish.trace_path))) {
     throw new Error(`Missing trace record: ${finish.trace_path}`);
+  }
+  const finishTrace = JSON.parse(readFileSync(path.join(tempDataRoot, finish.trace_path), "utf8"));
+  if (!finishTrace.context_pack_paths?.includes(contextPack.trace_path)) {
+    throw new Error("finish_task did not preserve structured context_pack_paths");
+  }
+  if (!finishTrace.used_memory_paths?.includes("20_Wiki/DinoBrain-MCP.md")) {
+    throw new Error("finish_task did not preserve structured used_memory_paths");
   }
 
   const gitSync = parseTool(
