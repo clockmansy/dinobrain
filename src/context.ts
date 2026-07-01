@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { collectRecentTaskRecordsFromIndex } from "./operations-index.js";
+
 type RecordValue = string | number | boolean | null | Record<string, unknown> | unknown[];
 
 export type RankedRecord = {
@@ -262,6 +264,9 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
 }
 
 export async function collectRecentTaskRecords(dataRoot: string, limit = 10): Promise<RankedRecord[]> {
+  const indexedRecords = await collectRecentTaskRecordsFromIndex(dataRoot, limit);
+  if (indexedRecords) return indexedRecords;
+
   const tasksDir = dataPath(dataRoot, ".dino", "tasks");
   let entries: Array<import("node:fs").Dirent>;
   try {

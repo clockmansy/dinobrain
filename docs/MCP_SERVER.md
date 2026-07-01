@@ -37,6 +37,7 @@ npm run build
 npm run check
 npm run smoke
 npm run hook:verify
+npm run index:verify:operations
 npm run index:verify
 ```
 
@@ -47,6 +48,8 @@ npm run index:verify
 `npm run observatory` starts a local file-backed live view of DinoBrain events at `http://127.0.0.1:3847/`.
 
 `npm run index:wiki` rebuilds the persistent Wiki graph index in the configured data vault.
+
+`npm run index:operations` rebuilds the operational manifest for tasks, traces, Context Packs, and events.
 
 ## Tools
 
@@ -223,6 +226,13 @@ Manual index refresh:
 ```powershell
 npm run build
 npm run index:wiki
+```
+
+Operational index refresh:
+
+```powershell
+npm run build
+npm run index:operations
 ```
 
 ## Phase 4 Search Quality Evaluation

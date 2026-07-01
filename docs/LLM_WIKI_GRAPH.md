@@ -84,8 +84,8 @@ npm run build
 npm run index:verify
 ```
 
-## Next Step
+## Related Operations Index
 
-The next performance boundary is operational data growth.
+The next performance boundary after curated Wiki retrieval is operational data growth.
 
-Tasks, traces, context packs, and event logs still need manifest files or append-only SQLite so "latest task" and Observatory views do not sort every historical file forever.
+Tasks, traces, context packs, and event logs use `.dino/index/operations-index.json` so "latest task" and Observatory views do not sort every historical file forever. See `docs/OPERATIONS_INDEX.md`.

@@ -34,6 +34,13 @@ async function readDirFiles(dir, extension) {
   }
 }
 
+async function readOperationIndex() {
+  const indexPath = path.join(dataRoot, ".dino", "index", "operations-index.json");
+  const index = await readJson(indexPath);
+  if (!index || index.version !== 1) return null;
+  return index;
+}
+
 async function readEvents(limit = 100) {
   const eventDir = path.join(dataRoot, ".dino", "events");
   const files = (await readDirFiles(eventDir, ".jsonl")).slice(-7);
@@ -81,7 +88,41 @@ function summarize(events, tasks, packs) {
   };
 }
 
+function summarizeIndex(index) {
+  const today = new Date().toISOString().slice(0, 10);
+  const events = Array.isArray(index.recent_events) ? index.recent_events : [];
+  const activeTasks = Array.isArray(index.active_tasks) ? index.active_tasks : [];
+  return {
+    data_root: dataRoot,
+    generated_at: new Date().toISOString(),
+    index_mode: "operations_index_v0",
+    index_generated_at: index.generated_at ?? null,
+    event_count: index.counts?.events ?? events.length,
+    task_count: index.counts?.tasks ?? 0,
+    context_pack_count: index.counts?.context_packs ?? 0,
+    today_event_count: events.filter((event) => String(event.at ?? "").startsWith(today)).length,
+    active_task_count: activeTasks.length,
+    last_event_at: events[0]?.at ?? null,
+  };
+}
+
+function withDisplayPath(record) {
+  return { ...record, _path: record._path ?? record.path };
+}
+
 async function state() {
+  const index = await readOperationIndex();
+  if (index) {
+    return {
+      ok: true,
+      summary: summarizeIndex(index),
+      events: (index.recent_events ?? []).slice(0, 100),
+      tasks: (index.recent_tasks ?? []).slice(0, 50).map(withDisplayPath),
+      context_packs: (index.recent_context_packs ?? []).slice(0, 50).map(withDisplayPath),
+      traces: (index.recent_traces ?? []).slice(0, 50).map(withDisplayPath),
+    };
+  }
+
   const [events, tasks, packs, traces] = await Promise.all([
     readEvents(),
     readJsonDir(".dino/tasks"),

@@ -80,6 +80,12 @@ The v0 implementation writes `.dino/index/wiki-index.json` and uses it to narrow
 
 This keeps the default prompt path from reading every curated Wiki/Project/Source/Instance file on every request. See `docs/LLM_WIKI_GRAPH.md`.
 
+## Operations Index
+
+Live OS records use `.dino/index/operations-index.json`.
+
+The MCP server updates this index when it writes tasks, traces, Context Packs, and events. Recent-task retrieval and Observatory state read this index before falling back to legacy directory scans. See `docs/OPERATIONS_INDEX.md`.
+
 ## Trace Boundary
 
 Every context decision should eventually leave a trace record explaining:

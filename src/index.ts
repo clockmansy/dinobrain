@@ -9,6 +9,12 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
+import {
+  appendOperationEvent,
+  upsertOperationContextPack,
+  upsertOperationTask,
+  upsertOperationTrace,
+} from "./operations-index.js";
 import { getIndexedPackItems, invalidateWikiIndex, queryIndexedWiki } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
@@ -98,6 +104,14 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 async function appendJsonLine(filePath: string, value: unknown): Promise<void> {
   await ensureDir(path.dirname(filePath));
   await fs.appendFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+async function appendEvent(value: Record<string, unknown>): Promise<string> {
+  const eventPath = dataPath(".dino", "events", `${dateStamp()}.jsonl`);
+  await appendJsonLine(eventPath, value);
+  const relativePath = relDataPath(eventPath);
+  await appendOperationEvent(DATA_ROOT, relativePath, value);
+  return relativePath;
 }
 
 function jsonResult(value: unknown): CallToolResult {
@@ -265,7 +279,8 @@ server.registerTool(
       sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
     };
     await writeJson(taskPath, record);
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await upsertOperationTask(DATA_ROOT, relDataPath(taskPath), record);
+    const eventLog = await appendEvent({
       event: "task_started",
       task_id: taskId,
       at: record.created_at,
@@ -275,7 +290,7 @@ server.registerTool(
       ok: true,
       task_id: taskId,
       task_path: relDataPath(taskPath),
-      event_log: `.dino/events/${dateStamp()}.jsonl`,
+      event_log: eventLog,
       record,
     });
   },
@@ -322,7 +337,9 @@ server.registerTool(
     const tracePath = dataPath(".dino", "traces", `${safeSlug(task_id)}.json`);
     await writeJson(taskPath, updated);
     await writeJson(tracePath, trace);
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await upsertOperationTask(DATA_ROOT, relDataPath(taskPath), updated);
+    await upsertOperationTrace(DATA_ROOT, relDataPath(tracePath), trace);
+    const eventLog = await appendEvent({
       event: "task_finished",
       task_id,
       outcome,
@@ -334,7 +351,7 @@ server.registerTool(
       task_id,
       task_path: relDataPath(taskPath),
       trace_path: relDataPath(tracePath),
-      event_log: `.dino/events/${dateStamp()}.jsonl`,
+      event_log: eventLog,
     });
   },
 );
@@ -385,7 +402,8 @@ server.registerTool(
       items,
     };
     await writeJson(packPath, trace);
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await upsertOperationContextPack(DATA_ROOT, relDataPath(packPath), trace);
+    const eventLog = await appendEvent({
       event: "context_pack_created",
       pack_id: packId,
       at: createdAt,
@@ -399,7 +417,7 @@ server.registerTool(
       question,
       data_root: DATA_ROOT,
       trace_path: relDataPath(packPath),
-      event_log: `.dino/events/${dateStamp()}.jsonl`,
+      event_log: eventLog,
       ranking_inputs: trace.ranking_inputs,
       scanned_record_count: records.length,
       retrieval_mode: stats.retrieval_mode,
@@ -507,7 +525,7 @@ server.registerTool(
     };
     await writeJson(candidatePath, candidate);
     await writeJson(reviewPath, review);
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await appendEvent({
       event: "candidate_instance_created",
       candidate_id: candidateId,
       at: createdAt,
@@ -618,7 +636,7 @@ server.registerTool(
       reviewed_at: reviewedAt,
       updated_at: reviewedAt,
     });
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await appendEvent({
       event: "candidate_instance_reviewed",
       candidate_id: candidateId,
       decision,
@@ -691,7 +709,7 @@ server.registerTool(
       created_at: createdAt,
       updated_at: createdAt,
     });
-    await appendJsonLine(dataPath(".dino", "events", `${dateStamp()}.jsonl`), {
+    await appendEvent({
       event: "record_quarantined",
       quarantine_id: quarantineId,
       target_path: targetPath,
