@@ -132,7 +132,13 @@ C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
 
 Because this is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
 
-9. Registers DinoBrain in Claude Code when `claude` is available:
+9. Runs a Codex hook handshake.
+
+The installer immediately simulates a `UserPromptSubmit` event through the same PowerShell hook wrapper that Codex will call. This proves the installed hook can start DinoBrain preflight, use the portable Node runtime, reach the data vault, and return `hookSpecificOutput.additionalContext` without requiring a manual first hook run. The handshake is tagged as `dinobrain-installer` and disables session import so it does not create review candidates from the synthetic prompt.
+
+This handshake does not bypass Codex hook trust. If Codex was already running while the installer wrote `hooks.json`, restart or reload Codex and approve the DinoBrain hook if prompted.
+
+10. Registers DinoBrain in Claude Code when `claude` is available:
 
 ```powershell
 claude mcp add `
@@ -143,14 +149,14 @@ claude mcp add `
   -- C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64\node.exe C:\Users\<you>\Documents\dinobrain\dist\index.js
 ```
 
-10. Runs `npm run verify:os`.
-11. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
+11. Runs `npm run verify:os`.
+12. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
 
-`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
+`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 
 The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
 
-Codex requires you to review and trust hooks before they run in a live session. After install, restart or reload Codex and approve the DinoBrain hook when prompted.
+Codex requires you to review and trust hooks before they run in a live session. After install, restart or reload Codex and approve the DinoBrain hook when prompted. Once trusted, you should not need to manually force a first DinoBrain hook run; the installer already exercised the wrapper path.
 
 ## Custom Paths
 

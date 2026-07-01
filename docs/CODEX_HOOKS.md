@@ -39,9 +39,9 @@ flowchart LR
 - `scripts/dinobrain-observatory.mjs`
 - `AGENTS.md`
 
-The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. The repo also keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
+The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. It also runs an installed-hook handshake by simulating one `UserPromptSubmit` event through the same PowerShell wrapper Codex will call. The repo keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
 
-Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks.
+Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake proves the hook command works, but it cannot bypass Codex's trust prompt.
 
 If both the user-level hook and project hook are trusted, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
 
@@ -91,7 +91,7 @@ Environment variables:
 
 - Codex must trust project hooks before the hook runs.
 - Codex must trust the user-level hook before global preflight runs.
-- The current already-running session may not retroactively load this hook.
+- The current already-running session may not retroactively load this hook, although the installer now verifies the wrapper path with a synthetic prompt.
 - Automatic import currently sees the submitted user prompt, not the later assistant response.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work, but the injected protocol now includes structured `context_pack_paths`, `used_memory_paths`, `session_archive_paths`, and `candidate_paths` values to preserve.
 - After `finish_task`, `audit_memory_use` can create a short trust log that Observatory displays as the latest memory audit.

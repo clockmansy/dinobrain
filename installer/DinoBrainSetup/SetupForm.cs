@@ -399,7 +399,8 @@ internal sealed class SetupForm : Form
                 _statusLabel.Text = "Install complete";
                 AppendLog("");
                 AppendLog("DinoBrain install complete.");
-                AppendLog("Restart Codex, then trust the DinoBrain hook if Codex asks.");
+                AppendLog("Codex hook handshake was verified during install.");
+                AppendLog("If Codex was already running, restart it once and trust the DinoBrain hook if Codex asks.");
                 _openFolderButton.Enabled = Directory.Exists(_installedAppPath);
                 _openObservatoryButton.Enabled = Directory.Exists(_installedAppPath);
             }

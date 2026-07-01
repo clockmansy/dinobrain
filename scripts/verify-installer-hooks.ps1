@@ -70,6 +70,40 @@ try {
     }
   }
 
+  $handshakeApp = Join-Path $temp "handshake-app"
+  $handshakeScripts = Join-Path $handshakeApp "scripts"
+  $handshakeData = Join-Path $temp "handshake-data"
+  $fakeNode = Join-Path $temp "node.exe"
+  New-Item -ItemType Directory -Force -Path $handshakeScripts, $handshakeData | Out-Null
+  New-Item -ItemType File -Force -Path $fakeNode | Out-Null
+  $fakeHook = @'
+$ErrorActionPreference = "Stop"
+$inputText = [Console]::In.ReadToEnd()
+if ($inputText -notmatch "DinoBrain installer hook handshake") {
+  throw "missing installer handshake prompt"
+}
+if ([string]::IsNullOrWhiteSpace($env:DINOBRAIN_DATA_DIR)) {
+  throw "missing DINOBRAIN_DATA_DIR"
+}
+if ([string]::IsNullOrWhiteSpace($env:DINOBRAIN_NODE_EXE)) {
+  throw "missing DINOBRAIN_NODE_EXE"
+}
+if ($env:DINOBRAIN_HOOK_PROJECT -ne "dinobrain-installer") {
+  throw "missing installer hook project"
+}
+if ($env:DINOBRAIN_HOOK_IMPORT_SESSION -ne "0") {
+  throw "installer handshake should disable session import"
+}
+@{
+  hookSpecificOutput = @{
+    hookEventName = "UserPromptSubmit"
+    additionalContext = "DinoBrain OS preflight completed for this Codex prompt.`nhook_report: reports/live-hooks/installer-handshake.json"
+  }
+} | ConvertTo-Json -Depth 8 -Compress
+'@
+  [System.IO.File]::WriteAllText((Join-Path $handshakeScripts "dinobrain-user-prompt-hook.ps1"), $fakeHook, [System.Text.UTF8Encoding]::new($false))
+  Invoke-DinoBrainCodexHookHandshake -AppPath $handshakeApp -VaultPath $handshakeData -NodeExe $fakeNode
+
   Write-Host "installer hook verification ok"
 } finally {
   Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue

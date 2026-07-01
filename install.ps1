@@ -465,6 +465,80 @@ function Set-DinoBrainCodexUserHook {
   Write-Host "Codex user hook registered: $HooksPath"
 }
 
+function ConvertTo-NativeQuotedArgument {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  return '"' + ($Value -replace '"', '\"') + '"'
+}
+
+function Invoke-DinoBrainCodexHookHandshake {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeExe
+  )
+
+  $hookScript = Join-Path $AppPath "scripts\dinobrain-user-prompt-hook.ps1"
+  if (-not (Test-Path -LiteralPath $hookScript)) {
+    throw "Codex user hook script not found for handshake: $hookScript"
+  }
+
+  $payload = [ordered]@{
+    hookEventName = "UserPromptSubmit"
+    prompt = "DinoBrain installer hook handshake. Confirm the user-level Codex hook can run DinoBrain preflight without a manual first hook."
+    cwd = $AppPath
+  } | ConvertTo-Json -Depth 8 -Compress
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $processInfo.FileName = "powershell.exe"
+  $processInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File " + (ConvertTo-NativeQuotedArgument $hookScript)
+  $processInfo.WorkingDirectory = $AppPath
+  $processInfo.UseShellExecute = $false
+  $processInfo.RedirectStandardInput = $true
+  $processInfo.RedirectStandardOutput = $true
+  $processInfo.RedirectStandardError = $true
+  $processInfo.CreateNoWindow = $true
+  try { $processInfo.StandardInputEncoding = $utf8NoBom } catch {}
+  try { $processInfo.StandardOutputEncoding = $utf8NoBom } catch {}
+  try { $processInfo.StandardErrorEncoding = $utf8NoBom } catch {}
+  $processInfo.EnvironmentVariables["DINOBRAIN_DATA_DIR"] = $VaultPath
+  $processInfo.EnvironmentVariables["DINOBRAIN_NODE_EXE"] = $NodeExe
+  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_PROJECT"] = "dinobrain-installer"
+  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_IMPORT_SESSION"] = "0"
+  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_CONTEXT_LIMIT"] = "3"
+
+  Write-Host ">> powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hookScript"
+  $process = [System.Diagnostics.Process]::Start($processInfo)
+  $process.StandardInput.Write($payload)
+  $process.StandardInput.Close()
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+
+  if ($process.ExitCode -ne 0) {
+    throw "Codex user hook handshake failed with exit code $($process.ExitCode): $stderr"
+  }
+  if ([string]::IsNullOrWhiteSpace($stdout)) {
+    throw "Codex user hook handshake produced no output."
+  }
+
+  try {
+    $hookOutput = $stdout | ConvertFrom-Json
+  } catch {
+    throw "Codex user hook handshake returned invalid JSON: $($_.Exception.Message)"
+  }
+
+  $additionalContext = [string]$hookOutput.hookSpecificOutput.additionalContext
+  if ($hookOutput.hookSpecificOutput.hookEventName -ne "UserPromptSubmit" -or $additionalContext -notmatch "DinoBrain OS preflight completed") {
+    throw "Codex user hook handshake did not complete DinoBrain preflight: $additionalContext"
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+    Write-Warning "Codex user hook handshake stderr: $stderr"
+  }
+  Write-Host "Codex user hook handshake verified."
+}
+
 function New-DinoBrainObservatoryLauncher {
   param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
@@ -639,6 +713,7 @@ if (-not $SkipCodexConfig) {
 
 if (-not $SkipCodexHookConfig) {
   Set-DinoBrainCodexUserHook -HooksPath $CodexHooksPath -AppPath $AppDir -VaultPath $DataDir
+  Invoke-DinoBrainCodexHookHandshake -AppPath $AppDir -VaultPath $DataDir -NodeExe $nodeExe
 }
 
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
