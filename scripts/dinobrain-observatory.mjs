@@ -95,14 +95,14 @@ async function readSqliteOperations() {
 
 function graphColor(node) {
   const colors = {
-    root: "#6aa9ff",
-    folder: "#50d890",
-    tag: "#2dd4bf",
-    kind: "#f2bc57",
-    record: "#b394ff",
-    wikilink: "#91a1b4",
+    root: "#f0a83a",
+    folder: "#4fb6a4",
+    tag: "#7cc66a",
+    kind: "#d7a84f",
+    record: "#e6dcc2",
+    wikilink: "#8f9488",
   };
-  return colors[node.type] ?? "#c5d5e8";
+  return colors[node.type] ?? "#cfc4a6";
 }
 
 function normalizeGraphNode(node) {
@@ -391,21 +391,26 @@ function html() {
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b0f14;
-      --panel: #111820;
-      --line: #223041;
-      --text: #e7eef7;
-      --muted: #91a1b4;
-      --blue: #6aa9ff;
-      --green: #50d890;
-      --amber: #f2bc57;
-      --red: #ff6b6b;
-      --violet: #b394ff;
+      --bg: #0b0d0b;
+      --panel: #121611;
+      --panel-2: #171c15;
+      --line: #2d382d;
+      --text: #eee6d2;
+      --muted: #a49c87;
+      --bone: #e6dcc2;
+      --amber: #d99a3d;
+      --fern: #7cc66a;
+      --basalt: #4fb6a4;
+      --clay: #c76f47;
+      --red: #df6b55;
+      --violet: #b99a69;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, rgba(217, 154, 61, .04), transparent 36%),
+        var(--bg);
       color: var(--text);
       font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
       letter-spacing: 0;
@@ -417,7 +422,9 @@ function html() {
       gap: 16px;
       padding: 14px 18px;
       border-bottom: 1px solid var(--line);
-      background: #0d131a;
+      background:
+        linear-gradient(90deg, rgba(217, 154, 61, .08), rgba(79, 182, 164, .05) 48%, rgba(124, 198, 106, .05)),
+        #0d110d;
       position: sticky;
       top: 0;
       z-index: 5;
@@ -428,7 +435,7 @@ function html() {
       font-weight: 700;
     }
     code {
-      color: #c5d5e8;
+      color: #d8cdae;
       font-family: "Cascadia Mono", Consolas, monospace;
       font-size: 12px;
       word-break: break-all;
@@ -438,7 +445,7 @@ function html() {
       grid-template-columns: minmax(360px, 1.25fr) minmax(320px, 0.75fr);
       gap: 1px;
       min-height: calc(100vh - 57px);
-      background: var(--line);
+      background: #283226;
     }
     section {
       background: var(--bg);
@@ -454,7 +461,9 @@ function html() {
     .stat {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(238, 230, 210, .03), transparent),
+        var(--panel);
       padding: 10px;
       min-height: 64px;
     }
@@ -480,20 +489,25 @@ function html() {
       width: 9px;
       height: 9px;
       border-radius: 50%;
-      background: var(--green);
+      background: var(--fern);
       display: inline-block;
-      box-shadow: 0 0 16px rgba(80, 216, 144, .45);
+      box-shadow: 0 0 16px rgba(124, 198, 106, .45);
     }
     .timeline {
       display: grid;
       gap: 10px;
     }
     .graph-panel {
-      border: 1px solid var(--line);
+      border: 1px solid #3b452f;
       border-radius: 8px;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(217, 154, 61, .08), transparent 42%),
+        var(--panel-2);
       overflow: hidden;
       margin-bottom: 18px;
+      box-shadow:
+        inset 0 1px 0 rgba(238, 230, 210, .06),
+        0 14px 34px rgba(0, 0, 0, .22);
     }
     .graph-head {
       display: flex;
@@ -501,7 +515,9 @@ function html() {
       justify-content: space-between;
       gap: 12px;
       padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
+      border-bottom: 1px solid #35422d;
+      background:
+        linear-gradient(90deg, rgba(230, 220, 194, .05), rgba(217, 154, 61, .08) 45%, rgba(79, 182, 164, .04));
     }
     .graph-head h2 {
       margin: 0;
@@ -515,13 +531,30 @@ function html() {
       font-size: 12px;
       white-space: nowrap;
     }
+    .graph-legend {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .legend-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      border: 1px solid rgba(238, 230, 210, .28);
+      display: inline-block;
+    }
     #graph-search {
       width: min(220px, 34vw);
       min-width: 120px;
       height: 28px;
-      border: 1px solid var(--line);
+      border: 1px solid #3b452f;
       border-radius: 6px;
-      background: #0b1118;
+      background: #0c110d;
       color: var(--text);
       padding: 4px 8px;
       font: inherit;
@@ -530,12 +563,18 @@ function html() {
       position: relative;
       height: clamp(300px, 43vh, 520px);
       min-height: 300px;
+      background:
+        linear-gradient(0deg, rgba(230, 220, 194, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(230, 220, 194, .025) 1px, transparent 1px),
+        repeating-linear-gradient(176deg, rgba(217, 154, 61, .055) 0 2px, transparent 2px 34px),
+        linear-gradient(180deg, #090d0a 0%, #10160f 48%, #0b0e0b 100%);
+      background-size: 42px 42px, 42px 42px, auto, auto;
     }
     #wiki-graph {
       display: block;
       width: 100%;
       height: 100%;
-      background: #080c11;
+      background: transparent;
     }
     #graph-focus {
       position: absolute;
@@ -543,11 +582,12 @@ function html() {
       right: 12px;
       bottom: 10px;
       pointer-events: none;
-      color: var(--muted);
+      color: #d8cdae;
       font-size: 12px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, .75);
     }
     .event {
       display: grid;
@@ -556,7 +596,9 @@ function html() {
       padding: 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(230, 220, 194, .025), transparent),
+        var(--panel);
     }
     .event time {
       color: var(--muted);
@@ -578,11 +620,11 @@ function html() {
       color: var(--muted);
       font-size: 12px;
     }
-    .task_started .badge { color: var(--green); border-color: rgba(80, 216, 144, .45); }
-    .context_pack_created .badge { color: var(--blue); border-color: rgba(106, 169, 255, .45); }
-    .task_finished .badge { color: var(--violet); border-color: rgba(179, 148, 255, .45); }
-    .memory_use_audited .badge { color: var(--amber); border-color: rgba(242, 188, 87, .45); }
-    .codex_preflight_failed .badge { color: var(--red); border-color: rgba(255, 107, 107, .45); }
+    .task_started .badge { color: var(--fern); border-color: rgba(124, 198, 106, .45); }
+    .context_pack_created .badge { color: var(--basalt); border-color: rgba(79, 182, 164, .45); }
+    .task_finished .badge { color: var(--violet); border-color: rgba(185, 154, 105, .48); }
+    .memory_use_audited .badge { color: var(--amber); border-color: rgba(217, 154, 61, .5); }
+    .codex_preflight_failed .badge { color: var(--red); border-color: rgba(223, 107, 85, .48); }
     .details {
       display: grid;
       gap: 12px;
@@ -590,7 +632,9 @@ function html() {
     .block {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(238, 230, 210, .025), transparent),
+        var(--panel);
       padding: 12px;
       min-width: 0;
     }
@@ -627,6 +671,8 @@ function html() {
       header { align-items: flex-start; flex-direction: column; }
       .toolbar { white-space: normal; }
       .graph-head { align-items: flex-start; flex-direction: column; }
+      .graph-meta { align-items: flex-start; flex-direction: column; white-space: normal; width: 100%; }
+      .graph-legend { flex-wrap: wrap; }
       #graph-search { width: 100%; }
     }
   </style>
@@ -647,8 +693,17 @@ function html() {
       </div>
       <div class="graph-panel">
         <div class="graph-head">
-          <h2>LLM Wiki Graph</h2>
-          <div class="graph-meta"><span id="graph-stats">0 nodes / 0 edges</span><input id="graph-search" placeholder="Search"></div>
+          <h2>DinoBrain Fossil Graph</h2>
+          <div class="graph-meta">
+            <span id="graph-stats">0 nodes / 0 edges</span>
+            <span class="graph-legend">
+              <span class="legend-chip"><span class="legend-dot" style="background:#e6dcc2"></span>record</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#4fb6a4"></span>folder</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#7cc66a"></span>tag</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#d99a3d"></span>core</span>
+            </span>
+            <input id="graph-search" placeholder="Search">
+          </div>
         </div>
         <div class="graph-wrap">
           <canvas id="wiki-graph"></canvas>
@@ -721,12 +776,34 @@ function html() {
       return { width, height, dpr };
     }
     function graphRadius(node) {
-      if (node.type === "root") return 8;
-      if (node.type === "folder") return 6.5;
-      if (node.type === "tag") return 5.8;
-      if (node.type === "kind") return 5.4;
-      if (node.type === "record") return 4.8;
+      if (node.type === "root") return 9.5;
+      if (node.type === "folder") return 6.8;
+      if (node.type === "tag") return 5.9;
+      if (node.type === "kind") return 5.7;
+      if (node.type === "record") return 5.1;
       return 4.2;
+    }
+    function graphNodeStroke(node, active) {
+      if (active) return "rgba(238, 230, 210, .98)";
+      if (node.type === "record") return "rgba(84, 70, 44, .9)";
+      if (node.type === "root") return "rgba(245, 188, 91, .95)";
+      if (node.type === "tag") return "rgba(138, 216, 119, .78)";
+      if (node.type === "folder") return "rgba(101, 212, 192, .78)";
+      if (node.type === "kind") return "rgba(217, 154, 61, .78)";
+      return "rgba(230, 220, 194, .38)";
+    }
+    function graphEdgeStyle(edge, active) {
+      if (active) {
+        return {
+          color: edge.type === "has_tag" ? "rgba(124, 198, 106, .82)" : "rgba(217, 154, 61, .86)",
+          width: 1.65,
+          bead: true,
+        };
+      }
+      if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .28)", width: 1.15, bead: true };
+      if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .20)", width: 1, bead: false };
+      if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .18)", width: 1, bead: false };
+      return { color: "rgba(190, 154, 91, .17)", width: 1, bead: false };
     }
     function matchesGraphSearch(node) {
       if (!graphSearch) return false;
@@ -808,32 +885,85 @@ function html() {
     function drawGraph() {
       const size = graphSize();
       graphCtx.clearRect(0, 0, size.width, size.height);
-      graphCtx.lineWidth = Math.max(1, size.dpr);
       let focus = null;
+      const labelBoxes = [];
       for (const edge of graphEdges) {
         const a = edge.sourceNode;
         const b = edge.targetNode;
         const highlighted = matchesGraphSearch(a) || matchesGraphSearch(b);
-        graphCtx.strokeStyle = highlighted ? "rgba(106,169,255,.75)" : "rgba(145,161,180,.18)";
+        const style = graphEdgeStyle(edge, highlighted);
+        graphCtx.lineWidth = Math.max(1, style.width * size.dpr);
+        graphCtx.strokeStyle = style.color;
         graphCtx.beginPath();
         graphCtx.moveTo(a.x, a.y);
         graphCtx.lineTo(b.x, b.y);
         graphCtx.stroke();
+        if (style.bead) {
+          const midX = (a.x + b.x) / 2;
+          const midY = (a.y + b.y) / 2;
+          graphCtx.beginPath();
+          graphCtx.fillStyle = highlighted ? "rgba(238, 230, 210, .82)" : "rgba(230, 220, 194, .22)";
+          graphCtx.arc(midX, midY, highlighted ? 2.2 * size.dpr : 1.4 * size.dpr, 0, Math.PI * 2);
+          graphCtx.fill();
+        }
       }
       for (const node of graphNodes) {
         const highlighted = matchesGraphSearch(node);
         const hovered = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y) <= node.r + 5;
         if (hovered || highlighted) focus = node;
+        const active = highlighted || hovered;
+        const radius = active ? node.r + 2.4 : node.r;
+        if (active) {
+          graphCtx.beginPath();
+          graphCtx.fillStyle = node.type === "tag" ? "rgba(124, 198, 106, .14)" : "rgba(217, 154, 61, .16)";
+          graphCtx.arc(node.x, node.y, radius + 6 * size.dpr, 0, Math.PI * 2);
+          graphCtx.fill();
+        }
         graphCtx.beginPath();
         graphCtx.fillStyle = node.color || "#c5d5e8";
         graphCtx.globalAlpha = graphSearch && !highlighted && !hovered ? 0.35 : 0.95;
-        graphCtx.arc(node.x, node.y, highlighted || hovered ? node.r + 2.2 : node.r, 0, Math.PI * 2);
+        graphCtx.arc(node.x, node.y, radius, 0, Math.PI * 2);
         graphCtx.fill();
+        graphCtx.lineWidth = Math.max(1, (node.type === "root" ? 2 : 1.25) * size.dpr);
+        graphCtx.strokeStyle = graphNodeStroke(node, active);
+        graphCtx.stroke();
+        if (node.type === "record" || node.type === "root") {
+          graphCtx.beginPath();
+          graphCtx.globalAlpha = graphSearch && !highlighted && !hovered ? 0.28 : 0.9;
+          graphCtx.strokeStyle = node.type === "root" ? "rgba(91, 55, 20, .68)" : "rgba(91, 78, 54, .54)";
+          graphCtx.lineWidth = Math.max(1, .8 * size.dpr);
+          graphCtx.arc(node.x, node.y, Math.max(2, radius * .52), 0, Math.PI * 2);
+          graphCtx.stroke();
+        }
+        if (node.type === "tag") {
+          graphCtx.beginPath();
+          graphCtx.fillStyle = "rgba(15, 31, 18, .55)";
+          graphCtx.arc(node.x + radius * .28, node.y - radius * .22, Math.max(1.3, radius * .24), 0, Math.PI * 2);
+          graphCtx.fill();
+        }
         graphCtx.globalAlpha = 1;
         if (highlighted || hovered || node.type === "root") {
-          graphCtx.fillStyle = "#e7eef7";
           graphCtx.font = Math.round(11 * size.dpr) + "px Segoe UI, sans-serif";
-          graphCtx.fillText(node.label.slice(0, 34), node.x + node.r + 5, node.y - node.r - 2);
+          const label = node.label.slice(0, 34);
+          const labelX = node.x + node.r + 5;
+          const labelY = node.y - node.r - 2;
+          const box = {
+            x: labelX - 5,
+            y: labelY - 15 * size.dpr,
+            width: graphCtx.measureText(label).width + 12,
+            height: 22 * size.dpr,
+          };
+          const overlaps = labelBoxes.some((other) =>
+            box.x < other.x + other.width &&
+            box.x + box.width > other.x &&
+            box.y < other.y + other.height &&
+            box.y + box.height > other.y
+          );
+          if (active || !overlaps) {
+            graphCtx.fillStyle = active ? "#fff1c2" : "#e6dcc2";
+            graphCtx.fillText(label, labelX, labelY);
+            labelBoxes.push(box);
+          }
         }
       }
       graphFocusEl.textContent = focus ? [focus.type, focus.path || focus.label].filter(Boolean).join(" / ") : "";
