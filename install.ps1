@@ -90,12 +90,15 @@ function Invoke-NativeCommandResult {
 
   Push-Location $WorkingDirectory
   try {
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     $output = & $FilePath @ArgumentList 2>&1
     return [pscustomobject]@{
       ExitCode = $LASTEXITCODE
       Output = ($output -join "`n")
     }
   } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
     Pop-Location
   }
 }
