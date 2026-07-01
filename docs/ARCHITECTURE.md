@@ -86,6 +86,12 @@ Live OS records use `.dino/index/operations-index.json`.
 
 The MCP server updates this index when it writes tasks, traces, Context Packs, and events. Recent-task retrieval and Observatory state read this index before falling back to legacy directory scans. See `docs/OPERATIONS_INDEX.md`.
 
+## SQLite Shards
+
+SQLite shards are the preferred speed layer over the JSON manifests.
+
+The app writes `.dino/index/sqlite/wiki.sqlite`, `.dino/index/sqlite/operations.sqlite`, and `.dino/index/sqlite/manifest.json`. Runtime retrieval uses the SQLite shards first, then falls back to JSON indexes when shards are missing. See `docs/SQLITE_SHARDS.md`.
+
 ## Trace Boundary
 
 Every context decision should eventually leave a trace record explaining:

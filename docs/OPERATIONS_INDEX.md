@@ -17,7 +17,7 @@ The Wiki graph index handles curated knowledge retrieval. The operations index h
 
 ## Current File
 
-The v0 operations index is written to:
+The JSON v0 operations index is written to:
 
 ```text
 .dino/index/operations-index.json
@@ -42,7 +42,13 @@ The MCP server updates this index when it writes operational records:
 
 `collectRecentTaskRecords` reads this index first, then falls back to legacy directory scanning only if the index is missing.
 
-The Observatory reads this index first, then falls back to legacy directory scanning only if the index is missing.
+The preferred fast path is now the SQLite shard:
+
+```text
+.dino/index/sqlite/operations.sqlite
+```
+
+The Observatory reads SQLite first, then the JSON operations index, then legacy directory scanning.
 
 ## Manual Refresh
 
@@ -50,7 +56,7 @@ Direct manual edits to `.dino/tasks`, `.dino/traces`, `.dino/context-packs`, or 
 
 ```powershell
 npm run build
-npm run index:operations
+npm run index:sqlite
 ```
 
 ## Verification
@@ -62,8 +68,15 @@ npm run build
 npm run index:verify:operations
 ```
 
+SQLite shard verification:
+
+```powershell
+npm run build
+npm run index:verify:sqlite
+```
+
 ## Remaining Boundary
 
-This is still a JSON manifest, not a database.
+The JSON manifest remains a compatibility fallback.
 
-It is a practical v0 speed layer, but the long-term target for very large session history is an append-only SQLite or log-structured store with separate hot, warm, and cold partitions.
+The SQLite shard is the practical v0 database layer. The long-term target for very large session history is additional hot, warm, and cold partitioning by time or project.

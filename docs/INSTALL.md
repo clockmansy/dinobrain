@@ -4,7 +4,7 @@ Date: 2026-07-01
 
 This document explains how to install DinoBrain on a Windows PC.
 
-The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes the Codex MCP config block, registers a Codex user-level `UserPromptSubmit` hook, registers Claude Code when its CLI is installed, and runs verification.
+The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes SQLite shards, refreshes the Codex MCP config block, registers a Codex user-level `UserPromptSubmit` hook, registers Claude Code when its CLI is installed, and runs verification.
 
 ## Prerequisites
 
@@ -50,7 +50,8 @@ C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64
 3. Downloads portable Node.js if missing.
 4. Runs `npm install`.
 5. Runs `npm run build`.
-6. Registers DinoBrain in Codex `config.toml`:
+6. Runs `npm run index:sqlite`.
+7. Registers DinoBrain in Codex `config.toml`:
 
 ```toml
 [mcp_servers.dinobrain]
@@ -62,7 +63,7 @@ startup_timeout_sec = 120
 DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
 ```
 
-7. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
+8. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
 
 This hook calls:
 
@@ -72,7 +73,7 @@ C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
 
 Because this is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
 
-8. Registers DinoBrain in Claude Code when `claude` is available:
+9. Registers DinoBrain in Claude Code when `claude` is available:
 
 ```powershell
 claude mcp add `
@@ -83,7 +84,7 @@ claude mcp add `
   -- C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64\node.exe C:\Users\<you>\Documents\dinobrain\dist\index.js
 ```
 
-9. Runs `npm run verify:os`.
+10. Runs `npm run verify:os`.
 
 `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
 

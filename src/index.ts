@@ -10,12 +10,24 @@ import { z } from "zod";
 
 import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
 import {
+  type OperationContextPackEntry,
+  type OperationEventEntry,
+  type OperationTaskEntry,
+  type OperationTraceEntry,
   appendOperationEvent,
   upsertOperationContextPack,
   upsertOperationTask,
   upsertOperationTrace,
 } from "./operations-index.js";
-import { getIndexedPackItems, invalidateWikiIndex, queryIndexedWiki } from "./wiki-index.js";
+import { getContextPackItems, searchWiki } from "./retrieval.js";
+import {
+  appendSqliteOperationEvent,
+  invalidateSqliteWikiShard,
+  upsertSqliteOperationContextPack,
+  upsertSqliteOperationTask,
+  upsertSqliteOperationTrace,
+} from "./sqlite-shards.js";
+import { invalidateWikiIndex } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -111,7 +123,68 @@ async function appendEvent(value: Record<string, unknown>): Promise<string> {
   await appendJsonLine(eventPath, value);
   const relativePath = relDataPath(eventPath);
   await appendOperationEvent(DATA_ROOT, relativePath, value);
+  await appendSqliteOperationEvent(DATA_ROOT, {
+    ...value,
+    event: typeof value.event === "string" ? value.event : "event",
+    at: typeof value.at === "string" ? value.at : null,
+    _path: relativePath,
+  } as OperationEventEntry);
   return relativePath;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return "";
+}
+
+function taskEntryFromRecord(taskPath: string, task: Record<string, unknown>): OperationTaskEntry {
+  const taskId = firstString(task.task_id, path.basename(taskPath, ".json"));
+  return {
+    path: taskPath,
+    task_id: taskId,
+    status: firstString(task.status, "unknown"),
+    request: firstString(task.request, taskId),
+    project: typeof task.project === "string" ? task.project : null,
+    sync_policy: typeof task.sync_policy === "string" ? task.sync_policy : null,
+    trace_path: typeof task.trace_path === "string" ? task.trace_path : null,
+    created_at: firstString(task.created_at),
+    updated_at: firstString(task.updated_at, task.finished_at, task.created_at),
+    finished_at: typeof task.finished_at === "string" ? task.finished_at : null,
+  };
+}
+
+function traceEntryFromRecord(tracePath: string, trace: Record<string, unknown>): OperationTraceEntry {
+  return {
+    path: tracePath,
+    task_id: firstString(trace.task_id, path.basename(tracePath, ".json")),
+    outcome: firstString(trace.outcome, "unknown"),
+    summary: firstString(trace.summary),
+    finished_at: firstString(trace.finished_at),
+  };
+}
+
+function contextPackEntryFromRecord(packPath: string, pack: Record<string, unknown>): OperationContextPackEntry {
+  const items = Array.isArray(pack.items) ? pack.items : [];
+  return {
+    path: packPath,
+    pack_id: firstString(pack.pack_id, path.basename(packPath, ".json")),
+    question: firstString(pack.question),
+    created_at: firstString(pack.created_at),
+    item_count: typeof pack.included_item_count === "number" ? pack.included_item_count : items.length,
+    retrieval_mode: typeof pack.retrieval_mode === "string" ? pack.retrieval_mode : null,
+    items: items
+      .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null && !Array.isArray(item))
+      .slice(0, 12)
+      .map((item) => ({
+        path: firstString(item.path),
+        kind: firstString(item.kind) || undefined,
+        title: firstString(item.title) || undefined,
+        summary: firstString(item.summary) || undefined,
+        score: typeof item.score === "number" ? item.score : undefined,
+      })),
+  };
 }
 
 function jsonResult(value: unknown): CallToolResult {
@@ -279,7 +352,9 @@ server.registerTool(
       sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
     };
     await writeJson(taskPath, record);
-    await upsertOperationTask(DATA_ROOT, relDataPath(taskPath), record);
+    const taskRelativePath = relDataPath(taskPath);
+    await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
+    await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
     const eventLog = await appendEvent({
       event: "task_started",
       task_id: taskId,
@@ -289,7 +364,7 @@ server.registerTool(
     return jsonResult({
       ok: true,
       task_id: taskId,
-      task_path: relDataPath(taskPath),
+      task_path: taskRelativePath,
       event_log: eventLog,
       record,
     });
@@ -337,8 +412,12 @@ server.registerTool(
     const tracePath = dataPath(".dino", "traces", `${safeSlug(task_id)}.json`);
     await writeJson(taskPath, updated);
     await writeJson(tracePath, trace);
-    await upsertOperationTask(DATA_ROOT, relDataPath(taskPath), updated);
-    await upsertOperationTrace(DATA_ROOT, relDataPath(tracePath), trace);
+    const taskRelativePath = relDataPath(taskPath);
+    const traceRelativePath = relDataPath(tracePath);
+    await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
+    await upsertOperationTrace(DATA_ROOT, traceRelativePath, trace);
+    await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
+    await upsertSqliteOperationTrace(DATA_ROOT, traceEntryFromRecord(traceRelativePath, trace));
     const eventLog = await appendEvent({
       event: "task_finished",
       task_id,
@@ -349,8 +428,8 @@ server.registerTool(
     return jsonResult({
       ok: true,
       task_id,
-      task_path: relDataPath(taskPath),
-      trace_path: relDataPath(tracePath),
+      task_path: taskRelativePath,
+      trace_path: traceRelativePath,
       event_log: eventLog,
     });
   },
@@ -367,7 +446,7 @@ server.registerTool(
     },
   },
   async ({ question, limit }) => {
-    const { records, ranked, stats } = await getIndexedPackItems(DATA_ROOT, question, limit);
+    const { records, ranked, stats } = await getContextPackItems(DATA_ROOT, question, limit);
     const packId = makePackId(question);
     const createdAt = nowIso();
     const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
@@ -402,12 +481,14 @@ server.registerTool(
       items,
     };
     await writeJson(packPath, trace);
-    await upsertOperationContextPack(DATA_ROOT, relDataPath(packPath), trace);
+    const packRelativePath = relDataPath(packPath);
+    await upsertOperationContextPack(DATA_ROOT, packRelativePath, trace);
+    await upsertSqliteOperationContextPack(DATA_ROOT, contextPackEntryFromRecord(packRelativePath, trace));
     const eventLog = await appendEvent({
       event: "context_pack_created",
       pack_id: packId,
       at: createdAt,
-      path: relDataPath(packPath),
+      path: packRelativePath,
       item_count: items.length,
     });
     return jsonResult({
@@ -416,7 +497,7 @@ server.registerTool(
       pack_type: "standard",
       question,
       data_root: DATA_ROOT,
-      trace_path: relDataPath(packPath),
+      trace_path: packRelativePath,
       event_log: eventLog,
       ranking_inputs: trace.ranking_inputs,
       scanned_record_count: records.length,
@@ -447,7 +528,7 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const { ranked, stats } = await queryIndexedWiki(DATA_ROOT, query, limit);
+    const { ranked, stats } = await searchWiki(DATA_ROOT, query, limit);
     return jsonResult({
       ok: true,
       query,
@@ -622,6 +703,7 @@ server.registerTool(
         source_candidate_path: relDataPath(candidatePath),
       });
       await invalidateWikiIndex(DATA_ROOT);
+      await invalidateSqliteWikiShard(DATA_ROOT);
     }
 
     await writeJson(reviewPath, {
@@ -716,6 +798,7 @@ server.registerTool(
       at: createdAt,
     });
     await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
 
     return jsonResult({
       ok: true,

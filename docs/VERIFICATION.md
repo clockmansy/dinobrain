@@ -17,6 +17,9 @@ npm run build
 npm run check
 npm run smoke
 npm run eval:context
+npm run index:verify:sqlite
+npm run index:verify:operations
+npm run index:verify
 npm run hook:verify
 npm run verify:os
 ```
@@ -110,6 +113,14 @@ It checks `git_sync` in the temporary vault:
 - classifies ordinary Wiki paths as syncable
 
 Live hook task records under `.dino/tasks` and `.dino/context-packs` are reported as operational noise in retrieval evaluation, but they are not counted against the curated-memory noise target. They are expected to grow as the user-level hook runs.
+
+### Index And Shard Verification
+
+The index verifiers use synthetic vaults:
+
+- `npm run index:verify` checks the JSON Wiki graph index fallback.
+- `npm run index:verify:operations` checks the JSON operations index fallback.
+- `npm run index:verify:sqlite` checks routed SQLite shard retrieval for Wiki search, Context Packs, recent task lookup, and incremental task/event writes.
 
 ## Evidence Quality
 

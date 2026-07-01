@@ -11,7 +11,7 @@ DinoBrain uses the official TypeScript MCP SDK package:
 
 The current installed SDK version is locked in `package-lock.json`.
 
-Node.js `>=20` is required. The local development machine may use a portable Node runtime instead of a global install.
+Node.js `>=24` is required because DinoBrain uses the built-in `node:sqlite` module. The local development machine may use the portable Node runtime installed by `install.ps1` instead of a global install.
 
 ## Data Root
 
@@ -37,6 +37,7 @@ npm run build
 npm run check
 npm run smoke
 npm run hook:verify
+npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
 ```
@@ -50,6 +51,8 @@ npm run index:verify
 `npm run index:wiki` rebuilds the persistent Wiki graph index in the configured data vault.
 
 `npm run index:operations` rebuilds the operational manifest for tasks, traces, Context Packs, and events.
+
+`npm run index:sqlite` rebuilds the Wiki and operations SQLite shards.
 
 ## Tools
 
@@ -93,7 +96,7 @@ Search roots:
 
 It excludes candidates and review queue records by default.
 
-It uses `.dino/index/wiki-index.json` for candidate selection. If the index is missing, DinoBrain rebuilds it before answering.
+It uses `.dino/index/sqlite/wiki.sqlite` for candidate selection when present, then falls back to `.dino/index/wiki-index.json`.
 
 Creates:
 
@@ -114,7 +117,7 @@ The Context Pack trace records:
 
 Searches the same curated roots as `get_context_pack`.
 
-It uses the same persistent Wiki graph index, but may rank excerpt matches because `wiki_search` is an explicit narrow lookup tool.
+It uses the same persistent Wiki retrieval path, preferring SQLite shards, but may rank excerpt matches because `wiki_search` is an explicit narrow lookup tool.
 
 ### `git_sync`
 
@@ -225,7 +228,7 @@ Manual index refresh:
 
 ```powershell
 npm run build
-npm run index:wiki
+npm run index:sqlite
 ```
 
 Operational index refresh:

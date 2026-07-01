@@ -53,6 +53,7 @@ The current verification focus is proving that the system behaves like a compoun
 - `docs/FLOW_AUDIT.md`
 - `docs/LLM_WIKI_GRAPH.md`
 - `docs/OPERATIONS_INDEX.md`
+- `docs/SQLITE_SHARDS.md`
 - `docs/SYNC_POLICY.md`
 - `docs/SENSITIVITY_POLICY.md`
 - `docs/VERIFICATION.md`
@@ -111,10 +112,12 @@ npm run flow:audit
 npm run check
 npm run smoke
 npm run eval:context
+npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run index:sqlite
 npm run index:operations
 npm run index:wiki
 npm run graph:vault
@@ -130,6 +133,8 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 `npm run index:wiki` rebuilds the persistent LLM Wiki graph index at `.dino/index/wiki-index.json`; `get_context_pack` and `wiki_search` use that index to avoid full curated-vault scans on every request. `npm run index:verify` checks the indexed path against a synthetic 1,500+ record vault.
 
 `npm run index:operations` rebuilds the operational index at `.dino/index/operations-index.json`; recent-task retrieval and Observatory use that index to avoid sorting every historical task/trace/pack/event file. `npm run index:verify:operations` checks this against a synthetic 2,500+ record vault.
+
+`npm run index:sqlite` rebuilds SQLite shards at `.dino/index/sqlite/wiki.sqlite` and `.dino/index/sqlite/operations.sqlite`. When present, `wiki_search`, `get_context_pack`, recent task lookup, and Observatory use the SQLite shards before JSON fallbacks. `npm run index:verify:sqlite` checks routed SQLite retrieval.
 
 `npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 

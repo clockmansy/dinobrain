@@ -1,6 +1,7 @@
 import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,6 +40,57 @@ async function readOperationIndex() {
   const index = await readJson(indexPath);
   if (!index || index.version !== 1) return null;
   return index;
+}
+
+async function readSqliteOperations() {
+  const shardPath = path.join(dataRoot, ".dino", "index", "sqlite", "operations.sqlite");
+  try {
+    await fs.access(shardPath);
+  } catch {
+    return null;
+  }
+
+  const db = new DatabaseSync(shardPath, { readOnly: true });
+  try {
+    const counts = {
+      tasks: db.prepare("SELECT COUNT(*) AS count FROM tasks").get().count,
+      traces: db.prepare("SELECT COUNT(*) AS count FROM traces").get().count,
+      context_packs: db.prepare("SELECT COUNT(*) AS count FROM context_packs").get().count,
+      events: db.prepare("SELECT COUNT(*) AS count FROM events").get().count,
+    };
+    const tasks = db
+      .prepare("SELECT * FROM tasks ORDER BY updated_at DESC, path ASC LIMIT 50")
+      .all()
+      .map(withDisplayPath);
+    const traces = db
+      .prepare("SELECT * FROM traces ORDER BY finished_at DESC, path ASC LIMIT 50")
+      .all()
+      .map(withDisplayPath);
+    const packs = db
+      .prepare("SELECT * FROM context_packs ORDER BY created_at DESC, path ASC LIMIT 50")
+      .all()
+      .map((pack) => ({
+        ...withDisplayPath(pack),
+        items: db
+          .prepare("SELECT path, kind, title, summary, score FROM context_pack_items WHERE pack_path = ? ORDER BY ordinal ASC")
+          .all(pack.path),
+      }));
+    const events = db
+      .prepare("SELECT payload_json FROM events ORDER BY at DESC, event_key ASC LIMIT 100")
+      .all()
+      .map((row) => JSON.parse(row.payload_json));
+    return {
+      generated_at: new Date().toISOString(),
+      index_mode: "sqlite_shards_v0",
+      counts,
+      events,
+      tasks,
+      traces,
+      context_packs: packs,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 async function readEvents(limit = 100) {
@@ -111,6 +163,28 @@ function withDisplayPath(record) {
 }
 
 async function state() {
+  const sqlite = await readSqliteOperations();
+  if (sqlite) {
+    return {
+      ok: true,
+      summary: {
+        data_root: dataRoot,
+        generated_at: sqlite.generated_at,
+        index_mode: sqlite.index_mode,
+        event_count: sqlite.counts.events,
+        task_count: sqlite.counts.tasks,
+        context_pack_count: sqlite.counts.context_packs,
+        today_event_count: sqlite.events.filter((event) => String(event.at ?? "").startsWith(new Date().toISOString().slice(0, 10))).length,
+        active_task_count: sqlite.tasks.filter((task) => task.status === "started").length,
+        last_event_at: sqlite.events[0]?.at ?? null,
+      },
+      events: sqlite.events,
+      tasks: sqlite.tasks,
+      context_packs: sqlite.context_packs,
+      traces: sqlite.traces,
+    };
+  }
+
   const index = await readOperationIndex();
   if (index) {
     return {

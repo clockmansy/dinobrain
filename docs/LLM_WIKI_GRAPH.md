@@ -33,7 +33,7 @@ The graph alone does not guarantee speed. Speed comes from using the graph with 
 
 ## Current Implementation
 
-The v0 index is written to:
+The JSON v0 index is written to:
 
 ```text
 .dino/index/wiki-index.json
@@ -46,7 +46,13 @@ It contains:
 - graph nodes and edges for folders, tags, kinds, and wikilinks
 - a recent hot set and a cold record set
 
-`get_context_pack` and `wiki_search` now use this index for candidate selection.
+The preferred fast path is now the SQLite shard:
+
+```text
+.dino/index/sqlite/wiki.sqlite
+```
+
+When the SQLite shard exists, `get_context_pack` and `wiki_search` use it for candidate selection. If the shard is missing, DinoBrain falls back to the JSON index.
 
 The final `get_context_pack` ranking still follows the narrow Phase 3 boundary:
 
@@ -72,7 +78,7 @@ Direct manual vault edits can be refreshed with:
 
 ```powershell
 npm run build
-npm run index:wiki
+npm run index:sqlite
 ```
 
 ## Verification
@@ -82,6 +88,13 @@ The focused index verifier creates a synthetic vault with more than 1,500 record
 ```powershell
 npm run build
 npm run index:verify
+```
+
+SQLite shard verification:
+
+```powershell
+npm run build
+npm run index:verify:sqlite
 ```
 
 ## Related Operations Index

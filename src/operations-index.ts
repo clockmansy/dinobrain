@@ -73,6 +73,13 @@ export type OperationsIndex = {
   recent_events: OperationEventEntry[];
 };
 
+export type OperationEntries = {
+  tasks: OperationTaskEntry[];
+  traces: OperationTraceEntry[];
+  context_packs: OperationContextPackEntry[];
+  events: OperationEventEntry[];
+};
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -308,13 +315,18 @@ export async function readOperationsIndex(dataRoot: string): Promise<OperationsI
   }
 }
 
-export async function buildOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
+export async function collectOperationEntries(dataRoot: string): Promise<OperationEntries> {
   const [tasks, traces, packs, events] = await Promise.all([
     collectTasks(dataRoot),
     collectTraces(dataRoot),
     collectContextPacks(dataRoot),
     collectEvents(dataRoot),
   ]);
+  return { tasks, traces, context_packs: packs, events };
+}
+
+export async function buildOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
+  const { tasks, traces, context_packs: packs, events } = await collectOperationEntries(dataRoot);
   return {
     version: OPERATIONS_INDEX_VERSION,
     generated_at: nowIso(),

@@ -112,7 +112,7 @@ function titleKey(value: string): string {
   return value
     .toLowerCase()
     .replace(/\.[a-z0-9]+$/i, "")
-    .replace(/[^a-z0-9가-힣_\-/]+/gi, "-")
+    .replace(/[^\p{L}\p{N}_\/-]+/gu, "-")
     .replace(/^-+|-+$/g, "");
 }
 
