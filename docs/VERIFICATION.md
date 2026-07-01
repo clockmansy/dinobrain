@@ -7,7 +7,7 @@ This document defines how to verify that DinoBrain is more than a note store.
 The verification target has two parts:
 
 1. Knowledge compounds: completed work can become reviewed memory, appear in a later Context Pack, and be removed if it becomes unsafe or wrong.
-2. Codex can use it: the local Codex MCP configuration points at the DinoBrain server and the configured server can list the DinoBrain tools.
+2. Codex can use it: the local Codex MCP configuration points at the DinoBrain server, the user-level prompt hook is registered when installed, and the configured server can list the DinoBrain tools.
 3. Claude Code can use it when configured by the installer: `claude mcp list` includes the `dinobrain` MCP server.
 
 ## Commands
@@ -25,7 +25,7 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 ## What `verify:os` Proves
 
-`npm run verify:os` performs four independent checks.
+`npm run verify:os` performs five independent checks.
 
 ### Codex MCP Integration
 
@@ -49,6 +49,20 @@ Then the script starts the configured MCP command and verifies that these tools 
 - `quarantine_record`
 
 If Codex was already running before the MCP block was added, the app may need to restart or reload before the new tool appears in future thread tool surfaces. The verifier still proves that the configured command is startable by an MCP client.
+
+### Codex User-Level Hook Integration
+
+The installer writes a user-level hook file:
+
+```text
+C:\Users\<you>\.codex\hooks.json
+```
+
+The hook listens for `UserPromptSubmit` and calls the installed DinoBrain PowerShell wrapper by absolute path. This makes DinoBrain preflight available outside the `dinobrain` repo after Codex reloads and the hook is trusted.
+
+During installer verification, `DINOBRAIN_REQUIRE_CODEX_USER_HOOK=1` requires this hook to be present. Manual `npm run verify:os` reports the hook state but does not fail solely because the user-level hook is absent.
+
+The project hook in `.codex/hooks.json` remains for local verification and fallback. The runtime hook uses a short lock in `.dino/hook-locks` so project-level and user-level hooks do not both create task records for the same prompt.
 
 ### Claude Code MCP Integration
 
@@ -95,11 +109,13 @@ It checks `git_sync` in the temporary vault:
 - classifies review queue paths as conditional
 - classifies ordinary Wiki paths as syncable
 
+Live hook task records under `.dino/tasks` and `.dino/context-packs` are reported as operational noise in retrieval evaluation, but they are not counted against the curated-memory noise target. They are expected to grow as the user-level hook runs.
+
 ## Evidence Quality
 
 A green `verify:os` run is stronger than the smoke test because it validates the full feedback loop, not only individual tool behavior.
 
-It does not prove that every future Codex or Claude Code answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, Claude Code is registered when the installer configured it, and that an MCP client can retrieve reviewed memories through that server.
+It does not prove that every future Codex or Claude Code answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, the user-level Codex hook is registered when required, Claude Code is registered when the installer configured it, and that an MCP client can retrieve reviewed memories through that server.
 
 ## Codex Hook Verification
 

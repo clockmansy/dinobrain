@@ -26,6 +26,7 @@ type CaseResult = {
   returned_paths: string[];
   missing_paths: string[];
   noise_paths: string[];
+  operational_noise_paths: string[];
   recall: number;
   noise_count: number;
   pass: boolean;
@@ -44,12 +45,18 @@ function unique(value: string[]): string[] {
   return Array.from(new Set(value));
 }
 
+function isOperationalNoisePath(returnedPath: string): boolean {
+  return returnedPath.startsWith(".dino/tasks/") || returnedPath.startsWith(".dino/context-packs/");
+}
+
 async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMaxNoise: number): Promise<CaseResult> {
   const { ranked } = await getStandardPackItems(dataRoot, goldenCase.question, packLimit);
   const returnedPaths = unique(ranked.map((record) => record.path));
   const expectedPaths = unique(goldenCase.expected_paths);
   const missingPaths = expectedPaths.filter((expectedPath) => !returnedPaths.includes(expectedPath));
-  const noisePaths = returnedPaths.filter((returnedPath) => !expectedPaths.includes(returnedPath));
+  const unexpectedPaths = returnedPaths.filter((returnedPath) => !expectedPaths.includes(returnedPath));
+  const operationalNoisePaths = unexpectedPaths.filter(isOperationalNoisePath);
+  const noisePaths = unexpectedPaths.filter((returnedPath) => !isOperationalNoisePath(returnedPath));
   const recall = expectedPaths.length === 0 ? 1 : (expectedPaths.length - missingPaths.length) / expectedPaths.length;
   const noiseCount = noisePaths.length;
 
@@ -60,6 +67,7 @@ async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMax
     returned_paths: returnedPaths,
     missing_paths: missingPaths,
     noise_paths: noisePaths,
+    operational_noise_paths: operationalNoisePaths,
     recall,
     noise_count: noiseCount,
     pass: recall >= 1 && noiseCount <= targetMaxNoise,

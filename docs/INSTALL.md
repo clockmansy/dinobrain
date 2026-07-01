@@ -4,7 +4,7 @@ Date: 2026-07-01
 
 This document explains how to install DinoBrain on a Windows PC.
 
-The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes the Codex MCP config block, registers Claude Code when its CLI is installed, and runs verification.
+The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes the Codex MCP config block, registers a Codex user-level `UserPromptSubmit` hook, registers Claude Code when its CLI is installed, and runs verification.
 
 ## Prerequisites
 
@@ -62,7 +62,17 @@ startup_timeout_sec = 120
 DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
 ```
 
-7. Registers DinoBrain in Claude Code when `claude` is available:
+7. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
+
+This hook calls:
+
+```powershell
+C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
+```
+
+Because this is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
+
+8. Registers DinoBrain in Claude Code when `claude` is available:
 
 ```powershell
 claude mcp add `
@@ -73,11 +83,13 @@ claude mcp add `
   -- C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64\node.exe C:\Users\<you>\Documents\dinobrain\dist\index.js
 ```
 
-8. Runs `npm run verify:os`.
+9. Runs `npm run verify:os`.
 
-`verify:os` uses the configured MCP command, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
+`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety.
 
-The repository also contains a project Codex hook at `.codex/hooks.json`. Codex requires you to review and trust this hook before it runs in a live session.
+The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
+
+Codex requires you to review and trust hooks before they run in a live session. After install, restart or reload Codex and approve the DinoBrain hook when prompted.
 
 ## Custom Paths
 
@@ -86,13 +98,14 @@ The repository also contains a project Codex hook at `.codex/hooks.json`. Codex 
   -InstallRoot "D:\AI" `
   -ToolsDir "D:\AI\tools" `
   -CodexConfigPath "$HOME\.codex\config.toml" `
+  -CodexHooksPath "$HOME\.codex\hooks.json" `
   -ClaudeScope user
 ```
 
 Skip either client registration when testing:
 
 ```powershell
-.\install.ps1 -SkipCodexConfig -SkipClaudeCodeConfig
+.\install.ps1 -SkipCodexConfig -SkipCodexHookConfig -SkipClaudeCodeConfig
 ```
 
 Use a non-default Claude Code command name or path:
@@ -122,6 +135,7 @@ This uses the same idempotent flow as install:
 - `npm install`
 - `npm run build`
 - Codex MCP config refresh
+- Codex user-level hook refresh
 - Claude Code MCP registration when `claude` is available
 - `npm run verify:os`
 
@@ -135,7 +149,7 @@ Reinstall is the same as install, but passes `-Force` so a changed repo origin U
 
 ## Uninstall
 
-Default uninstall removes the Codex MCP registration, removes the Claude Code MCP registration when `claude` is available, and creates a Codex config backup:
+Default uninstall removes the Codex MCP registration, removes the Codex user-level hook registration, removes the Claude Code MCP registration when `claude` is available, and creates config backups:
 
 ```powershell
 .\uninstall.ps1

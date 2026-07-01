@@ -26,12 +26,17 @@ flowchart LR
 ## Files
 
 - `.codex/hooks.json`
+- `C:\Users\<you>\.codex\hooks.json`
 - `scripts/dinobrain-user-prompt-hook.ps1`
 - `scripts/dinobrain-user-prompt-hook.mjs`
 - `scripts/dinobrain-observatory.mjs`
 - `AGENTS.md`
 
-The project hook requires Codex hook trust. Review `.codex/hooks.json` and the hook scripts, then trust the hook when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks.
+The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. The repo also keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
+
+Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks.
+
+If both the user-level hook and project hook are trusted, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
 
 ## Commands
 
@@ -65,6 +70,7 @@ The `reports/` directory is local-only and ignored by git.
 ## Current Limits
 
 - Codex must trust project hooks before the hook runs.
+- Codex must trust the user-level hook before global preflight runs.
 - The current already-running session may not retroactively load this hook.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work.
 - The Observatory shows file-backed events in near real time by polling; it is not a remote telemetry service.

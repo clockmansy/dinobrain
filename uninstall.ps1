@@ -7,7 +7,9 @@ param(
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
+  [string]$CodexHooksPath = "",
   [string]$ClaudeCommand = "claude",
+  [switch]$SkipCodexHookConfig,
   [switch]$SkipClaudeCodeConfig,
   [switch]$RemoveAppRepo,
   [switch]$RemoveDataRepo,
@@ -52,6 +54,37 @@ function Remove-TomlSection {
   return [regex]::Replace($Text, $pattern, "").TrimEnd()
 }
 
+function ConvertTo-Hashtable {
+  param([AllowNull()][object]$Value)
+  if ($null -eq $Value) { return $null }
+  if ($Value -is [string]) { return $Value }
+  if ($Value -is [System.Collections.IDictionary]) {
+    $result = [ordered]@{}
+    foreach ($key in $Value.Keys) {
+      $result[$key] = ConvertTo-Hashtable $Value[$key]
+    }
+    return $result
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    return @($Value | ForEach-Object { ConvertTo-Hashtable $_ })
+  }
+  if ($Value.PSObject -and $Value.PSObject.Properties.Count -gt 0 -and $Value.GetType().Name -eq "PSCustomObject") {
+    $result = [ordered]@{}
+    foreach ($property in $Value.PSObject.Properties) {
+      $result[$property.Name] = ConvertTo-Hashtable $property.Value
+    }
+    return $result
+  }
+  return $Value
+}
+
+function Test-DinoBrainHookGroup {
+  param([AllowNull()][object]$Group)
+  if ($null -eq $Group) { return $false }
+  $text = ($Group | ConvertTo-Json -Depth 20 -Compress)
+  return $text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context"
+}
+
 function Remove-DinoBrainCodexConfig {
   param([Parameter(Mandatory = $true)][string]$ConfigPath)
   if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -74,6 +107,51 @@ function Remove-DinoBrainCodexConfig {
   [System.IO.File]::WriteAllText($ConfigPath, $updated.TrimEnd() + "`r`n", $utf8NoBom)
   Write-Host "Removed DinoBrain MCP registration."
   Write-Host "Codex config backup: $backupPath"
+}
+
+function Remove-DinoBrainCodexUserHook {
+  param([Parameter(Mandatory = $true)][string]$HooksPath)
+  if (-not (Test-Path -LiteralPath $HooksPath)) {
+    Write-Host "Codex user hooks not found: $HooksPath"
+    return
+  }
+
+  $raw = [System.IO.File]::ReadAllText($HooksPath)
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    Write-Host "Codex user hooks file is empty: $HooksPath"
+    return
+  }
+
+  $config = ConvertTo-Hashtable ($raw | ConvertFrom-Json)
+  if (-not $config.Contains("hooks") -or -not ($config["hooks"] -is [System.Collections.IDictionary])) {
+    Write-Host "Codex user hooks file has no editable hooks object: $HooksPath"
+    return
+  }
+  if (-not $config["hooks"].Contains("UserPromptSubmit")) {
+    Write-Host "DinoBrain user hook was not present: $HooksPath"
+    return
+  }
+
+  $originalGroups = @($config["hooks"]["UserPromptSubmit"])
+  $remainingGroups = @($originalGroups | Where-Object { -not (Test-DinoBrainHookGroup $_) })
+  if ($remainingGroups.Count -eq $originalGroups.Count) {
+    Write-Host "DinoBrain user hook was not present: $HooksPath"
+    return
+  }
+
+  if ($remainingGroups.Count -gt 0) {
+    $config["hooks"]["UserPromptSubmit"] = @($remainingGroups)
+  } else {
+    $config["hooks"].Remove("UserPromptSubmit")
+  }
+
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $backupPath = "$HooksPath.bak-dinobrain-uninstall-$stamp"
+  Copy-Item -LiteralPath $HooksPath -Destination $backupPath
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($HooksPath, ($config | ConvertTo-Json -Depth 40) + "`r`n", $utf8NoBom)
+  Write-Host "Removed DinoBrain Codex user hook."
+  Write-Host "Codex user hooks backup: $backupPath"
 }
 
 function Remove-DinoBrainClaudeCodeConfig {
@@ -130,6 +208,7 @@ function Remove-InstallPath {
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
+if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
 
@@ -137,9 +216,13 @@ $AppDir = Get-FullPath $AppDir
 $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
+$CodexHooksPath = Get-FullPath $CodexHooksPath
 $nodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
 
 Remove-DinoBrainCodexConfig -ConfigPath $CodexConfigPath
+if (-not $SkipCodexHookConfig) {
+  Remove-DinoBrainCodexUserHook -HooksPath $CodexHooksPath
+}
 if (-not $SkipClaudeCodeConfig) {
   Remove-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand
 }

@@ -13,6 +13,8 @@ const realDataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(ro
 const codexConfigPath = path.resolve(
   process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
 );
+const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? path.join(homedir(), ".codex", "hooks.json"));
+const requireCodexUserHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CODEX_USER_HOOK ?? "");
 const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
 const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
 
@@ -102,6 +104,50 @@ function parseCodexDinoBrainConfig() {
     command_exists: command ? existsSync(command) : false,
     server_entry_exists: args.some((arg) => existsSync(arg)),
     data_root_exists: env.DINOBRAIN_DATA_DIR ? existsSync(env.DINOBRAIN_DATA_DIR) : false,
+  };
+}
+
+function parseCodexUserHookConfig() {
+  if (!existsSync(codexHooksPath)) {
+    return {
+      ok: !requireCodexUserHook,
+      required: requireCodexUserHook,
+      registered: false,
+      hooks_path: codexHooksPath,
+      reason: "hooks_config_not_found",
+    };
+  }
+
+  let config;
+  try {
+    config = JSON.parse(readFileSync(codexHooksPath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      required: requireCodexUserHook,
+      registered: false,
+      hooks_path: codexHooksPath,
+      reason: "hooks_config_invalid_json",
+      error: error.message,
+    };
+  }
+
+  const groups = Array.isArray(config.hooks?.UserPromptSubmit) ? config.hooks.UserPromptSubmit : [];
+  const matchedHook = groups
+    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+    .find((hook) => {
+      const text = JSON.stringify(hook);
+      return /dinobrain-user-prompt-hook\.ps1/i.test(text) || /Loading DinoBrain context/i.test(text);
+    });
+
+  return {
+    ok: Boolean(matchedHook) || !requireCodexUserHook,
+    required: requireCodexUserHook,
+    registered: Boolean(matchedHook),
+    hooks_path: codexHooksPath,
+    reason: matchedHook ? "registered" : "dinobrain_user_prompt_hook_not_registered",
+    command: matchedHook?.command ?? null,
+    timeout: matchedHook?.timeout ?? null,
   };
 }
 
@@ -467,6 +513,7 @@ async function main() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
 
   const codexConfig = parseCodexDinoBrainConfig();
+  const codexUserHook = parseCodexUserHookConfig();
   const [codexMcp, compoundingLoop] = await Promise.all([
     verifyConfiguredCodexMcp(codexConfig),
     verifyCompoundingLoop(),
@@ -475,12 +522,18 @@ async function main() {
   const claudeCodeMcp = verifyClaudeCodeMcp();
 
   const report = {
-    ok: codexMcp.ok === true && compoundingLoop.ok === true && retrievalEval.ok === true && claudeCodeMcp.ok === true,
+    ok:
+      codexMcp.ok === true &&
+      codexUserHook.ok === true &&
+      compoundingLoop.ok === true &&
+      retrievalEval.ok === true &&
+      claudeCodeMcp.ok === true,
     verification_version: "dinobrain-os-2026-07-01",
     codex_integration: {
       config: codexConfig,
+      user_prompt_hook: codexUserHook,
       mcp_list_tools: codexMcp,
-      note: "If the Codex app was already running before this MCP block was added, restart or reload Codex to expose the new tool surface in future threads.",
+      note: "If the Codex app was already running before MCP or user hooks were added, restart or reload Codex to expose the new tool and hook surfaces in future threads.",
     },
     claude_code_integration: {
       mcp_list: claudeCodeMcp,

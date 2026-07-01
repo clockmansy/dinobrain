@@ -9,10 +9,12 @@ param(
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
+  [string]$CodexHooksPath = "",
   [string]$ClaudeCommand = "claude",
   [ValidateSet("local", "project", "user")]
   [string]$ClaudeScope = "user",
   [switch]$SkipCodexConfig,
+  [switch]$SkipCodexHookConfig,
   [switch]$SkipClaudeCodeConfig,
   [switch]$SkipVerify,
   [switch]$Force
@@ -185,6 +187,35 @@ function ConvertTo-TomlString {
   return '"' + $escaped + '"'
 }
 
+function ConvertTo-Hashtable {
+  param([AllowNull()][object]$Value)
+  if ($null -eq $Value) { return $null }
+  if ($Value -is [string]) { return $Value }
+  if ($Value -is [System.Collections.IDictionary]) {
+    $result = [ordered]@{}
+    foreach ($key in $Value.Keys) {
+      $result[$key] = ConvertTo-Hashtable $Value[$key]
+    }
+    return $result
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    return @($Value | ForEach-Object { ConvertTo-Hashtable $_ })
+  }
+  if ($Value.PSObject -and $Value.PSObject.Properties.Count -gt 0 -and $Value.GetType().Name -eq "PSCustomObject") {
+    $result = [ordered]@{}
+    foreach ($property in $Value.PSObject.Properties) {
+      $result[$property.Name] = ConvertTo-Hashtable $property.Value
+    }
+    return $result
+  }
+  return $Value
+}
+
+function ConvertTo-PowerShellSingleQuotedString {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Remove-TomlSection {
   param(
     [AllowEmptyString()][string]$Text,
@@ -240,6 +271,81 @@ function Set-DinoBrainCodexConfig {
   Write-Host "Codex MCP registered: $ConfigPath"
 }
 
+function New-DinoBrainCodexHookCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath
+  )
+
+  $hookScript = Join-Path $AppPath "scripts\dinobrain-user-prompt-hook.ps1"
+  $hookLiteral = ConvertTo-PowerShellSingleQuotedString $hookScript
+  $vaultLiteral = ConvertTo-PowerShellSingleQuotedString $VaultPath
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; & $hookLiteral }`""
+}
+
+function Test-DinoBrainHookGroup {
+  param([AllowNull()][object]$Group)
+  if ($null -eq $Group) { return $false }
+  $text = ($Group | ConvertTo-Json -Depth 20 -Compress)
+  return $text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context"
+}
+
+function Set-DinoBrainCodexUserHook {
+  param(
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath
+  )
+
+  $hooksDir = Split-Path -Parent $HooksPath
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+
+  $config = [ordered]@{}
+  $backupPath = $null
+  if (Test-Path -LiteralPath $HooksPath) {
+    $raw = [System.IO.File]::ReadAllText($HooksPath)
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+      $config = ConvertTo-Hashtable ($raw | ConvertFrom-Json)
+    }
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupPath = "$HooksPath.bak-dinobrain-$stamp"
+    Copy-Item -LiteralPath $HooksPath -Destination $backupPath
+  }
+
+  if (-not $config.Contains("hooks") -or $null -eq $config["hooks"]) {
+    $config["hooks"] = [ordered]@{}
+  }
+  if (-not ($config["hooks"] -is [System.Collections.IDictionary])) {
+    throw "Codex hooks file has an invalid 'hooks' shape: $HooksPath"
+  }
+
+  $groups = @()
+  if ($config["hooks"].Contains("UserPromptSubmit") -and $null -ne $config["hooks"]["UserPromptSubmit"]) {
+    $groups = @($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) }
+  }
+
+  $command = New-DinoBrainCodexHookCommand -AppPath $AppPath -VaultPath $VaultPath
+  $groups += [ordered]@{
+    hooks = @(
+      [ordered]@{
+        type = "command"
+        command = $command
+        commandWindows = $command
+        timeout = 30
+        statusMessage = "Loading DinoBrain context"
+      }
+    )
+  }
+  $config["hooks"]["UserPromptSubmit"] = @($groups)
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($HooksPath, ($config | ConvertTo-Json -Depth 40) + "`r`n", $utf8NoBom)
+  if ($backupPath) {
+    Write-Host "Codex user hooks backup: $backupPath"
+  }
+  Write-Host "Codex user hook registered: $HooksPath"
+}
+
 function Set-DinoBrainClaudeCodeConfig {
   param(
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
@@ -291,18 +397,24 @@ function Invoke-DinoBrainVerify {
     [Parameter(Mandatory = $true)][string]$NodeRoot,
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath,
     [Parameter(Mandatory = $true)][string]$VaultPath,
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
+    [switch]$RequireCodexUserHook,
     [switch]$RequireClaudeCode
   )
 
   $npmCmd = Join-Path $NodeRoot "npm.cmd"
   $oldConfig = $env:DINOBRAIN_CODEX_CONFIG_PATH
+  $oldHooks = $env:DINOBRAIN_CODEX_HOOKS_PATH
+  $oldRequireHook = $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK
   $oldData = $env:DINOBRAIN_DATA_DIR
   $oldClaudeCommand = $env:DINOBRAIN_CLAUDE_COMMAND
   $oldRequireClaude = $env:DINOBRAIN_REQUIRE_CLAUDE_CODE
   $oldPath = $env:PATH
   $env:DINOBRAIN_CODEX_CONFIG_PATH = $ConfigPath
+  $env:DINOBRAIN_CODEX_HOOKS_PATH = $HooksPath
+  if ($RequireCodexUserHook) { $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_USER_HOOK -ErrorAction SilentlyContinue }
   $env:DINOBRAIN_DATA_DIR = $VaultPath
   $env:DINOBRAIN_CLAUDE_COMMAND = $ClaudeCommand
   if ($RequireClaudeCode) { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue }
@@ -311,6 +423,8 @@ function Invoke-DinoBrainVerify {
     Invoke-NativeCommand -FilePath $npmCmd -ArgumentList @("run", "verify:os") -WorkingDirectory $AppPath
   } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:\DINOBRAIN_CODEX_CONFIG_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_CONFIG_PATH = $oldConfig }
+    if ($null -eq $oldHooks) { Remove-Item Env:\DINOBRAIN_CODEX_HOOKS_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_HOOKS_PATH = $oldHooks }
+    if ($null -eq $oldRequireHook) { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_USER_HOOK -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK = $oldRequireHook }
     if ($null -eq $oldData) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldData }
     if ($null -eq $oldClaudeCommand) { Remove-Item Env:\DINOBRAIN_CLAUDE_COMMAND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CLAUDE_COMMAND = $oldClaudeCommand }
     if ($null -eq $oldRequireClaude) { Remove-Item Env:\DINOBRAIN_REQUIRE_CLAUDE_CODE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CLAUDE_CODE = $oldRequireClaude }
@@ -321,6 +435,7 @@ function Invoke-DinoBrainVerify {
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
+if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
 
@@ -329,6 +444,7 @@ $AppDir = Get-FullPath $AppDir
 $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
+$CodexHooksPath = Get-FullPath $CodexHooksPath
 
 Write-Host "DinoBrain install root: $InstallRoot"
 Write-Host "App repo target: $AppDir"
@@ -351,13 +467,17 @@ if (-not $SkipCodexConfig) {
   Set-DinoBrainCodexConfig -ConfigPath $CodexConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir
 }
 
+if (-not $SkipCodexHookConfig) {
+  Set-DinoBrainCodexUserHook -HooksPath $CodexHooksPath -AppPath $AppDir -VaultPath $DataDir
+}
+
 $claudeCodeConfigured = $false
 if (-not $SkipClaudeCodeConfig) {
   $claudeCodeConfigured = Set-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand -Scope $ClaudeScope -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -WorkingDirectory $AppDir
 }
 
 if (-not $SkipVerify) {
-  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireClaudeCode:$claudeCodeConfigured
+  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudeCode:$claudeCodeConfigured
 }
 
 Write-Host ""
@@ -366,4 +486,5 @@ Write-Host "App: $AppDir"
 Write-Host "Data: $DataDir"
 Write-Host "Node: $nodeExe"
 Write-Host "Codex config: $CodexConfigPath"
+Write-Host "Codex user hooks: $CodexHooksPath"
 Write-Host "Claude Code MCP scope: $ClaudeScope"

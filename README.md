@@ -26,8 +26,8 @@ The current verification focus is proving that the system behaves like a compoun
 - quarantined memories are excluded from later Context Packs
 - `git_sync` classifies safe, conditional, and blocked data without committing or pushing
 - Codex has a local MCP server configuration for DinoBrain
+- Codex can run a user-level `UserPromptSubmit` hook that starts a task and injects a Context Pack from any workspace after hook trust
 - Claude Code can be registered to the same local MCP server when the `claude` CLI is installed
-- Codex can run a `UserPromptSubmit` hook that starts a task and injects a Context Pack before the model turn
 
 ## Ground Rules
 
@@ -79,7 +79,7 @@ Update, reinstall, and uninstall entrypoints:
 
 See `docs/INSTALL.md` for custom paths, private repo prerequisites, and removal flags.
 
-The installer configures Codex directly and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
+The installer configures Codex MCP, registers a user-level Codex prompt hook, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
 
 ## MCP Development
 
@@ -121,6 +121,6 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 
 `npm run graph:vault` writes a local Obsidian-style graph report to `reports/dinobrain-vault-graph.html` and `reports/dinobrain-vault-graph.svg`. It counts handwritten wikilinks separately from DinoBrain OS relationships such as folders, tags, golden evaluation cases, traces, review records, accepted instances, and quarantine targets.
 
-`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns.
+`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 
 `npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events can be watched while working. See `docs/CODEX_HOOKS.md`.

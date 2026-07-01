@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,11 +41,14 @@ async function readStdin() {
 }
 
 function parseInput(raw) {
-  if (!raw.trim()) return {};
+  const text = raw.replace(/\u0000/g, "").replace(/^\uFEFF/, "").trim();
+  if (!text) return {};
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "string") return parseInput(parsed);
+    return parsed;
   } catch {
-    return { prompt: raw };
+    return { prompt: text };
   }
 }
 
@@ -122,6 +126,79 @@ function redactPrompt(prompt) {
 function preview(value, max = 180) {
   const compact = String(value).replace(/\s+/g, " ").trim();
   return compact.length > max ? `${compact.slice(0, max - 3)}...` : compact;
+}
+
+function inputCwd(input) {
+  const candidates = [
+    input.cwd,
+    input.current_working_directory,
+    input.workspace?.path,
+    input.project?.path,
+    input.payload?.cwd,
+    input.hookInput?.cwd,
+    input.hook_input?.cwd,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
+}
+
+function projectNameFor(input) {
+  if (process.env.DINOBRAIN_HOOK_PROJECT) return process.env.DINOBRAIN_HOOK_PROJECT;
+  const cwd = inputCwd(input);
+  if (cwd) return path.basename(path.resolve(cwd)) || "codex";
+  return path.basename(root);
+}
+
+function hookDedupeKey(input, request) {
+  const source = JSON.stringify({
+    hookEventName: input.hookEventName ?? input.hook_event_name ?? "UserPromptSubmit",
+    session_id: input.session_id ?? input.sessionId ?? input.conversation_id ?? input.conversationId ?? "",
+    turn_id: input.turn_id ?? input.turnId ?? input.message_id ?? input.messageId ?? "",
+    cwd: inputCwd(input),
+    request,
+  });
+  return createHash("sha256").update(source).digest("hex").slice(0, 32);
+}
+
+async function acquireHookLock(input, request) {
+  const lockDir = path.join(dataRoot, ".dino", "hook-locks");
+  await fs.mkdir(lockDir, { recursive: true });
+  const key = hookDedupeKey(input, request);
+  const lockPath = path.join(lockDir, `${key}.json`);
+  const content = `${JSON.stringify({ at: nowIso(), key, cwd: inputCwd(input), preview: preview(request) }, null, 2)}\n`;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.writeFile(lockPath, content, { encoding: "utf8", flag: "wx" });
+      return { acquired: true, path: lockPath };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const stat = await fs.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > 60_000) {
+          await fs.unlink(lockPath);
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code === "ENOENT") continue;
+        throw statError;
+      }
+      return { acquired: false, path: lockPath };
+    }
+  }
+
+  return { acquired: false, path: lockPath };
+}
+
+async function releaseHookLock(lock) {
+  if (!lock?.acquired || !lock.path) return;
+  try {
+    await fs.unlink(lock.path);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 function hookOutput(additionalContext) {
@@ -228,72 +305,93 @@ async function main() {
   );
   const request = sanitizedPrompt.trim();
   const startedAt = nowIso();
-  const project = process.env.DINOBRAIN_HOOK_PROJECT || path.basename(root);
+  const project = projectNameFor(input);
   const limit = Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_CONTEXT_LIMIT ?? 7)));
   const sensitivity = sensitivityFor(redactions);
-
-  await fs.stat(serverPath);
-  await appendDataEvent({
-    event: "codex_prompt_submitted",
-    source: "codex_hook",
-    at: startedAt,
-    project,
-    sensitivity,
-    prompt_preview: preview(request),
-    redactions,
-  });
-
-  const { start, contextPack } = await withClient(async (client) => {
-    const startResult = parseTool(
-      await client.callTool({
-        name: "start_task",
-        arguments: {
-          request,
-          project,
-          mode: "standard",
-          sensitivity,
-        },
-      }),
+  const hookLock = await acquireHookLock(input, request);
+  if (!hookLock.acquired) {
+    process.stdout.write(
+      `${JSON.stringify(
+        hookOutput(
+          [
+            "DinoBrain OS preflight skipped because another matching DinoBrain hook is already handling this prompt.",
+            "Use the other injected DinoBrain context for this turn.",
+          ].join("\n"),
+        ),
+      )}\n`,
     );
+    return;
+  }
 
-    const contextResult = parseTool(
-      await client.callTool({
-        name: "get_context_pack",
-        arguments: {
-          question: request,
-          limit,
-        },
-      }),
-    );
+  try {
+    await fs.stat(serverPath);
+    await appendDataEvent({
+      event: "codex_prompt_submitted",
+      source: "codex_hook",
+      at: startedAt,
+      project,
+      cwd: inputCwd(input) || null,
+      sensitivity,
+      prompt_preview: preview(request),
+      redactions,
+    });
 
-    return { start: startResult, contextPack: contextResult };
-  });
+    const { start, contextPack } = await withClient(async (client) => {
+      const startResult = parseTool(
+        await client.callTool({
+          name: "start_task",
+          arguments: {
+            request,
+            project,
+            mode: "standard",
+            sensitivity,
+          },
+        }),
+      );
 
-  await appendDataEvent({
-    event: "codex_preflight_completed",
-    source: "codex_hook",
-    at: nowIso(),
-    task_id: start.task_id,
-    task_path: start.task_path,
-    context_pack_trace: contextPack.trace_path,
-    context_item_count: contextPack.item_count,
-    context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
-    redactions,
-  });
+      const contextResult = parseTool(
+        await client.callTool({
+          name: "get_context_pack",
+          arguments: {
+            question: request,
+            limit,
+          },
+        }),
+      );
 
-  const reportPath = await writeReport({
-    event: "codex_preflight_completed",
-    at: nowIso(),
-    data_root: dataRoot,
-    task_id: start.task_id,
-    task_path: start.task_path,
-    context_pack_trace: contextPack.trace_path,
-    context_item_count: contextPack.item_count,
-    context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
-    redactions,
-  });
+      return { start: startResult, contextPack: contextResult };
+    });
 
-  process.stdout.write(`${JSON.stringify(hookOutput(additionalContext({ start, contextPack, redactions, reportPath })))}\n`);
+    await appendDataEvent({
+      event: "codex_preflight_completed",
+      source: "codex_hook",
+      at: nowIso(),
+      task_id: start.task_id,
+      task_path: start.task_path,
+      context_pack_trace: contextPack.trace_path,
+      context_item_count: contextPack.item_count,
+      context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
+      redactions,
+    });
+
+    const reportPath = await writeReport({
+      event: "codex_preflight_completed",
+      at: nowIso(),
+      data_root: dataRoot,
+      project,
+      cwd: inputCwd(input) || null,
+      task_id: start.task_id,
+      task_path: start.task_path,
+      context_pack_trace: contextPack.trace_path,
+      context_item_count: contextPack.item_count,
+      context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
+      redactions,
+    });
+
+    process.stdout.write(`${JSON.stringify(hookOutput(additionalContext({ start, contextPack, redactions, reportPath })))}\n`);
+  } finally {
+    await releaseHookLock(hookLock);
+  }
 }
 
 main().catch(async (error) => {
