@@ -40,6 +40,25 @@ It does not store unredacted full transcripts. The archive records `raw_full_tra
 
 `10_Conversations/raw/` is local-only and `git_sync` classifies it as blocked.
 
+## Codex Hook Integration
+
+The Codex `UserPromptSubmit` hook calls `import_session` automatically by default after it redacts and bounds the submitted user prompt.
+
+This means a live Codex prompt creates:
+
+- a task record
+- a Context Pack trace
+- a local-only session archive
+- zero or more pending review candidates
+
+The hook does not capture the later assistant response. End-of-work results still belong in `finish_task` until a separate response/trace capture path is implemented.
+
+Controls:
+
+- `DINOBRAIN_HOOK_IMPORT_SESSION=0`
+- `DINOBRAIN_HOOK_RAW_RETENTION=metadata_only`
+- `DINOBRAIN_HOOK_SESSION_MAX_CANDIDATES=<number>`
+
 ## Extraction
 
 The v0 extractor is deterministic and conservative. It looks for simple cues and creates review candidates with:

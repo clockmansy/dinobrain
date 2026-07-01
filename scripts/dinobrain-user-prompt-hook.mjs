@@ -171,6 +171,22 @@ function projectNameFor(input) {
   return path.basename(root);
 }
 
+function envFlag(name, defaultValue) {
+  const value = process.env[name];
+  if (value === undefined || value === "") return defaultValue;
+  return /^(1|true|yes|on)$/i.test(value);
+}
+
+function hookRawRetention() {
+  const value = process.env.DINOBRAIN_HOOK_RAW_RETENTION;
+  if (value === "metadata_only" || value === "redacted_excerpt") return value;
+  return "redacted_excerpt";
+}
+
+function hookSessionMaxCandidates() {
+  return Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_SESSION_MAX_CANDIDATES ?? 8)));
+}
+
 function hookDedupeKey(input, request) {
   const source = JSON.stringify({
     hookEventName: input.hookEventName ?? input.hook_event_name ?? "UserPromptSubmit",
@@ -294,7 +310,16 @@ function contextLines(contextPack) {
   });
 }
 
-function additionalContext({ start, contextPack, redactions, reportPath }) {
+function sessionImportLine(sessionImport) {
+  if (!sessionImport) return "session_import: unavailable";
+  if (sessionImport.skipped) return `session_import: skipped (${sessionImport.reason})`;
+  if (sessionImport.ok) {
+    return `session_import: ${sessionImport.archive_path}; candidates: ${sessionImport.candidate_count}`;
+  }
+  return `session_import: failed (${sessionImport.error ?? "unknown error"})`;
+}
+
+function additionalContext({ start, contextPack, sessionImport, redactions, reportPath }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
   return [
     "DinoBrain OS preflight completed for this Codex prompt.",
@@ -302,6 +327,7 @@ function additionalContext({ start, contextPack, redactions, reportPath }) {
     `task_path: ${start.task_path}`,
     `context_pack_trace: ${contextPack.trace_path}`,
     `context_items: ${contextPack.item_count}`,
+    sessionImportLine(sessionImport),
     `prompt_redactions: ${redactions.length > 0 ? redactions.join(", ") : "none"}`,
     `hook_report: ${reportRel}`,
     "",
@@ -356,7 +382,7 @@ async function main() {
       redactions,
     });
 
-    const { start, contextPack } = await withClient(async (client) => {
+    const { start, contextPack, sessionImport } = await withClient(async (client) => {
       const startResult = parseTool(
         await client.callTool({
           name: "start_task",
@@ -379,7 +405,43 @@ async function main() {
         }),
       );
 
-      return { start: startResult, contextPack: contextResult };
+      let importResult;
+      if (envFlag("DINOBRAIN_HOOK_IMPORT_SESSION", true)) {
+        try {
+          importResult = parseTool(
+            await client.callTool({
+              name: "import_session",
+              arguments: {
+                source: "codex-user-prompt-hook",
+                project,
+                title: `Codex prompt ${stampForFile(new Date(startedAt))}`,
+                messages: [
+                  {
+                    role: "user",
+                    content: request,
+                    at: startedAt,
+                  },
+                ],
+                sensitivity,
+                max_candidates: hookSessionMaxCandidates(),
+                raw_retention: hookRawRetention(),
+              },
+            }),
+          );
+        } catch (error) {
+          importResult = {
+            ok: false,
+            error: safeError(error),
+          };
+        }
+      } else {
+        importResult = {
+          skipped: true,
+          reason: "DINOBRAIN_HOOK_IMPORT_SESSION disabled",
+        };
+      }
+
+      return { start: startResult, contextPack: contextResult, sessionImport: importResult };
     });
 
     await appendDataEvent({
@@ -391,6 +453,14 @@ async function main() {
       context_pack_trace: contextPack.trace_path,
       context_item_count: contextPack.item_count,
       context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
+      session_import: sessionImport?.ok
+        ? {
+            session_id: sessionImport.session_id,
+            archive_path: sessionImport.archive_path,
+            candidate_count: sessionImport.candidate_count,
+            review_paths: sessionImport.review_paths,
+          }
+        : sessionImport,
       redactions,
     });
 
@@ -405,10 +475,23 @@ async function main() {
       context_pack_trace: contextPack.trace_path,
       context_item_count: contextPack.item_count,
       context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
+      session_import: sessionImport?.ok
+        ? {
+            session_id: sessionImport.session_id,
+            archive_path: sessionImport.archive_path,
+            candidate_count: sessionImport.candidate_count,
+            candidate_paths: sessionImport.candidate_paths,
+            review_paths: sessionImport.review_paths,
+            temperature_counts: sessionImport.temperature_counts,
+            category_counts: sessionImport.category_counts,
+          }
+        : sessionImport,
       redactions,
     });
 
-    process.stdout.write(`${JSON.stringify(hookOutput(additionalContext({ start, contextPack, redactions, reportPath })))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(hookOutput(additionalContext({ start, contextPack, sessionImport, redactions, reportPath })))}\n`,
+    );
   } finally {
     await releaseHookLock(hookLock);
   }

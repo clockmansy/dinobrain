@@ -141,6 +141,6 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 
 `npm run session:verify` proves that `import_session` stores only redacted local-only session excerpts, extracts hot/warm/cold review candidates, excludes unreviewed imports from retrieval, and keeps raw archives blocked from git sync.
 
-`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight without leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
+`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight, imports the redacted prompt through `import_session`, and avoids leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 
 `npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events can be watched while working. See `docs/CODEX_HOOKS.md`.

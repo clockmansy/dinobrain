@@ -174,6 +174,7 @@ Goal: Use user/agent sessions as the root source of knowledge without making the
 Initial behavior:
 
 - `import_session` stores redacted local-only session archives under `10_Conversations/raw`.
+- The Codex `UserPromptSubmit` hook calls `import_session` with the redacted user prompt by default.
 - Raw full conversation logs are not stored in git.
 - The extractor creates pending candidates under `50_Instances/candidates`.
 - Each candidate has evidence, sensitivity, confidence, and hot/warm/cold temperature.

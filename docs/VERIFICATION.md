@@ -153,6 +153,7 @@ It verifies:
 - the hook wrapper can start the DinoBrain preflight script.
 - `start_task` creates a task.
 - `get_context_pack` creates a trace and returns relevant memory.
+- `import_session` creates a local-only prompt archive and pending review candidates.
 - the hook returns `hookSpecificOutput.additionalContext`.
 - obvious secret-shaped prompt text is redacted before it reaches hook stdout or task records.
-- live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, and `codex_preflight_completed`.
+- live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, `session_imported`, and `codex_preflight_completed`.

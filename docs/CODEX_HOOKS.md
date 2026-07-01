@@ -14,8 +14,12 @@ flowchart LR
   user["User prompt"] --> hook["Codex UserPromptSubmit hook"]
   hook --> start["DinoBrain start_task"]
   hook --> pack["DinoBrain get_context_pack"]
+  hook --> ingest["DinoBrain import_session"]
   start --> events[".dino/events"]
   pack --> events
+  ingest --> raw["10_Conversations/raw"]
+  ingest --> review["50_Instances/candidates + 80_Review_Queue"]
+  ingest --> events
   pack --> injected["additionalContext injected into Codex"]
   events --> observatory["DinoBrain Observatory"]
   injected --> agent["Codex work"]
@@ -58,19 +62,33 @@ If global `npm` is not available, use the portable Node runtime installed by `in
 
 The hook records bounded task and event data, not raw full conversation logs. It redacts obvious secret patterns such as OpenAI key shapes, GitHub token shapes, AWS access key shapes, bearer/JWT tokens, API key assignments, token assignments, secret assignments, password assignments, cookie assignments, and private-key blocks before calling DinoBrain MCP tools.
 
+By default the hook also calls `import_session` with the redacted user prompt. This creates a local-only session archive and pending review candidates, but does not put those candidates into default retrieval.
+
 It writes:
 
 - `.dino/tasks/<task_id>.json`
 - `.dino/context-packs/<pack_id>.json`
+- `10_Conversations/raw/<session_id>.json`
+- `50_Instances/candidates/<candidate_id>.json`
+- `80_Review_Queue/promotion/<candidate_id>.json`
 - `.dino/events/<date>.jsonl`
 - `reports/live-hooks/<hook-run>.json`
 
 The `reports/` directory is local-only and ignored by git.
+
+## Session Import Controls
+
+Environment variables:
+
+- `DINOBRAIN_HOOK_IMPORT_SESSION=0` disables automatic prompt import.
+- `DINOBRAIN_HOOK_RAW_RETENTION=metadata_only` stores only message metadata and hashes instead of redacted previews.
+- `DINOBRAIN_HOOK_SESSION_MAX_CANDIDATES` caps extracted candidates per prompt.
 
 ## Current Limits
 
 - Codex must trust project hooks before the hook runs.
 - Codex must trust the user-level hook before global preflight runs.
 - The current already-running session may not retroactively load this hook.
+- Automatic import currently sees the submitted user prompt, not the later assistant response.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work.
 - The Observatory shows file-backed events in near real time by polling; it is not a remote telemetry service.
