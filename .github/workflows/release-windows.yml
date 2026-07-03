@@ -1,0 +1,72 @@
+name: Release Windows Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag. Defaults to package.json version."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build and upload Windows installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify build
+        run: |
+          npm run build
+          npm run observatory:verify
+          npm run hook:verify
+          npm run installer:verify:version
+
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+            $tag = "v$($pkg.version)"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Build and publish release assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1 `
+            -Tag "${{ steps.release.outputs.tag }}" `
+            -TargetCommitish "${{ github.sha }}" `
+            -InstallerAppRef main `
+            -DataRef main `
+            -ReplaceAsset
