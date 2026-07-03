@@ -504,10 +504,10 @@ function New-DinoBrainCodexHookCommand {
   return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; & $hookLiteral }`""
 }
 
-function Test-DinoBrainHookGroup {
-  param([AllowNull()][object]$Group)
-  if ($null -eq $Group) { return $false }
-  $text = ($Group | ConvertTo-Json -Depth 20 -Compress)
+function Test-DinoBrainHookEntry {
+  param([AllowNull()][object]$Hook)
+  if ($null -eq $Hook) { return $false }
+  $text = ($Hook | ConvertTo-Json -Depth 20 -Compress)
   return $text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context"
 }
 
@@ -542,20 +542,42 @@ function Set-DinoBrainCodexUserHook {
 
   $groups = @()
   if ($config["hooks"].Contains("UserPromptSubmit") -and $null -ne $config["hooks"]["UserPromptSubmit"]) {
-    $groups = @(@($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) })
+    foreach ($group in @($config["hooks"]["UserPromptSubmit"])) {
+      $normalizedGroup = ConvertTo-Hashtable $group
+      if ($normalizedGroup -is [System.Collections.IDictionary]) {
+        $existingHooks = @()
+        if ($normalizedGroup.Contains("hooks") -and $null -ne $normalizedGroup["hooks"]) {
+          $existingHooks = @($normalizedGroup["hooks"]) | Where-Object { -not (Test-DinoBrainHookEntry $_) }
+        }
+        $normalizedGroup["hooks"] = @($existingHooks)
+      }
+      $groups += $normalizedGroup
+    }
   }
 
   $command = New-DinoBrainCodexHookCommand -AppPath $AppPath -VaultPath $VaultPath
-  $groups += [ordered]@{
-    hooks = @(
-      [ordered]@{
-        type = "command"
-        command = $command
-        commandWindows = $command
-        timeout = 30
-        statusMessage = "Loading DinoBrain context"
+  $dinoHook = [ordered]@{
+    type = "command"
+    command = $command
+    commandWindows = $command
+    timeout = 30
+    statusMessage = "Loading DinoBrain context"
+  }
+  $mergedIntoExistingGroup = $false
+  for ($index = 0; $index -lt @($groups).Count; $index += 1) {
+    if ($groups[$index] -is [System.Collections.IDictionary]) {
+      if (-not $groups[$index].Contains("hooks") -or $null -eq $groups[$index]["hooks"]) {
+        $groups[$index]["hooks"] = @()
       }
-    )
+      $groups[$index]["hooks"] = @(@($groups[$index]["hooks"]) + $dinoHook)
+      $mergedIntoExistingGroup = $true
+      break
+    }
+  }
+  if (-not $mergedIntoExistingGroup) {
+    $groups += [ordered]@{
+      hooks = @($dinoHook)
+    }
   }
   $config["hooks"]["UserPromptSubmit"] = @($groups)
 

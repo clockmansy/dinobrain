@@ -28,14 +28,31 @@ try {
     @{
       Name = "array"
       Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo old","timeout":5}]}]}}'
+      ExpectedGroups = 1
+      PreserveRegex = "echo old"
     },
     @{
       Name = "single-object"
       Json = '{"hooks":{"UserPromptSubmit":{"hooks":[{"type":"command","command":"echo old","timeout":5}]}}}'
+      ExpectedGroups = 1
+      PreserveRegex = "echo old"
     },
     @{
       Name = "existing-dinobrain"
       Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"powershell dinobrain-user-prompt-hook.ps1","statusMessage":"Loading DinoBrain context"}]}]}}'
+      ExpectedGroups = 1
+    },
+    @{
+      Name = "existing-dinobrain-with-neighbor"
+      Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"why-was-fable-banned","timeout":5},{"type":"command","command":"powershell dinobrain-user-prompt-hook.ps1","statusMessage":"Loading DinoBrain context"}]}]}}'
+      ExpectedGroups = 1
+      PreserveRegex = "why-was-fable-banned"
+    },
+    @{
+      Name = "merge-into-first-existing-group"
+      Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"why-was-fable-banned","timeout":5}]},{"hooks":[{"type":"command","command":"powershell dinobrain-user-prompt-hook.ps1","statusMessage":"Loading DinoBrain context"}]}]}}'
+      ExpectedGroups = 2
+      PreserveRegex = "why-was-fable-banned"
     }
   )
 
@@ -49,9 +66,19 @@ try {
     if ($groups.Count -lt 1) {
       throw "No UserPromptSubmit groups written for case $($case.Name)"
     }
+    if ($case.ContainsKey("ExpectedGroups") -and $groups.Count -ne $case.ExpectedGroups) {
+      throw "Unexpected UserPromptSubmit group count for case $($case.Name): $($groups.Count)"
+    }
     $text = $raw
     if ($text -notmatch "dinobrain-user-prompt-hook\.ps1") {
       throw "DinoBrain hook missing for case $($case.Name)"
+    }
+    if ($case.ContainsKey("PreserveRegex") -and $text -notmatch $case.PreserveRegex) {
+      throw "Existing non-DinoBrain hook was not preserved for case $($case.Name)"
+    }
+    $firstGroupText = $groups[0] | ConvertTo-Json -Depth 20 -Compress
+    if ($firstGroupText -notmatch "dinobrain-user-prompt-hook\.ps1") {
+      throw "DinoBrain hook was not merged into the first UserPromptSubmit group for case $($case.Name)"
     }
     $dinoHookCount = 0
     foreach ($group in $groups) {
@@ -64,9 +91,6 @@ try {
     }
     if ($dinoHookCount -ne 1) {
       throw "Unexpected DinoBrain hook count for case $($case.Name): $dinoHookCount"
-    }
-    if (($case.Name -eq "array" -or $case.Name -eq "single-object") -and $text -notmatch "echo old") {
-      throw "Existing non-DinoBrain hook was not preserved for case $($case.Name)"
     }
   }
 
