@@ -96,7 +96,7 @@ spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "0.1.5",
+  version: "0.1.6",
 });
 
 const transport = new StdioClientTransport({

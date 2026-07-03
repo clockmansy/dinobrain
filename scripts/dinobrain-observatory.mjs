@@ -807,10 +807,10 @@ function html() {
     }
     main {
       display: grid;
-      grid-template-columns: minmax(360px, 1.25fr) minmax(320px, 0.75fr);
-      gap: 1px;
+      grid-template-columns: 1fr;
+      gap: 0;
       min-height: calc(100vh - 138px);
-      background: #283226;
+      background: var(--bg);
     }
     section {
       background: var(--bg);
@@ -914,6 +914,7 @@ function html() {
       border: 1px solid #3b452f;
       border-radius: 8px;
       background:
+        radial-gradient(circle at 42% 52%, rgba(217, 154, 61, .105), transparent 26%),
         linear-gradient(180deg, rgba(217, 154, 61, .08), transparent 42%),
         var(--panel-2);
       overflow: hidden;
@@ -974,14 +975,16 @@ function html() {
     }
     .graph-wrap {
       position: relative;
-      height: clamp(300px, 43vh, 520px);
-      min-height: 300px;
+      height: clamp(500px, 61vh, 720px);
+      min-height: 500px;
       background:
-        linear-gradient(0deg, rgba(230, 220, 194, .035) 1px, transparent 1px),
+        radial-gradient(circle at 46% 52%, rgba(240, 168, 58, .10), transparent 23%),
+        radial-gradient(circle at 83% 16%, rgba(79, 182, 164, .08), transparent 18%),
+        linear-gradient(0deg, rgba(230, 220, 194, .04) 1px, transparent 1px),
         linear-gradient(90deg, rgba(230, 220, 194, .025) 1px, transparent 1px),
-        repeating-linear-gradient(176deg, rgba(217, 154, 61, .055) 0 2px, transparent 2px 34px),
-        linear-gradient(180deg, #090d0a 0%, #10160f 48%, #0b0e0b 100%);
-      background-size: 42px 42px, 42px 42px, auto, auto;
+        repeating-linear-gradient(176deg, rgba(217, 154, 61, .045) 0 2px, transparent 2px 38px),
+        linear-gradient(180deg, #070b08 0%, #0d140e 48%, #070907 100%);
+      background-size: auto, auto, 44px 44px, 44px 44px, auto, auto;
     }
     #wiki-graph {
       display: block;
@@ -1040,7 +1043,9 @@ function html() {
     .codex_preflight_failed .badge { color: var(--red); border-color: rgba(223, 107, 85, .48); }
     .details {
       display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
+      padding-top: 0;
     }
     .block {
       border: 1px solid var(--line);
@@ -1088,6 +1093,8 @@ function html() {
       .graph-meta { align-items: flex-start; flex-direction: column; white-space: normal; width: 100%; }
       .graph-legend { flex-wrap: wrap; }
       #graph-search { width: 100%; }
+      .graph-wrap { height: clamp(380px, 62vh, 520px); min-height: 380px; }
+      .details { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1289,6 +1296,143 @@ function html() {
       if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .18)", width: 1, bead: false };
       return { color: "rgba(190, 154, 91, .17)", width: 1, bead: false };
     }
+    function graphHash(value) {
+      let hash = 2166136261;
+      const text = String(value ?? "");
+      for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return hash >>> 0;
+    }
+    function graphUnit(value) {
+      return (graphHash(value) % 1000) / 1000;
+    }
+    function graphPointOnPath(points, t) {
+      if (!points.length) return { x: .5, y: .5 };
+      if (points.length === 1) return { x: points[0][0], y: points[0][1] };
+      const segments = [];
+      let total = 0;
+      for (let i = 0; i < points.length - 1; i += 1) {
+        const a = points[i];
+        const b = points[i + 1];
+        const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        segments.push({ a, b, length });
+        total += length;
+      }
+      let remaining = Math.max(0, Math.min(1, t)) * total;
+      for (const segment of segments) {
+        if (remaining <= segment.length || segment === segments[segments.length - 1]) {
+          const local = segment.length ? remaining / segment.length : 0;
+          return {
+            x: segment.a[0] + (segment.b[0] - segment.a[0]) * local,
+            y: segment.a[1] + (segment.b[1] - segment.a[1]) * local,
+          };
+        }
+        remaining -= segment.length;
+      }
+      const last = points[points.length - 1];
+      return { x: last[0], y: last[1] };
+    }
+    function graphPoseJitter(node, pose, amount = .018) {
+      const jitterX = (graphUnit(node.id + ":x") - .5) * amount;
+      const jitterY = (graphUnit(node.id + ":y") - .5) * amount;
+      return {
+        x: Math.max(.025, Math.min(.975, pose.x + jitterX)),
+        y: Math.max(.035, Math.min(.965, pose.y + jitterY)),
+      };
+    }
+    function graphDinoPart(node, index) {
+      const label = String(node.label || node.path || node.id || "").toLowerCase();
+      if (node.type === "activity_root" || node.type === "root") return "heart";
+      if (node.type === "active_task") return "shoulder";
+      if (node.type === "folder") {
+        if (label.includes("30_sources") || label.includes("source")) return "head";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
+        if (label.includes("40_projects") || label.includes("project")) return "throat";
+        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
+        if (label.includes("60_operations") || label.includes("operation")) return "hind-foot";
+        return "spine";
+      }
+      if (node.type === "context_pack") return "back";
+      if (node.type === "active_task" || node.type === "task") return "body";
+      if (node.type === "kind") return index % 4 === 0 ? "front-leg" : "rib";
+      if (node.type === "tag") return index % 4 === 0 ? "outline" : index % 4 === 1 ? "front-leg" : "rib";
+      if (node.type === "event") return index % 5 === 0 ? "tail" : index % 5 === 1 ? "belly" : index % 5 === 2 ? "hind-foot" : index % 5 === 3 ? "front-leg" : "body";
+      if (node.type === "record") {
+        const bucket = graphHash(node.id) % 6;
+        return ["outline", "tail", "belly", "back", "mid-leg", "front-leg"][bucket];
+      }
+      return "body";
+    }
+    function graphDinoPose(node, ordinal, total, index, graphTotal) {
+      const label = String(node.label || "").toLowerCase();
+      if (node.type === "folder") {
+        if (label.includes("30_sources") || label.includes("source")) return { x: .965, y: .055, part: "head", lock: .13 };
+        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .915, y: .12, part: "skull", lock: .125 };
+        if (label.includes("40_projects") || label.includes("project")) return { x: .86, y: .245, part: "throat", lock: .118 };
+        if (label.includes("50_instances") || label.includes("instance")) return { x: .67, y: .705, part: "front-leg", lock: .095 };
+        if (label.includes("60_operations") || label.includes("operation")) return { x: .40, y: .94, part: "hind-foot", lock: .095 };
+      }
+      if (node.type === "activity_root" || node.type === "root") return { x: .42, y: .50, part: "heart", lock: .105 };
+      if (node.type === "active_task") return { x: .62, y: .49, part: "shoulder", lock: .095 };
+      const part = node.dinoPart || graphDinoPart(node, index);
+      const t = total <= 1 ? .5 : ordinal / Math.max(1, total - 1);
+      const allT = graphTotal <= 1 ? .5 : index / Math.max(1, graphTotal - 1);
+      const paths = {
+        outline: [[.02, .75], [.105, .745], [.215, .675], [.33, .535], [.43, .39], [.57, .37], [.705, .315], [.79, .205], [.86, .075], [.975, .055]],
+        spine: [[.18, .64], [.31, .52], [.45, .385], [.60, .38], [.72, .31], [.815, .18], [.92, .10]],
+        back: [[.205, .60], [.34, .48], [.50, .38], [.64, .38], [.765, .265], [.88, .12]],
+        tail: [[.02, .79], [.105, .775], [.21, .71], [.31, .61], [.39, .555]],
+        belly: [[.30, .645], [.43, .695], [.56, .66], [.69, .565]],
+        body: [[.31, .545], [.415, .455], [.54, .455], [.665, .53], [.595, .63], [.425, .635]],
+        rib: [[.34, .525], [.45, .465], [.57, .475], [.69, .525], [.565, .635], [.40, .625]],
+        "mid-leg": [[.45, .58], [.44, .75], [.41, .94]],
+        "front-leg": [[.625, .555], [.695, .745], [.75, .94]],
+        "hind-foot": [[.35, .60], [.305, .775], [.255, .94]],
+        shoulder: [[.595, .465], [.685, .42], [.75, .315]],
+        throat: [[.705, .38], [.79, .255], [.87, .145]],
+        head: [[.84, .075], [.91, .035], [.985, .055]],
+        skull: [[.84, .13], [.91, .105], [.965, .125]],
+        heart: [[.39, .49], [.43, .50], [.485, .525]],
+      };
+      if (part === "body") {
+        const angle = allT * Math.PI * 2;
+        return graphPoseJitter(node, {
+          x: .485 + Math.cos(angle) * (.16 + graphUnit(node.id + ":body") * .045),
+          y: .54 + Math.sin(angle) * (.12 + graphUnit(node.id + ":body-y") * .045),
+        }, .022);
+      }
+      if (part === "rib") {
+        const ribIndex = ordinal % 6;
+        const ribT = (Math.floor(ordinal / 6) + .5) / Math.max(1, Math.ceil(total / 6));
+        return graphPoseJitter(node, {
+          x: .325 + ribIndex * .073,
+          y: .465 + ribT * .24 + Math.sin(ribIndex * 1.7) * .03,
+        }, .012);
+      }
+      if (part === "belly") {
+        return graphPoseJitter(node, graphPointOnPath(paths.belly, t), .016);
+      }
+      const point = graphPointOnPath(paths[part] || paths.body, t);
+      return graphPoseJitter(node, point, part === "outline" || part === "tail" ? .012 : .018);
+    }
+    function graphDinoTarget(node, size) {
+      const padX = Math.max(28 * size.dpr, size.width * .035);
+      const padY = Math.max(26 * size.dpr, size.height * .055);
+      return {
+        x: padX + node.poseX * (size.width - padX * 2),
+        y: padY + node.poseY * (size.height - padY * 2),
+      };
+    }
+    function graphShouldLabel(node, active) {
+      if (active) return true;
+      if (node.type === "activity_root" || node.type === "root") return true;
+      if (node.type === "active_task") return node.dinoOrdinal === 0;
+      if (node.type !== "folder") return false;
+      const label = String(node.label || "");
+      return /^(20|30|40|50|60)_/i.test(label) || /wiki|source|project|instance|operation/i.test(label);
+    }
     function matchesGraphSearch(node) {
       if (!graphSearch) return false;
       const haystack = [node.label, node.path, node.type].filter(Boolean).join(" ").toLowerCase();
@@ -1303,16 +1447,29 @@ function html() {
       graphSignature = signature;
       const size = graphSize();
       const previous = new Map(graphNodes.map((node) => [node.id, node]));
-      graphNodes = graph.nodes.map((node, index) => {
+      const prepared = graph.nodes.map((node, index) => ({ ...node, dinoPart: graphDinoPart(node, index) }));
+      const partCounts = new Map();
+      for (const node of prepared) partCounts.set(node.dinoPart, (partCounts.get(node.dinoPart) || 0) + 1);
+      const partSeen = new Map();
+      graphNodes = prepared.map((node, index) => {
         const old = previous.get(node.id);
-        const angle = (index / Math.max(1, graph.nodes.length)) * Math.PI * 2;
-        const radius = Math.min(size.width, size.height) * 0.28;
+        const ordinal = partSeen.get(node.dinoPart) || 0;
+        partSeen.set(node.dinoPart, ordinal + 1);
+        const pose = graphDinoPose(node, ordinal, partCounts.get(node.dinoPart) || 1, index, prepared.length);
+        const target = graphDinoTarget({ poseX: pose.x, poseY: pose.y }, size);
+        const driftX = (graphUnit(node.id + ":start-x") - .5) * 22 * size.dpr;
+        const driftY = (graphUnit(node.id + ":start-y") - .5) * 22 * size.dpr;
         return {
           ...node,
-          x: old?.x ?? size.width / 2 + Math.cos(angle) * radius,
-          y: old?.y ?? size.height / 2 + Math.sin(angle) * radius,
+          x: old?.x ?? target.x + driftX,
+          y: old?.y ?? target.y + driftY,
           vx: old?.vx ?? 0,
           vy: old?.vy ?? 0,
+          poseX: pose.x,
+          poseY: pose.y,
+          poseLock: pose.lock ?? .074,
+          dinoPart: pose.part || node.dinoPart,
+          dinoOrdinal: ordinal,
           r: graphRadius(node),
         };
       });
@@ -1333,8 +1490,8 @@ function html() {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.max(1, Math.hypot(dx, dy));
-        const target = edge.type === "wiki_link" ? 78 : 112;
-        const force = (distance - target) * 0.0009;
+        const target = edge.type === "wiki_link" ? 76 : edge.type === "active_task" ? 92 : 108;
+        const force = (distance - target * size.dpr) * 0.00009;
         const fx = dx * force;
         const fy = dy * force;
         a.vx += fx;
@@ -1360,12 +1517,18 @@ function html() {
         }
       }
       for (const node of graphNodes) {
-        node.vx += (centerX - node.x) * 0.0009;
-        node.vy += (centerY - node.y) * 0.0009;
-        node.vx *= 0.88;
-        node.vy *= 0.88;
-        node.x = Math.max(18, Math.min(size.width - 18, node.x + node.vx));
-        node.y = Math.max(18, Math.min(size.height - 18, node.y + node.vy));
+        const target = graphDinoTarget(node, size);
+        node.targetX = target.x;
+        node.targetY = target.y;
+        node.vx += (target.x - node.x) * node.poseLock;
+        node.vy += (target.y - node.y) * node.poseLock;
+        node.vx += (centerX - node.x) * 0.00002;
+        node.vy += (centerY - node.y) * 0.000015;
+        node.vx *= 0.72;
+        node.vy *= 0.72;
+        const margin = Math.max(18 * size.dpr, 18);
+        node.x = Math.max(margin, Math.min(size.width - margin, node.x + node.vx));
+        node.y = Math.max(margin, Math.min(size.height - margin, node.y + node.vy));
       }
     }
     function drawGraph() {
@@ -1433,11 +1596,12 @@ function html() {
           graphCtx.fill();
         }
         graphCtx.globalAlpha = 1;
-        if (highlighted || hovered || node.type === "root" || node.type === "activity_root" || node.type === "active_task") {
+        if (graphShouldLabel(node, active)) {
           graphCtx.font = Math.round(11 * size.dpr) + "px Segoe UI, sans-serif";
           const label = node.label.slice(0, 34);
-          const labelX = node.x + node.r + 5;
-          const labelY = node.y - node.r - 2;
+          const rightSide = node.poseX > .58;
+          const labelX = rightSide ? node.x + node.r + 8 * size.dpr : node.x + node.r + 5 * size.dpr;
+          const labelY = node.y - node.r - (node.type === "folder" ? 6 * size.dpr : 2);
           const box = {
             x: labelX - 5,
             y: labelY - 15 * size.dpr,
@@ -1452,7 +1616,10 @@ function html() {
           );
           if (active || !overlaps) {
             graphCtx.fillStyle = active ? "#fff1c2" : "#e6dcc2";
+            graphCtx.shadowColor = active ? "rgba(255, 204, 102, .42)" : "rgba(0, 0, 0, .75)";
+            graphCtx.shadowBlur = active ? 9 * size.dpr : 4 * size.dpr;
             graphCtx.fillText(label, labelX, labelY);
+            graphCtx.shadowBlur = 0;
             labelBoxes.push(box);
           }
         }

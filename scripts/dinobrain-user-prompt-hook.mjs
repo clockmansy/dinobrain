@@ -271,7 +271,7 @@ async function writeReport(report) {
 }
 
 async function withClient(callback) {
-  const client = new Client({ name: "dinobrain-codex-hook", version: "0.1.5" });
+  const client = new Client({ name: "dinobrain-codex-hook", version: "0.1.6" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
