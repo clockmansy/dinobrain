@@ -67,14 +67,19 @@ try {
   try { $processInfo.StandardInputEncoding = $Utf8NoBom } catch {}
   try { $processInfo.StandardOutputEncoding = $Utf8NoBom } catch {}
   try { $processInfo.StandardErrorEncoding = $Utf8NoBom } catch {}
-  $processInfo.EnvironmentVariables["DINOBRAIN_REPO_ROOT"] = $repoRoot
 
-  $process = [System.Diagnostics.Process]::Start($processInfo)
-  $process.StandardInput.Write($inputText)
-  $process.StandardInput.Close()
-  $stdout = $process.StandardOutput.ReadToEnd()
-  $stderr = $process.StandardError.ReadToEnd()
-  $process.WaitForExit()
+  $oldRepoRoot = $env:DINOBRAIN_REPO_ROOT
+  $env:DINOBRAIN_REPO_ROOT = $repoRoot
+  try {
+    $process = [System.Diagnostics.Process]::Start($processInfo)
+    $process.StandardInput.Write($inputText)
+    $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+  } finally {
+    if ($null -eq $oldRepoRoot) { Remove-Item Env:\DINOBRAIN_REPO_ROOT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REPO_ROOT = $oldRepoRoot }
+  }
 
   if ($stdout) {
     [Console]::Out.Write($stdout)

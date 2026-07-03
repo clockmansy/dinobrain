@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $installScript = Join-Path $root "install.ps1"
 $source = [System.IO.File]::ReadAllText($installScript)
-$start = $source.IndexOf("function ConvertTo-Hashtable")
+$start = $source.IndexOf("function ConvertTo-TomlString")
 $end = $source.IndexOf("function Set-DinoBrainClaudeCodeConfig")
 if ($start -lt 0 -or $end -lt 0 -or $end -le $start) {
   throw "Could not locate installer hook functions."
@@ -68,6 +68,25 @@ try {
     if (($case.Name -eq "array" -or $case.Name -eq "single-object") -and $text -notmatch "echo old") {
       throw "Existing non-DinoBrain hook was not preserved for case $($case.Name)"
     }
+  }
+
+  $configPath = Join-Path $temp "config.toml"
+  [System.IO.File]::WriteAllText($configPath, "[features]`r`nhooks = false`r`njs_repl = false`r`n", [System.Text.UTF8Encoding]::new($false))
+  Set-DinoBrainCodexConfig `
+    -ConfigPath $configPath `
+    -NodeExe (Join-Path $temp "node.exe") `
+    -ServerEntry (Join-Path $temp "dinobrain\dist\index.js") `
+    -VaultPath (Join-Path $temp "dinobrain-data") `
+    -EnableHooks
+  $configText = [System.IO.File]::ReadAllText($configPath)
+  if ($configText -notmatch "(?m)^hooks = true\r?$") {
+    throw "Codex hooks feature was not enabled in config.toml"
+  }
+  if ($configText -notmatch "(?m)^js_repl = false\r?$") {
+    throw "Existing features setting was not preserved in config.toml"
+  }
+  if ($configText -notmatch "\[mcp_servers\.dinobrain\]") {
+    throw "DinoBrain MCP config was not written"
   }
 
   $handshakeApp = Join-Path $temp "handshake-app"

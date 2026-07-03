@@ -78,7 +78,7 @@ Publish the EXE to GitHub Releases:
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.0 -ReplaceAsset
+npm run release:win -- -Tag v0.1.2 -ReplaceAsset
 ```
 
 Fresh Windows setup from PowerShell:

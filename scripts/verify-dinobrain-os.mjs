@@ -112,6 +112,35 @@ function parseCodexDinoBrainConfig() {
   };
 }
 
+function parseCodexHookRuntimeConfig() {
+  if (!existsSync(codexConfigPath)) {
+    return {
+      ok: !requireCodexUserHook,
+      required: requireCodexUserHook,
+      config_path: codexConfigPath,
+      reason: "config_not_found",
+    };
+  }
+
+  const text = readFileSync(codexConfigPath, "utf8");
+  const featuresSection = tomlSection(text, "features");
+  const hooksFeature = tomlValue(featuresSection, "hooks");
+  const hooksDisabled = /^false$/i.test((hooksFeature ?? "").trim());
+  const managedOnly = /^\s*allow_managed_hooks_only\s*=\s*true\s*$/im.test(text);
+  let reason = "enabled";
+  if (hooksDisabled) reason = "features_hooks_false";
+  if (managedOnly) reason = "allow_managed_hooks_only_true";
+
+  return {
+    ok: (!hooksDisabled && !managedOnly) || !requireCodexUserHook,
+    required: requireCodexUserHook,
+    config_path: codexConfigPath,
+    hooks_feature: hooksFeature ?? "default",
+    allow_managed_hooks_only: managedOnly,
+    reason,
+  };
+}
+
 function parseCodexUserHookConfig() {
   if (!existsSync(codexHooksPath)) {
     return {
@@ -157,7 +186,7 @@ function parseCodexUserHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "0.1.0" });
+  const client = new Client({ name, version: "0.1.2" });
   const transport = new StdioClientTransport({
     command,
     args,
@@ -540,6 +569,7 @@ async function main() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
 
   const codexConfig = parseCodexDinoBrainConfig();
+  const codexHookRuntime = parseCodexHookRuntimeConfig();
   const codexUserHook = parseCodexUserHookConfig();
   const [codexMcp, compoundingLoop] = await Promise.all([
     verifyConfiguredCodexMcp(codexConfig),
@@ -551,6 +581,7 @@ async function main() {
   const report = {
     ok:
       codexMcp.ok === true &&
+      codexHookRuntime.ok === true &&
       codexUserHook.ok === true &&
       compoundingLoop.ok === true &&
       retrievalEval.ok === true &&
@@ -558,9 +589,10 @@ async function main() {
     verification_version: "dinobrain-os-2026-07-01",
     codex_integration: {
       config: codexConfig,
+      hook_runtime_config: codexHookRuntime,
       user_prompt_hook: codexUserHook,
       mcp_list_tools: codexMcp,
-      note: "If the Codex app was already running before MCP or user hooks were added, restart or reload Codex to expose the new tool and hook surfaces in future threads.",
+      note: "If the Codex app was already running before MCP or user hooks were added, restart or reload Codex, then open /hooks and trust the DinoBrain UserPromptSubmit hook.",
     },
     claude_code_integration: {
       mcp_list: claudeCodeMcp,

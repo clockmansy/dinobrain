@@ -396,12 +396,59 @@ function Remove-TomlSection {
   return [regex]::Replace($Text, $pattern, "").TrimEnd()
 }
 
+function Set-TomlSectionKey {
+  param(
+    [AllowEmptyString()][string]$Text,
+    [Parameter(Mandatory = $true)][string]$SectionName,
+    [Parameter(Mandatory = $true)][string]$KeyName,
+    [Parameter(Mandatory = $true)][string]$Value
+  )
+
+  if ($null -eq $Text) { $Text = "" }
+  $line = "$KeyName = $Value"
+  $escapedSection = [regex]::Escape($SectionName)
+  $sectionPattern = "(?ms)^(?<header>\[$escapedSection\]\r?\n)(?<body>.*?)(?=^\[|\z)"
+  $sectionMatch = [regex]::Match($Text, $sectionPattern)
+  if ($sectionMatch.Success) {
+    $bodyGroup = $sectionMatch.Groups["body"]
+    $body = $bodyGroup.Value
+    $escapedKey = [regex]::Escape($KeyName)
+    $keyPattern = [regex]"(?m)^\s*$escapedKey\s*=.*$"
+    if ($keyPattern.IsMatch($body)) {
+      $newBody = $keyPattern.Replace($body, $line, 1)
+    } else {
+      $newBody = $body
+      if ($newBody.Length -gt 0 -and -not $newBody.EndsWith("`n")) {
+        $newBody += "`r`n"
+      }
+      $newBody += "$line`r`n"
+    }
+    return $Text.Substring(0, $bodyGroup.Index) + $newBody + $Text.Substring($bodyGroup.Index + $bodyGroup.Length)
+  }
+
+  $prefix = ""
+  if (-not [string]::IsNullOrWhiteSpace($Text)) {
+    $prefix = $Text.TrimEnd() + "`r`n`r`n"
+  }
+  return $prefix + "[$SectionName]`r`n$line`r`n"
+}
+
+function Enable-DinoBrainCodexHookFeature {
+  param([AllowEmptyString()][string]$Text)
+
+  if ($Text -match "(?mi)^\s*allow_managed_hooks_only\s*=\s*true\s*$") {
+    Write-Warning "Codex config contains allow_managed_hooks_only=true. User hooks may be skipped until that managed-only policy is removed."
+  }
+  return Set-TomlSectionKey -Text $Text -SectionName "features" -KeyName "hooks" -Value "true"
+}
+
 function Set-DinoBrainCodexConfig {
   param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [Parameter(Mandatory = $true)][string]$NodeExe,
     [Parameter(Mandatory = $true)][string]$ServerEntry,
-    [Parameter(Mandatory = $true)][string]$VaultPath
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [switch]$EnableHooks
   )
 
   $configDir = Split-Path -Parent $ConfigPath
@@ -418,6 +465,9 @@ function Set-DinoBrainCodexConfig {
 
   $content = Remove-TomlSection -Text $content -SectionName "mcp_servers.dinobrain"
   $content = Remove-TomlSection -Text $content -SectionName "mcp_servers.dinobrain.env"
+  if ($EnableHooks) {
+    $content = Enable-DinoBrainCodexHookFeature -Text $content
+  }
   if (-not [string]::IsNullOrWhiteSpace($content)) {
     $content = $content.TrimEnd() + "`r`n`r`n"
   }
@@ -552,19 +602,32 @@ function Invoke-DinoBrainCodexHookHandshake {
   try { $processInfo.StandardInputEncoding = $utf8NoBom } catch {}
   try { $processInfo.StandardOutputEncoding = $utf8NoBom } catch {}
   try { $processInfo.StandardErrorEncoding = $utf8NoBom } catch {}
-  $processInfo.EnvironmentVariables["DINOBRAIN_DATA_DIR"] = $VaultPath
-  $processInfo.EnvironmentVariables["DINOBRAIN_NODE_EXE"] = $NodeExe
-  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_PROJECT"] = "dinobrain-installer"
-  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_IMPORT_SESSION"] = "0"
-  $processInfo.EnvironmentVariables["DINOBRAIN_HOOK_CONTEXT_LIMIT"] = "3"
 
   Write-Host ">> powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hookScript"
-  $process = [System.Diagnostics.Process]::Start($processInfo)
-  $process.StandardInput.Write($payload)
-  $process.StandardInput.Close()
-  $stdout = $process.StandardOutput.ReadToEnd()
-  $stderr = $process.StandardError.ReadToEnd()
-  $process.WaitForExit()
+  $oldData = $env:DINOBRAIN_DATA_DIR
+  $oldNode = $env:DINOBRAIN_NODE_EXE
+  $oldProject = $env:DINOBRAIN_HOOK_PROJECT
+  $oldImport = $env:DINOBRAIN_HOOK_IMPORT_SESSION
+  $oldLimit = $env:DINOBRAIN_HOOK_CONTEXT_LIMIT
+  $env:DINOBRAIN_DATA_DIR = $VaultPath
+  $env:DINOBRAIN_NODE_EXE = $NodeExe
+  $env:DINOBRAIN_HOOK_PROJECT = "dinobrain-installer"
+  $env:DINOBRAIN_HOOK_IMPORT_SESSION = "0"
+  $env:DINOBRAIN_HOOK_CONTEXT_LIMIT = "3"
+  try {
+    $process = [System.Diagnostics.Process]::Start($processInfo)
+    $process.StandardInput.Write($payload)
+    $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+  } finally {
+    if ($null -eq $oldData) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldData }
+    if ($null -eq $oldNode) { Remove-Item Env:\DINOBRAIN_NODE_EXE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_NODE_EXE = $oldNode }
+    if ($null -eq $oldProject) { Remove-Item Env:\DINOBRAIN_HOOK_PROJECT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_PROJECT = $oldProject }
+    if ($null -eq $oldImport) { Remove-Item Env:\DINOBRAIN_HOOK_IMPORT_SESSION -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_IMPORT_SESSION = $oldImport }
+    if ($null -eq $oldLimit) { Remove-Item Env:\DINOBRAIN_HOOK_CONTEXT_LIMIT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_CONTEXT_LIMIT = $oldLimit }
+  }
 
   if ($process.ExitCode -ne 0) {
     throw "Codex user hook handshake failed with exit code $($process.ExitCode): $stderr"
@@ -620,6 +683,43 @@ if errorlevel 1 pause
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
     [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
     Write-Host "Observatory launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
+function New-DinoBrainHookDiagnoseLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath
+  )
+
+  $diagnoseScript = Join-Path $AppPath "scripts\diagnose-codex-hook.ps1"
+  if (-not (Test-Path -LiteralPath $diagnoseScript)) {
+    Write-Warning "Hook diagnose script not found: $diagnoseScript"
+    return @()
+  }
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Hook Diagnose.cmd"),
+    (Join-Path $AppPath "DinoBrain Hook Diagnose.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$diagnoseScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -NodeExe "$nodeExe"
+pause
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Hook diagnose launcher created: $launcherPath"
   }
   return $launcherPaths
 }
@@ -763,7 +863,7 @@ try {
 }
 
 if (-not $SkipCodexConfig) {
-  Set-DinoBrainCodexConfig -ConfigPath $CodexConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir
+  Set-DinoBrainCodexConfig -ConfigPath $CodexConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -EnableHooks:(-not $SkipCodexHookConfig)
 }
 
 if (-not $SkipCodexHookConfig) {
@@ -772,6 +872,7 @@ if (-not $SkipCodexHookConfig) {
 }
 
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
+$hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
 
 $claudeCodeConfigured = $false
 if (-not $SkipClaudeCodeConfig) {
@@ -791,5 +892,8 @@ Write-Host "Codex config: $CodexConfigPath"
 Write-Host "Codex user hooks: $CodexHooksPath"
 foreach ($launcher in $observatoryLaunchers) {
   Write-Host "Observatory launcher: $launcher"
+}
+foreach ($launcher in $hookDiagnoseLaunchers) {
+  Write-Host "Hook diagnose launcher: $launcher"
 }
 Write-Host "Claude Code MCP scope: $ClaudeScope"

@@ -24,7 +24,7 @@ npm run index:verify
 npm run hook:verify
 npm run verify:os
 npm run installer:win
-npm run release:win -- -Tag v0.1.0 -ReplaceAsset
+npm run release:win -- -Tag v0.1.2 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
@@ -73,6 +73,8 @@ C:\Users\<you>\.codex\hooks.json
 The hook listens for `UserPromptSubmit` and calls the installed DinoBrain PowerShell wrapper by absolute path. This makes DinoBrain preflight available outside the `dinobrain` repo after Codex reloads and the hook is trusted.
 
 During installer verification, `DINOBRAIN_REQUIRE_CODEX_USER_HOOK=1` requires this hook to be present. Manual `npm run verify:os` reports the hook state but does not fail solely because the user-level hook is absent.
+
+The verifier also reports `hook_runtime_config`. This catches `hooks = false` under `[features]` and `allow_managed_hooks_only = true`, either of which can make a registered user hook look installed while Codex skips it at runtime.
 
 The project hook in `.codex/hooks.json` remains for local verification and fallback. The runtime hook uses a short lock in `.dino/hook-locks` so project-level and user-level hooks do not both create task records for the same prompt.
 
