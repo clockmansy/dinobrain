@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+﻿import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -186,7 +186,7 @@ function parseCodexUserHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "0.1.6" });
+  const client = new Client({ name, version: "0.1.7" });
   const transport = new StdioClientTransport({
     command,
     args,

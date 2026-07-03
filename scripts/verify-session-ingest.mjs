@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+﻿import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,7 +24,7 @@ spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
 const client = new Client({
   name: "dinobrain-session-ingest-verify",
-  version: "0.1.6",
+  version: "0.1.7",
 });
 
 const transport = new StdioClientTransport({

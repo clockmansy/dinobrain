@@ -1,4 +1,4 @@
-# DinoBrain
+﻿# DinoBrain
 
 DinoBrain is a local-first second-brain OS for AI coding agents.
 
@@ -80,7 +80,7 @@ Publish the ZIP to GitHub Releases:
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.6 -ReplaceAsset
+npm run release:win -- -Tag v0.1.7 -ReplaceAsset
 ```
 
 Fresh Windows setup from PowerShell:

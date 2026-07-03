@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+﻿import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -347,7 +347,7 @@ function parseGitStatus(stdout: string): Array<{ status: string; path: string }>
 
 const server = new McpServer({
   name: "dinobrain",
-  version: "0.1.6",
+  version: "0.1.7",
 });
 
 server.registerTool(

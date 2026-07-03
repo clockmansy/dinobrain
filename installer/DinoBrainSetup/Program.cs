@@ -1,10 +1,10 @@
-using System.Reflection;
+﻿using System.Reflection;
 
 namespace DinoBrainSetup;
 
 internal static class Program
 {
-    internal static string SetupVersion => AssemblyMetadata("SetupVersion", "0.1.6");
+    internal static string SetupVersion => AssemblyMetadata("SetupVersion", "0.1.7");
     internal static string DefaultAppRef => AssemblyMetadata("InstallerAppRef", "main");
     internal static string DefaultDataRef => AssemblyMetadata("InstallerDataRef", "main");
 

@@ -975,8 +975,8 @@ function html() {
     }
     .graph-wrap {
       position: relative;
-      height: clamp(500px, 61vh, 720px);
-      min-height: 500px;
+      height: clamp(640px, 72vh, 820px);
+      min-height: 640px;
       background:
         radial-gradient(circle at 46% 52%, rgba(240, 168, 58, .10), transparent 23%),
         radial-gradient(circle at 83% 16%, rgba(79, 182, 164, .08), transparent 18%),
@@ -1093,7 +1093,7 @@ function html() {
       .graph-meta { align-items: flex-start; flex-direction: column; white-space: normal; width: 100%; }
       .graph-legend { flex-wrap: wrap; }
       #graph-search { width: 100%; }
-      .graph-wrap { height: clamp(380px, 62vh, 520px); min-height: 380px; }
+      .graph-wrap { height: clamp(460px, 64vh, 620px); min-height: 460px; }
       .details { grid-template-columns: 1fr; }
     }
   </style>
@@ -1216,6 +1216,7 @@ function html() {
     let graphSignature = "";
     let graphMouse = { x: -9999, y: -9999 };
     let graphSearch = "";
+    const graphFossilPoseLocked = true;
     const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const compact = (value, max = 180) => {
@@ -1254,13 +1255,13 @@ function html() {
       return { width, height, dpr };
     }
     function graphRadius(node) {
-      if (node.type === "root") return 9.5;
-      if (node.type === "activity_root") return 10.2;
-      if (node.type === "active_task") return 8.4;
+      if (node.type === "root") return node.dinoPart === "heart" ? 10.4 : 8.4;
+      if (node.type === "activity_root") return 11.6;
+      if (node.type === "active_task") return 8.9;
       if (node.type === "task") return 6.1;
       if (node.type === "context_pack") return 5.9;
       if (node.type === "event") return 3.8;
-      if (node.type === "folder") return 6.8;
+      if (node.type === "folder") return ["head", "skull", "front-foot", "hind-foot"].includes(node.dinoPart) ? 8.1 : 7.1;
       if (node.type === "tag") return 5.9;
       if (node.type === "kind") return 5.7;
       if (node.type === "record") return 5.1;
@@ -1288,13 +1289,13 @@ function html() {
           bead: true,
         };
       }
-      if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .46)", width: 1.8, bead: true, moving: true };
-      if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .28)", width: 1.1, bead: true, moving: true };
-      if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .24)", width: 1.1, bead: true, moving: false };
-      if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .28)", width: 1.15, bead: true };
-      if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .20)", width: 1, bead: false };
-      if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .18)", width: 1, bead: false };
-      return { color: "rgba(190, 154, 91, .17)", width: 1, bead: false };
+      if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .34)", width: 1.45, bead: true, moving: true };
+      if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .18)", width: .9, bead: true, moving: true };
+      if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .17)", width: .9, bead: true, moving: false };
+      if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .18)", width: .95, bead: true };
+      if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .13)", width: .85, bead: false };
+      if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .12)", width: .85, bead: false };
+      return { color: "rgba(190, 154, 91, .11)", width: .85, bead: false };
     }
     function graphHash(value) {
       let hash = 2166136261;
@@ -1338,97 +1339,200 @@ function html() {
       const jitterX = (graphUnit(node.id + ":x") - .5) * amount;
       const jitterY = (graphUnit(node.id + ":y") - .5) * amount;
       return {
-        x: Math.max(.025, Math.min(.975, pose.x + jitterX)),
-        y: Math.max(.035, Math.min(.965, pose.y + jitterY)),
+        ...pose,
+        x: Math.max(.035, Math.min(.965, pose.x + jitterX)),
+        y: Math.max(.045, Math.min(.955, pose.y + jitterY)),
       };
     }
     function graphDinoPart(node, index) {
       const label = String(node.label || node.path || node.id || "").toLowerCase();
-      if (node.type === "activity_root" || node.type === "root") return "heart";
-      if (node.type === "active_task") return "shoulder";
+      if (node.type === "activity_root") return "heart";
+      if (node.type === "root") {
+        if (label.includes("30_sources") || label.includes("source")) return "head";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
+        if (label.includes("40_projects") || label.includes("project")) return "neck";
+        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
+        if (label.includes("60_operations") || label.includes("operation")) return "hind-leg";
+        if (label.includes("70_error") || label.includes("error")) return "tail";
+        return index % 2 === 0 ? "outline" : "back";
+      }
       if (node.type === "folder") {
         if (label.includes("30_sources") || label.includes("source")) return "head";
         if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
         if (label.includes("40_projects") || label.includes("project")) return "throat";
-        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
+        if (label.includes("50_instances") || label.includes("instance")) return "front-foot";
         if (label.includes("60_operations") || label.includes("operation")) return "hind-foot";
-        return "spine";
+        if (label.includes("70_error") || label.includes("error")) return "tail";
+        if (label.includes("accepted")) return "belly";
+        return "back";
       }
-      if (node.type === "context_pack") return "back";
-      if (node.type === "active_task" || node.type === "task") return "body";
-      if (node.type === "kind") return index % 4 === 0 ? "front-leg" : "rib";
-      if (node.type === "tag") return index % 4 === 0 ? "outline" : index % 4 === 1 ? "front-leg" : "rib";
-      if (node.type === "event") return index % 5 === 0 ? "tail" : index % 5 === 1 ? "belly" : index % 5 === 2 ? "hind-foot" : index % 5 === 3 ? "front-leg" : "body";
       if (node.type === "record") {
-        const bucket = graphHash(node.id) % 6;
-        return ["outline", "tail", "belly", "back", "mid-leg", "front-leg"][bucket];
+        if (label.includes("30_sources") || label.includes("source")) return "head";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
+        if (label.includes("40_projects") || label.includes("project")) return "neck";
+        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
+        if (label.includes("60_operations") || label.includes("operation")) return "hind-leg";
+        if (label.includes("70_error") || label.includes("error")) return "tail";
+        return "rib";
+      }
+      if (node.type === "context_pack") {
+        const bucket = graphHash(node.id + ":pack") % 6;
+        return ["neck", "back", "rib", "body", "throat", "front-leg"][bucket];
+      }
+      if (node.type === "active_task") {
+        const bucket = graphHash(node.id + ":active") % 6;
+        return ["shoulder", "body", "neck", "front-leg", "rib", "body"][bucket];
+      }
+      if (node.type === "task") {
+        const bucket = graphHash(node.id + ":task") % 8;
+        return ["back", "rib", "belly", "hind-leg", "mid-leg", "front-leg", "body", "outline"][bucket];
+      }
+      if (node.type === "kind") return index % 3 === 0 ? "mid-leg" : "rib";
+      if (node.type === "tag") return index % 6 === 0 ? "outline" : index % 6 === 1 ? "front-leg" : index % 6 === 2 ? "back" : index % 6 === 3 ? "neck" : "rib";
+      if (node.type === "event") {
+        const bucket = graphHash(node.id + ":event") % 12;
+        return ["tail", "tail", "outline", "back", "rib", "belly", "hind-leg", "mid-leg", "front-leg", "neck", "throat", "body"][bucket];
       }
       return "body";
     }
     function graphDinoPose(node, ordinal, total, index, graphTotal) {
       const label = String(node.label || "").toLowerCase();
-      if (node.type === "folder") {
-        if (label.includes("30_sources") || label.includes("source")) return { x: .965, y: .055, part: "head", lock: .13 };
-        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .915, y: .12, part: "skull", lock: .125 };
-        if (label.includes("40_projects") || label.includes("project")) return { x: .86, y: .245, part: "throat", lock: .118 };
-        if (label.includes("50_instances") || label.includes("instance")) return { x: .67, y: .705, part: "front-leg", lock: .095 };
-        if (label.includes("60_operations") || label.includes("operation")) return { x: .40, y: .94, part: "hind-foot", lock: .095 };
+      if (node.type === "root") {
+        if (label.includes("30_sources") || label.includes("source")) return { x: .765, y: .11, part: "head", lock: .30 };
+        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .725, y: .16, part: "skull", lock: .29 };
+        if (label.includes("40_projects") || label.includes("project")) return { x: .665, y: .30, part: "neck", lock: .29 };
+        if (label.includes("50_instances") || label.includes("instance")) return { x: .63, y: .72, part: "front-leg", lock: .31 };
+        if (label.includes("60_operations") || label.includes("operation")) return { x: .38, y: .75, part: "hind-leg", lock: .31 };
+        if (label.includes("70_error") || label.includes("error")) return { x: .095, y: .705, part: "tail", lock: .29 };
       }
-      if (node.type === "activity_root" || node.type === "root") return { x: .42, y: .50, part: "heart", lock: .105 };
-      if (node.type === "active_task") return { x: .62, y: .49, part: "shoulder", lock: .095 };
+      if (node.type === "folder") {
+        if (label.includes("30_sources") || label.includes("source")) return { x: .805, y: .105, part: "head", lock: .30 };
+        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .775, y: .155, part: "skull", lock: .29 };
+        if (label.includes("40_projects") || label.includes("project")) return { x: .70, y: .305, part: "throat", lock: .28 };
+        if (label.includes("50_instances") || label.includes("instance")) return { x: .665, y: .815, part: "front-foot", lock: .32 };
+        if (label.includes("60_operations") || label.includes("operation")) return { x: .35, y: .825, part: "hind-foot", lock: .32 };
+        if (label.includes("70_error") || label.includes("error")) return { x: .125, y: .72, part: "tail", lock: .27 };
+        if (label.includes("accepted")) return { x: .50, y: .67, part: "belly", lock: .25 };
+      }
+      if (node.type === "activity_root") {
+        const angle = (ordinal / Math.max(1, total)) * Math.PI * 2;
+        return graphPoseJitter(node, {
+          x: .43 + Math.cos(angle) * .055,
+          y: .505 + Math.sin(angle) * .045,
+          part: "heart",
+          lock: .27,
+        }, .008);
+      }
+      if (node.type === "active_task") {
+        const lane = total <= 1 ? .5 : ordinal / Math.max(1, total - 1);
+        return graphPoseJitter(node, {
+          x: .56 + Math.cos(lane * Math.PI * 1.4) * .105,
+          y: .43 + lane * .155,
+          part: ordinal < Math.ceil(total / 2) ? "shoulder" : "body",
+          lock: .24,
+        }, .012);
+      }
       const part = node.dinoPart || graphDinoPart(node, index);
       const t = total <= 1 ? .5 : ordinal / Math.max(1, total - 1);
       const allT = graphTotal <= 1 ? .5 : index / Math.max(1, graphTotal - 1);
       const paths = {
-        outline: [[.02, .75], [.105, .745], [.215, .675], [.33, .535], [.43, .39], [.57, .37], [.705, .315], [.79, .205], [.86, .075], [.975, .055]],
-        spine: [[.18, .64], [.31, .52], [.45, .385], [.60, .38], [.72, .31], [.815, .18], [.92, .10]],
-        back: [[.205, .60], [.34, .48], [.50, .38], [.64, .38], [.765, .265], [.88, .12]],
-        tail: [[.02, .79], [.105, .775], [.21, .71], [.31, .61], [.39, .555]],
-        belly: [[.30, .645], [.43, .695], [.56, .66], [.69, .565]],
-        body: [[.31, .545], [.415, .455], [.54, .455], [.665, .53], [.595, .63], [.425, .635]],
-        rib: [[.34, .525], [.45, .465], [.57, .475], [.69, .525], [.565, .635], [.40, .625]],
-        "mid-leg": [[.45, .58], [.44, .75], [.41, .94]],
-        "front-leg": [[.625, .555], [.695, .745], [.75, .94]],
-        "hind-foot": [[.35, .60], [.305, .775], [.255, .94]],
-        shoulder: [[.595, .465], [.685, .42], [.75, .315]],
-        throat: [[.705, .38], [.79, .255], [.87, .145]],
-        head: [[.84, .075], [.91, .035], [.985, .055]],
-        skull: [[.84, .13], [.91, .105], [.965, .125]],
-        heart: [[.39, .49], [.43, .50], [.485, .525]],
+        outline: [[.055, .69], [.13, .68], [.23, .63], [.33, .52], [.43, .39], [.54, .34], [.64, .37], [.69, .29], [.73, .18], [.80, .10], [.88, .095]],
+        back: [[.19, .62], [.30, .50], [.41, .38], [.52, .335], [.63, .365], [.70, .27], [.76, .15]],
+        tail: [[.045, .70], [.115, .695], [.20, .665], [.285, .60], [.36, .515]],
+        belly: [[.295, .61], [.40, .68], [.52, .68], [.645, .60]],
+        body: [[.29, .51], [.38, .39], [.505, .34], [.625, .42], [.655, .54], [.58, .65], [.43, .675], [.31, .60]],
+        rib: [[.33, .50], [.40, .43], [.49, .405], [.58, .435], [.62, .53], [.56, .615], [.44, .625], [.35, .57]],
+        "hind-leg": [[.34, .57], [.31, .69], [.30, .805]],
+        "mid-leg": [[.465, .575], [.455, .705], [.43, .825]],
+        "front-leg": [[.60, .535], [.65, .665], [.675, .805]],
+        "front-foot": [[.60, .79], [.67, .845], [.745, .835]],
+        "hind-foot": [[.255, .80], [.335, .852], [.425, .842]],
+        shoulder: [[.56, .415], [.625, .385], [.68, .325]],
+        neck: [[.625, .415], [.675, .335], [.70, .25], [.72, .17], [.765, .10]],
+        throat: [[.665, .37], [.705, .285], [.73, .20], [.765, .14]],
+        head: [[.775, .105], [.835, .055], [.91, .085], [.88, .15]],
+        skull: [[.73, .175], [.795, .12], [.865, .135]],
+        heart: [[.385, .46], [.435, .475], [.49, .50]],
       };
+      const slots = {
+        tail: [[.045, .73], [.10, .725], [.155, .705], [.215, .665], [.275, .615], [.345, .545]],
+        outline: [[.235, .59], [.30, .50], [.36, .43], [.43, .375], [.505, .34], [.58, .355], [.64, .405]],
+        back: [[.255, .575], [.32, .49], [.385, .415], [.46, .36], [.535, .34], [.61, .375], [.675, .31]],
+        belly: [[.315, .61], [.385, .665], [.48, .69], [.575, .655], [.66, .60]],
+        body: [[.355, .515], [.405, .445], [.48, .405], [.56, .425], [.625, .50], [.61, .595], [.52, .64], [.425, .625], [.34, .575], [.47, .52], [.55, .545]],
+        rib: [[.36, .515], [.42, .465], [.49, .445], [.565, .47], [.60, .545], [.545, .60], [.455, .615], [.375, .575]],
+        shoulder: [[.575, .44], [.625, .405], [.675, .36], [.63, .485]],
+        neck: [[.625, .405], [.655, .335], [.675, .26], [.695, .18], [.735, .105]],
+        throat: [[.645, .38], [.68, .30], [.705, .22], [.735, .15]],
+        head: [[.745, .10], [.795, .06], [.85, .085], [.835, .15], [.785, .155]],
+        skull: [[.705, .18], [.765, .13], [.825, .14], [.78, .205]],
+        "hind-leg": [[.34, .585], [.315, .70], [.295, .815], [.39, .61], [.39, .735], [.385, .845]],
+        "mid-leg": [[.465, .59], [.46, .715], [.445, .84], [.525, .61], [.54, .735], [.55, .85]],
+        "front-leg": [[.61, .56], [.655, .68], [.695, .81], [.68, .545], [.735, .68], [.78, .83]],
+        "hind-foot": [[.27, .835], [.345, .875], [.43, .86]],
+        "front-foot": [[.61, .82], [.69, .875], [.77, .855]],
+      };
+      if (slots[part]) {
+        const slot = slots[part][ordinal % slots[part].length];
+        const repeat = Math.floor(ordinal / slots[part].length);
+        return graphPoseJitter(node, {
+          x: slot[0] + ((graphUnit(node.id + ":slot-x") - .5) * .012) + repeat * .006,
+          y: slot[1] + ((graphUnit(node.id + ":slot-y") - .5) * .012) + repeat * .006,
+          part,
+          lock: part === "head" || part === "skull" || part === "neck" || part === "throat" ? .34 : part.includes("leg") || part.includes("foot") ? .35 : .31,
+        }, .004);
+      }
       if (part === "body") {
         const angle = allT * Math.PI * 2;
         return graphPoseJitter(node, {
-          x: .485 + Math.cos(angle) * (.16 + graphUnit(node.id + ":body") * .045),
-          y: .54 + Math.sin(angle) * (.12 + graphUnit(node.id + ":body-y") * .045),
-        }, .022);
+          x: .47 + Math.cos(angle) * (.18 + graphUnit(node.id + ":body") * .035),
+          y: .525 + Math.sin(angle) * (.15 + graphUnit(node.id + ":body-y") * .03),
+          part,
+          lock: .24,
+        }, .016);
       }
       if (part === "rib") {
-        const ribIndex = ordinal % 6;
-        const ribT = (Math.floor(ordinal / 6) + .5) / Math.max(1, Math.ceil(total / 6));
+        const ribIndex = ordinal % 5;
+        const ribT = (Math.floor(ordinal / 5) + .5) / Math.max(1, Math.ceil(total / 5));
         return graphPoseJitter(node, {
-          x: .325 + ribIndex * .073,
-          y: .465 + ribT * .24 + Math.sin(ribIndex * 1.7) * .03,
-        }, .012);
+          x: .335 + ribIndex * .075,
+          y: .415 + ribT * .205 + Math.sin(ribIndex * 1.6) * .018,
+          part,
+          lock: .23,
+        }, .01);
       }
-      if (part === "belly") {
-        return graphPoseJitter(node, graphPointOnPath(paths.belly, t), .016);
+      if (part === "front-leg" || part === "hind-leg" || part === "mid-leg") {
+        const point = graphPointOnPath(paths[part], t);
+        return graphPoseJitter(node, { ...point, part, lock: .29 }, .01);
       }
       const point = graphPointOnPath(paths[part] || paths.body, t);
-      return graphPoseJitter(node, point, part === "outline" || part === "tail" ? .012 : .018);
+      const lock = part === "head" || part === "skull" || part === "throat" || part === "neck" ? .28 : part === "tail" || part === "outline" ? .26 : .23;
+      return graphPoseJitter(node, { ...point, part, lock }, part === "outline" || part === "tail" ? .01 : .014);
     }
     function graphDinoTarget(node, size) {
       const padX = Math.max(28 * size.dpr, size.width * .035);
       const padY = Math.max(26 * size.dpr, size.height * .055);
+      const usableWidth = Math.max(1, size.width - padX * 2);
+      const usableHeight = Math.max(1, size.height - padY * 2);
+      const frameWidth = Math.min(usableWidth, usableHeight * 1.58);
+      const frameHeight = Math.min(usableHeight, frameWidth / 1.38);
+      const frameX = padX + (usableWidth - frameWidth) / 2;
+      const frameY = padY + (usableHeight - frameHeight) / 2;
       return {
-        x: padX + node.poseX * (size.width - padX * 2),
-        y: padY + node.poseY * (size.height - padY * 2),
+        x: frameX + node.poseX * frameWidth,
+        y: frameY + node.poseY * frameHeight,
       };
     }
     function graphShouldLabel(node, active) {
       if (active) return true;
-      if (node.type === "activity_root" || node.type === "root") return true;
-      if (node.type === "active_task") return node.dinoOrdinal === 0;
+      if (node.type === "activity_root") return true;
+      if (node.type === "root") return false;
+      if (node.type === "active_task") {
+        const preferred = graphNodes.some((candidate) => candidate.type === "active_task" && /take the dinobrain|improve the dinobrain/i.test(candidate.label || candidate.id || ""));
+        return preferred
+          ? /take the dinobrain|improve the dinobrain/i.test(node.label || node.id || "")
+          : node.dinoOrdinal === 0;
+      }
       if (node.type !== "folder") return false;
       const label = String(node.label || "");
       return /^(20|30|40|50|60)_/i.test(label) || /wiki|source|project|instance|operation/i.test(label);
@@ -1437,6 +1541,205 @@ function html() {
       if (!graphSearch) return false;
       const haystack = [node.label, node.path, node.type].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(graphSearch);
+    }
+    function graphPartNodes(parts, sortMode = "x") {
+      const wanted = new Set(parts);
+      return graphNodes
+        .filter((node) => wanted.has(node.dinoPart))
+        .sort((a, b) => {
+          if (sortMode === "y") return a.poseY - b.poseY || a.poseX - b.poseX;
+          if (sortMode === "angle") {
+            const ax = a.poseX - .48;
+            const ay = a.poseY - .55;
+            const bx = b.poseX - .48;
+            const by = b.poseY - .55;
+            return Math.atan2(ay, ax) - Math.atan2(by, bx);
+          }
+          return a.poseX - b.poseX || a.poseY - b.poseY;
+        });
+    }
+    function drawGraphRoute(nodes, size, options = {}) {
+      if (nodes.length < 2) return;
+      graphCtx.save();
+      graphCtx.globalAlpha = options.alpha ?? 1;
+      graphCtx.strokeStyle = options.color || "rgba(217, 154, 61, .34)";
+      graphCtx.lineWidth = Math.max(1, (options.width || 1.6) * size.dpr);
+      graphCtx.lineCap = "round";
+      graphCtx.lineJoin = "round";
+      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .18)";
+      graphCtx.shadowBlur = (options.blur || 6) * size.dpr;
+      graphCtx.beginPath();
+      graphCtx.moveTo(nodes[0].x, nodes[0].y);
+      for (let i = 1; i < nodes.length - 1; i += 1) {
+        const node = nodes[i];
+        const next = nodes[i + 1];
+        graphCtx.quadraticCurveTo(node.x, node.y, (node.x + next.x) / 2, (node.y + next.y) / 2);
+      }
+      const last = nodes[nodes.length - 1];
+      graphCtx.lineTo(last.x, last.y);
+      graphCtx.stroke();
+      graphCtx.restore();
+    }
+    function drawPoseRoute(points, size, options = {}) {
+      if (points.length < 2) return;
+      const mapped = points.map(([poseX, poseY]) => graphDinoTarget({ poseX, poseY }, size));
+      graphCtx.save();
+      graphCtx.globalAlpha = options.alpha ?? 1;
+      graphCtx.strokeStyle = options.color || "rgba(217, 154, 61, .42)";
+      graphCtx.lineWidth = Math.max(1, (options.width || 2) * size.dpr);
+      graphCtx.lineCap = "round";
+      graphCtx.lineJoin = "round";
+      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .24)";
+      graphCtx.shadowBlur = (options.blur || 10) * size.dpr;
+      graphCtx.beginPath();
+      graphCtx.moveTo(mapped[0].x, mapped[0].y);
+      for (let i = 1; i < mapped.length - 1; i += 1) {
+        const point = mapped[i];
+        const next = mapped[i + 1];
+        graphCtx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+      }
+      const last = mapped[mapped.length - 1];
+      graphCtx.lineTo(last.x, last.y);
+      graphCtx.stroke();
+      graphCtx.restore();
+    }
+    function fillPoseHull(points, size, options = {}) {
+      if (points.length < 3) return;
+      const mapped = points.map(([poseX, poseY]) => graphDinoTarget({ poseX, poseY }, size));
+      graphCtx.save();
+      graphCtx.fillStyle = options.fill || "rgba(217, 154, 61, .055)";
+      graphCtx.strokeStyle = options.stroke || "rgba(217, 154, 61, .18)";
+      graphCtx.lineWidth = Math.max(1, (options.width || 1.1) * size.dpr);
+      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .18)";
+      graphCtx.shadowBlur = (options.blur || 14) * size.dpr;
+      graphCtx.beginPath();
+      graphCtx.moveTo(mapped[0].x, mapped[0].y);
+      for (let i = 1; i < mapped.length; i += 1) graphCtx.lineTo(mapped[i].x, mapped[i].y);
+      graphCtx.closePath();
+      graphCtx.fill();
+      graphCtx.stroke();
+      graphCtx.restore();
+    }
+    function drawPoseScaffold(size) {
+      fillPoseHull([
+        [.28, .58], [.35, .47], [.43, .38], [.52, .335], [.61, .37], [.67, .47],
+        [.64, .59], [.56, .665], [.45, .68], [.34, .63],
+      ], size, {
+        fill: "rgba(217, 154, 61, .075)",
+        stroke: "rgba(217, 154, 61, .24)",
+        width: 1.25,
+        blur: 18,
+      });
+      drawPoseRoute([[.045, .73], [.11, .725], [.18, .695], [.255, .635], [.34, .535], [.43, .39], [.52, .335], [.61, .37], [.67, .44]], size, {
+        color: "rgba(230, 164, 67, .58)",
+        width: 3.2,
+        blur: 16,
+      });
+      drawPoseRoute([[.285, .61], [.38, .675], [.50, .69], [.61, .63], [.67, .53]], size, {
+        color: "rgba(230, 220, 194, .30)",
+        width: 2.05,
+        blur: 8,
+      });
+      drawPoseRoute([[.615, .43], [.655, .335], [.68, .245], [.70, .16], [.745, .095], [.81, .075], [.865, .095]], size, {
+        color: "rgba(230, 164, 67, .62)",
+        width: 3.15,
+        blur: 15,
+      });
+      drawPoseRoute([[.64, .50], [.67, .39], [.69, .285], [.725, .18], [.785, .135], [.855, .15]], size, {
+        color: "rgba(230, 220, 194, .31)",
+        width: 1.75,
+        blur: 8,
+      });
+      drawPoseRoute([[.74, .10], [.795, .055], [.86, .085], [.845, .155], [.79, .17], [.735, .125]], size, {
+        color: "rgba(230, 164, 67, .56)",
+        width: 2.35,
+        blur: 10,
+      });
+      const legs = [
+        [[.34, .59], [.315, .70], [.29, .82], [.26, .85]],
+        [[.46, .60], [.455, .72], [.43, .84], [.38, .86]],
+        [[.56, .60], [.545, .73], [.55, .85], [.62, .86]],
+        [[.63, .56], [.675, .68], [.715, .82], [.78, .84]],
+      ];
+      for (const leg of legs) {
+        drawPoseRoute(leg, size, {
+          color: "rgba(79, 182, 164, .44)",
+          width: 2.25,
+          blur: 9,
+        });
+      }
+      const ribs = [
+        [[.43, .47], [.36, .53]],
+        [[.43, .47], [.42, .61]],
+        [[.43, .47], [.50, .63]],
+        [[.43, .47], [.58, .58]],
+        [[.43, .47], [.61, .48]],
+      ];
+      for (const rib of ribs) {
+        drawPoseRoute(rib, size, {
+          color: "rgba(230, 220, 194, .22)",
+          width: 1.05,
+          blur: 4,
+        });
+      }
+    }
+    function drawDinoScaffold(size, now) {
+      drawPoseScaffold(size);
+      const body = graphPartNodes(["heart", "body", "rib", "back", "belly", "shoulder"], "angle");
+      if (body.length >= 3) {
+        graphCtx.save();
+        graphCtx.fillStyle = "rgba(217, 154, 61, .065)";
+        graphCtx.strokeStyle = "rgba(217, 154, 61, .26)";
+        graphCtx.lineWidth = Math.max(1, 1.55 * size.dpr);
+        graphCtx.shadowColor = "rgba(217, 154, 61, .28)";
+        graphCtx.shadowBlur = 18 * size.dpr;
+        graphCtx.beginPath();
+        graphCtx.moveTo(body[0].x, body[0].y);
+        for (let i = 1; i < body.length; i += 1) graphCtx.lineTo(body[i].x, body[i].y);
+        graphCtx.closePath();
+        graphCtx.fill();
+        graphCtx.stroke();
+        graphCtx.restore();
+      }
+      drawGraphRoute(graphPartNodes(["tail", "outline", "back", "shoulder", "neck", "throat", "skull", "head"], "x"), size, {
+        color: "rgba(230, 164, 67, .48)",
+        width: 3.1,
+        blur: 14,
+      });
+      drawGraphRoute(graphPartNodes(["shoulder", "neck", "throat", "head"], "y"), size, {
+        color: "rgba(230, 220, 194, .34)",
+        width: 2.15,
+        blur: 10,
+      });
+      drawGraphRoute(graphPartNodes(["tail", "belly", "front-leg", "front-foot"], "x"), size, {
+        color: "rgba(230, 220, 194, .25)",
+        width: 1.9,
+        blur: 5,
+      });
+      for (const part of ["hind-leg", "mid-leg", "front-leg"]) {
+        drawGraphRoute(graphPartNodes([part, part === "front-leg" ? "front-foot" : "hind-foot"], "y"), size, {
+          color: part === "front-leg" ? "rgba(79, 182, 164, .42)" : "rgba(217, 154, 61, .36)",
+          width: 2.35,
+          blur: 7,
+        });
+      }
+      const hearts = graphPartNodes(["heart"], "x");
+      const ribs = graphPartNodes(["rib", "belly", "body"], "x").slice(0, 14);
+      const heart = hearts[Math.floor(hearts.length / 2)];
+      if (heart) {
+        graphCtx.save();
+        graphCtx.strokeStyle = "rgba(230, 220, 194, .19)";
+        graphCtx.lineWidth = Math.max(1, .95 * size.dpr);
+        for (const rib of ribs) {
+          const flicker = .72 + Math.sin(now / 720 + rib.x * .01) * .16;
+          graphCtx.globalAlpha = flicker;
+          graphCtx.beginPath();
+          graphCtx.moveTo(heart.x, heart.y);
+          graphCtx.lineTo(rib.x, rib.y);
+          graphCtx.stroke();
+        }
+        graphCtx.restore();
+      }
     }
     function renderGraph(graph) {
       graphStatsEl.textContent = graph.ok
@@ -1457,8 +1760,8 @@ function html() {
         partSeen.set(node.dinoPart, ordinal + 1);
         const pose = graphDinoPose(node, ordinal, partCounts.get(node.dinoPart) || 1, index, prepared.length);
         const target = graphDinoTarget({ poseX: pose.x, poseY: pose.y }, size);
-        const driftX = (graphUnit(node.id + ":start-x") - .5) * 22 * size.dpr;
-        const driftY = (graphUnit(node.id + ":start-y") - .5) * 22 * size.dpr;
+        const driftX = (graphUnit(node.id + ":start-x") - .5) * 7 * size.dpr;
+        const driftY = (graphUnit(node.id + ":start-y") - .5) * 7 * size.dpr;
         return {
           ...node,
           x: old?.x ?? target.x + driftX,
@@ -1467,7 +1770,7 @@ function html() {
           vy: old?.vy ?? 0,
           poseX: pose.x,
           poseY: pose.y,
-          poseLock: pose.lock ?? .074,
+          poseLock: pose.lock ?? .22,
           dinoPart: pose.part || node.dinoPart,
           dinoOrdinal: ordinal,
           r: graphRadius(node),
@@ -1482,7 +1785,18 @@ function html() {
       const size = graphSize();
       const centerX = size.width / 2;
       const centerY = size.height / 2;
-      const now = performance.now();
+      if (graphFossilPoseLocked) {
+        for (const node of graphNodes) {
+          const target = graphDinoTarget(node, size);
+          node.targetX = target.x;
+          node.targetY = target.y;
+          node.x += (target.x - node.x) * 0.38;
+          node.y += (target.y - node.y) * 0.38;
+          node.vx = 0;
+          node.vy = 0;
+        }
+        return;
+      }
       for (let edgeIndex = 0; edgeIndex < graphEdges.length; edgeIndex += 1) {
         const edge = graphEdges[edgeIndex];
         const a = edge.sourceNode;
@@ -1490,8 +1804,8 @@ function html() {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.max(1, Math.hypot(dx, dy));
-        const target = edge.type === "wiki_link" ? 76 : edge.type === "active_task" ? 92 : 108;
-        const force = (distance - target * size.dpr) * 0.00009;
+        const target = edge.type === "wiki_link" ? 62 : edge.type === "active_task" ? 76 : 92;
+        const force = (distance - target * size.dpr) * 0.000006;
         const fx = dx * force;
         const fy = dy * force;
         a.vx += fx;
@@ -1506,7 +1820,7 @@ function html() {
           const dx = b.x - a.x;
           const dy = b.y - a.y;
           const distanceSq = Math.max(64, dx * dx + dy * dy);
-          const force = Math.min(0.42, 160 / distanceSq);
+          const force = Math.min(0.09, 38 / distanceSq);
           const distance = Math.sqrt(distanceSq);
           const fx = (dx / distance) * force;
           const fy = (dy / distance) * force;
@@ -1522,10 +1836,10 @@ function html() {
         node.targetY = target.y;
         node.vx += (target.x - node.x) * node.poseLock;
         node.vy += (target.y - node.y) * node.poseLock;
-        node.vx += (centerX - node.x) * 0.00002;
-        node.vy += (centerY - node.y) * 0.000015;
-        node.vx *= 0.72;
-        node.vy *= 0.72;
+        node.vx += (centerX - node.x) * 0.000008;
+        node.vy += (centerY - node.y) * 0.000006;
+        node.vx *= 0.58;
+        node.vy *= 0.58;
         const margin = Math.max(18 * size.dpr, 18);
         node.x = Math.max(margin, Math.min(size.width - margin, node.x + node.vx));
         node.y = Math.max(margin, Math.min(size.height - margin, node.y + node.vy));
@@ -1559,6 +1873,7 @@ function html() {
           graphCtx.fill();
         }
       }
+      drawDinoScaffold(size, now);
       for (const node of graphNodes) {
         const highlighted = matchesGraphSearch(node);
         const hovered = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y) <= node.r + 5;

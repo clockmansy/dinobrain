@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -271,7 +271,7 @@ async function writeReport(report) {
 }
 
 async function withClient(callback) {
-  const client = new Client({ name: "dinobrain-codex-hook", version: "0.1.6" });
+  const client = new Client({ name: "dinobrain-codex-hook", version: "0.1.7" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

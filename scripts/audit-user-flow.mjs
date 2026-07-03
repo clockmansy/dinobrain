@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+﻿import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,7 +142,7 @@ The narrow lookup phrase is zeta-lattice-only. It should appear through wiki_sea
 }
 
 function verifyCodexHookBridge(dataRoot) {
-  const claim = "사용자 요청이 들어오면 OS 훅이 먼저 감지한다.";
+  const claim = "?ъ슜???붿껌???ㅼ뼱?ㅻ㈃ OS ?낆씠 癒쇱? 媛먯??쒕떎.";
   if (!existsSync(hookConfigPath) || !existsSync(hookScriptPath)) {
     return status(
       1,
@@ -238,7 +238,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "0.1.6" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "0.1.7" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -279,7 +279,7 @@ async function auditFlow() {
     checks.push(
       status(
         1,
-        "사용자 요청이 들어오면 OS 훅이 먼저 감지한다.",
+        "?ъ슜???붿껌???ㅼ뼱?ㅻ㈃ OS ?낆씠 癒쇱? 媛먯??쒕떎.",
         "not_implemented",
         "DinoBrain MCP tools are listable, but there is no Codex hook, pre-prompt trigger, or automatic start_task bridge in the repo.",
         "The agent must intentionally call MCP tools until a hook or agent protocol exists.",
@@ -305,7 +305,7 @@ async function auditFlow() {
     checks.push(
       status(
         2,
-        "start_task가 이번 작업을 OS에 등록한다.",
+        "start_task媛 ?대쾲 ?묒뾽??OS???깅줉?쒕떎.",
         "verified",
         `Created ${start.task_path} and event log ${start.event_log}.`,
       ),
@@ -327,7 +327,7 @@ async function auditFlow() {
     checks.push(
       status(
         3,
-        "OS가 관련 선호/결정/프로젝트/Wiki/최근 작업을 작게 묶어 Context Pack으로 준다.",
+        "OS媛 愿???좏샇/寃곗젙/?꾨줈?앺듃/Wiki/理쒓렐 ?묒뾽???묎쾶 臾띠뼱 Context Pack?쇰줈 以??",
         "verified",
         `Returned ${contextPack.item_count} items including ${contextPaths.join(", ")}. Trace: ${contextPack.trace_path}. Ranking inputs: ${contextPack.ranking_inputs.join(", ")}.`,
       ),
@@ -336,7 +336,7 @@ async function auditFlow() {
     checks.push(
       status(
         4,
-        "Codex/Claude가 Context Pack을 참고하되 현재 사용자 지시가 항상 우선이다.",
+        "Codex/Claude媛 Context Pack??李멸퀬?섎릺 ?꾩옱 ?ъ슜??吏?쒓? ??긽 ?곗꽑?대떎.",
         "partially_verified",
         "The Context Pack includes a memory that states current user instructions outrank stored memory. MCP can provide this context.",
         "MCP cannot enforce model behavior. Priority of the current user instruction is a system/model policy obligation, not a DinoBrain runtime guard.",
@@ -359,7 +359,7 @@ async function auditFlow() {
     checks.push(
       status(
         5,
-        "필요하면 wiki_search/search_memory로 관련 기억만 좁게 찾는다.",
+        "?꾩슂?섎㈃ wiki_search/search_memory濡?愿??湲곗뼲留?醫곴쾶 李얜뒗??",
         "partially_verified",
         "wiki_search found 20_Wiki/Rare-Search-Memory.md by the narrow phrase zeta-lattice-only.",
         "A separate search_memory tool does not exist yet; wiki_search covers curated roots only.",
@@ -395,7 +395,7 @@ async function auditFlow() {
     checks.push(
       status(
         6,
-        "finish_task가 무엇을 했고 어떤 기억을 사용했으며 남은 일이 뭔지 기록한다.",
+        "finish_task媛 臾댁뾿???덇퀬 ?대뼡 湲곗뼲???ъ슜?덉쑝硫??⑥? ?쇱씠 萸붿? 湲곕줉?쒕떎.",
         "verified",
         `Created ${finish.trace_path}; summary/decisions/next_steps plus structured used_memory_paths/context_pack_paths are recorded.`,
         null,
@@ -460,7 +460,7 @@ async function auditFlow() {
     checks.push(
       status(
         7,
-        "반복 판단/중요 결과가 Wiki, semantic job, correction, proposal 등으로 정리되어 다음 세션이 이어받는다.",
+        "諛섎났 ?먮떒/以묒슂 寃곌낵媛 Wiki, semantic job, correction, proposal ?깆쑝濡??뺣━?섏뼱 ?ㅼ쓬 ?몄뀡???댁뼱諛쏅뒗??",
         "partially_verified",
         `Candidate ${candidate.candidate_path} was approved into ${review.accepted_path}, then retrieved by a later Context Pack.`,
         "Only candidate/accepted-instance growth is implemented. Wiki promotion, semantic jobs, correction records, and proposal records are not separate implemented flows yet.",
@@ -479,7 +479,7 @@ async function auditFlow() {
     checks.push(
       status(
         8,
-        "SecondBrain 폴더와 GitHub 백업으로 새 PC/다른 에이전트에서도 이어갈 수 있다.",
+        "SecondBrain ?대뜑? GitHub 諛깆뾽?쇰줈 ??PC/?ㅻⅨ ?먯씠?꾪듃?먯꽌???댁뼱媛????덈떎.",
         "partially_verified",
         `App remote=${appRemote}; data remote=${dataRemote}; installer scripts=${installScripts.join(", ")}; git_sync dry_run=${gitSync.dry_run}. Codex MCP list includes dinobrain=${codexMcpList.includes("dinobrain")}.`,
         "Restore/install is implemented and tested elsewhere, but git_sync still does not commit or push data automatically.",
