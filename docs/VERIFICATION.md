@@ -23,8 +23,9 @@ npm run index:verify:operations
 npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v0.1.3 -ReplaceAsset
+npm run release:win -- -Tag v0.1.4 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
@@ -34,6 +35,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 `npm run release:win` requires `GITHUB_TOKEN` or `GH_TOKEN`. It rebuilds the installer, creates or reuses the GitHub release, and uploads `DinoBrainSetup.zip` plus `DinoBrainSetup.zip.sha256` as the release assets.
 
 Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
+
+`npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
 
 ## What `verify:os` Proves
 

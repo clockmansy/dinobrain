@@ -71,7 +71,8 @@ Install:
 1. Extract this ZIP.
 2. Run DinoBrainSetup.exe.
 3. If Windows blocks the unknown publisher prompt, choose More info, then Run anyway.
-4. Restart or reload Codex, then trust the DinoBrain hook if Codex asks.
+4. Use DinoBrain Codex Hook Approval.cmd if it opens, or run /hooks in Codex.
+5. Review and trust the DinoBrain hook when Codex asks.
 
 Reinstall:
 - Running DinoBrainSetup.exe over the same DinoBrain install folder is supported for normal updates.

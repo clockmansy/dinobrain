@@ -25,6 +25,7 @@ try {
   New-Item -ItemType Directory -Force -Path (Join-Path $appPath "scripts"), $vaultPath, $nodeRoot | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-dinobrain-observatory.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\diagnose-codex-hook.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "uninstall.ps1"), "# test`n")
 
   $launchers = @(New-DinoBrainObservatoryLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
@@ -52,6 +53,17 @@ try {
     $text = [System.IO.File]::ReadAllText($launcher)
     if ($text -notmatch "diagnose-codex-hook\.ps1") {
       throw "Hook diagnose launcher does not call diagnose-codex-hook.ps1: $launcher"
+    }
+  }
+
+  $approvalLaunchers = @(New-DinoBrainHookApprovalLauncher -InstallRoot $installRoot -AppPath $appPath -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json"))
+  if ($approvalLaunchers.Count -ne 2) {
+    throw "Expected 2 hook approval launchers, got $($approvalLaunchers.Count)"
+  }
+  foreach ($launcher in $approvalLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "start-codex-hook-approval\.ps1" -or $text -notmatch "RestartStaleCodex") {
+      throw "Hook approval launcher does not run the approval flow: $launcher"
     }
   }
 

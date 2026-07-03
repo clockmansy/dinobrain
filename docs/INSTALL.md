@@ -101,7 +101,7 @@ Set a token with permission to create releases and upload release assets, then r
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.3 -ReplaceAsset
+npm run release:win -- -Tag v0.1.4 -ReplaceAsset
 ```
 
 This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrainSetup.zip`, writes `artifacts\DinoBrainSetup.zip.sha256`, creates or reuses the GitHub release for the tag, deletes old matching assets when `-ReplaceAsset` is passed, and uploads the ZIP plus SHA256 file. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
@@ -140,7 +140,7 @@ Because this is a user-level hook, Codex can run the DinoBrain preflight from an
 
 The installer immediately simulates a `UserPromptSubmit` event through the same PowerShell hook wrapper that Codex will call. This proves the installed hook can start DinoBrain preflight, use the portable Node runtime, reach the data vault, and return `hookSpecificOutput.additionalContext` without requiring a manual first hook run. The handshake is tagged as `dinobrain-installer` and disables session import so it does not create review candidates from the synthetic prompt.
 
-This handshake does not bypass Codex hook trust. If Codex was already running while the installer wrote `hooks.json`, restart or reload Codex and approve the DinoBrain hook if prompted.
+This handshake does not bypass Codex hook trust. After hook registration, the installer creates and launches `DinoBrain Codex Hook Approval.cmd`. That helper restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click still has to be done by the user in Codex.
 
 10. Registers DinoBrain in Claude Code when `claude` is available:
 
@@ -156,13 +156,14 @@ claude mcp add `
 11. Runs `npm run verify:os`.
 12. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
 13. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
-14. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
+14. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
+15. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
 `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 
 The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
 
-Codex requires you to review and trust hooks before they run in a live session. After install, restart or reload Codex and approve the DinoBrain hook when prompted. Once trusted, you should not need to manually force a first DinoBrain hook run; the installer already exercised the wrapper path.
+Codex requires you to review and trust hooks before they run in a live session. The installer can restart/reopen Codex and put `/hooks` on the clipboard, but it cannot and should not click the trust approval for you. Once trusted, you should not need to manually force a first DinoBrain hook run; the installer already exercised the wrapper path.
 
 If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd` from the install folder. If the probe passes but live Codex prompts are silent, open `/hooks` in Codex, trust the DinoBrain `UserPromptSubmit` hook, then start a new thread.
 
@@ -181,6 +182,12 @@ Skip either client registration when testing:
 
 ```powershell
 .\install.ps1 -SkipCodexConfig -SkipCodexHookConfig -SkipClaudeCodeConfig
+```
+
+Skip the post-install Codex restart and hook approval helper:
+
+```powershell
+.\install.ps1 -SkipCodexRestartFlow
 ```
 
 Use a non-default Claude Code command name or path:

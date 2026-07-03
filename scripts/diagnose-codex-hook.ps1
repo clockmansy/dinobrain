@@ -275,11 +275,11 @@ $failCount = @($checks | Where-Object { $_.status -eq "fail" }).Count
 $warnCount = @($checks | Where-Object { $_.status -eq "warn" }).Count
 $nextSteps = @()
 if ($failCount -eq 0 -and $warnCount -eq 0) {
-  $nextSteps += "Open Codex, run /hooks, trust the DinoBrain hook if it is pending, then start a new thread and send a prompt."
+  $nextSteps += "Run DinoBrain Codex Hook Approval.cmd or open Codex, run /hooks, trust the DinoBrain hook if it is pending, then start a new thread and send a prompt."
 } else {
   $nextSteps += "Fix any FAIL rows first."
-  $nextSteps += "If only codex_reload is WARN, fully quit Codex and open it again."
-  $nextSteps += "If hook_probe is PASS but live prompts do not trigger, open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."
+  $nextSteps += "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again."
+  $nextSteps += "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."
 }
 
 $report = [ordered]@{

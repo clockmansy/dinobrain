@@ -23,6 +23,7 @@ internal sealed class SetupForm : Form
     private readonly Button _openObservatoryButton = new();
     private readonly CheckBox _codexConfigCheck = new();
     private readonly CheckBox _codexHookCheck = new();
+    private readonly CheckBox _codexRestartFlowCheck = new();
     private readonly CheckBox _claudeCodeCheck = new();
     private readonly CheckBox _verifyCheck = new();
     private readonly CheckBox _forceCheck = new();
@@ -174,6 +175,8 @@ internal sealed class SetupForm : Form
         _codexConfigCheck.Checked = true;
         _codexHookCheck.Text = "Register Codex prompt hook";
         _codexHookCheck.Checked = true;
+        _codexRestartFlowCheck.Text = "Restart Codex and open hook approval";
+        _codexRestartFlowCheck.Checked = true;
         _claudeCodeCheck.Text = "Register Claude Code if available";
         _claudeCodeCheck.Checked = true;
         _verifyCheck.Text = "Run verification after install";
@@ -184,6 +187,7 @@ internal sealed class SetupForm : Form
         AddSpacer(panel, 8);
         panel.Controls.Add(_codexConfigCheck);
         panel.Controls.Add(_codexHookCheck);
+        panel.Controls.Add(_codexRestartFlowCheck);
         panel.Controls.Add(_claudeCodeCheck);
         panel.Controls.Add(_verifyCheck);
         panel.Controls.Add(_forceCheck);
@@ -400,7 +404,8 @@ internal sealed class SetupForm : Form
                 AppendLog("");
                 AppendLog("DinoBrain install complete.");
                 AppendLog("Codex hook handshake was verified during install.");
-                AppendLog("If Codex was already running, restart it once and trust the DinoBrain hook if Codex asks.");
+                AppendLog("The Codex hook approval flow was launched if hook registration was enabled.");
+                AppendLog("Codex trust still requires a user click in /hooks.");
                 _openFolderButton.Enabled = Directory.Exists(_installedAppPath);
                 _openObservatoryButton.Enabled = Directory.Exists(_installedAppPath);
             }
@@ -507,6 +512,10 @@ internal sealed class SetupForm : Form
         {
             yield return "-SkipCodexHookConfig";
         }
+        if (!_codexRestartFlowCheck.Checked)
+        {
+            yield return "-SkipCodexRestartFlow";
+        }
         if (!_claudeCodeCheck.Checked)
         {
             yield return "-SkipClaudeCodeConfig";
@@ -541,7 +550,7 @@ internal sealed class SetupForm : Form
         _progressBar.Style = installing ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
         _progressBar.MarqueeAnimationSpeed = installing ? 30 : 0;
 
-        foreach (var control in new Control[] { _installRootBox, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
+        foreach (var control in new Control[] { _installRootBox, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _codexRestartFlowCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
         {
             control.Enabled = !installing;
         }

@@ -186,7 +186,7 @@ function parseCodexUserHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "0.1.3" });
+  const client = new Client({ name, version: "0.1.4" });
   const transport = new StdioClientTransport({
     command,
     args,
@@ -592,7 +592,7 @@ async function main() {
       hook_runtime_config: codexHookRuntime,
       user_prompt_hook: codexUserHook,
       mcp_list_tools: codexMcp,
-      note: "If the Codex app was already running before MCP or user hooks were added, restart or reload Codex, then open /hooks and trust the DinoBrain UserPromptSubmit hook.",
+      note: "If the Codex app was already running before MCP or user hooks were added, run DinoBrain Codex Hook Approval.cmd or open /hooks and trust the DinoBrain UserPromptSubmit hook.",
     },
     claude_code_integration: {
       mcp_list: claudeCodeMcp,

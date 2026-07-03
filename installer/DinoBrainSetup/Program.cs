@@ -4,7 +4,7 @@ namespace DinoBrainSetup;
 
 internal static class Program
 {
-    internal static string SetupVersion => AssemblyMetadata("SetupVersion", "0.1.3");
+    internal static string SetupVersion => AssemblyMetadata("SetupVersion", "0.1.4");
     internal static string DefaultAppRef => AssemblyMetadata("InstallerAppRef", "main");
     internal static string DefaultDataRef => AssemblyMetadata("InstallerDataRef", "main");
 

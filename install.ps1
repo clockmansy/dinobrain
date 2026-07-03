@@ -18,6 +18,7 @@ param(
   [string]$ClaudeScope = "user",
   [switch]$SkipCodexConfig,
   [switch]$SkipCodexHookConfig,
+  [switch]$SkipCodexRestartFlow,
   [switch]$SkipClaudeCodeConfig,
   [switch]$SkipVerify,
   [switch]$Force
@@ -724,6 +725,55 @@ pause
   return $launcherPaths
 }
 
+function New-DinoBrainHookApprovalLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath
+  )
+
+  $approvalScript = Join-Path $AppPath "scripts\start-codex-hook-approval.ps1"
+  if (-not (Test-Path -LiteralPath $approvalScript)) {
+    Write-Warning "Hook approval script not found: $approvalScript"
+    return @()
+  }
+
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Codex Hook Approval.cmd"),
+    (Join-Path $AppPath "DinoBrain Codex Hook Approval.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript" -AppPath "$AppPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RestartStaleCodex
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Hook approval launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
+function Start-DinoBrainHookApprovalLauncher {
+  param([Parameter(Mandatory = $true)][string[]]$LauncherPaths)
+
+  if ($LauncherPaths.Count -lt 1 -or [string]::IsNullOrWhiteSpace($LauncherPaths[0])) {
+    Write-Warning "Hook approval launcher was not created. Open Codex manually, run /hooks, and trust DinoBrain."
+    return
+  }
+
+  try {
+    Start-Process -FilePath $LauncherPaths[0] -WindowStyle Normal | Out-Null
+    Write-Host "Hook approval flow started: $($LauncherPaths[0])"
+  } catch {
+    Write-Warning "Could not start hook approval flow: $($_.Exception.Message)"
+  }
+}
+
 function New-DinoBrainUninstallLauncher {
   param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
@@ -911,6 +961,10 @@ if (-not $SkipCodexHookConfig) {
 
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
+$hookApprovalLaunchers = @()
+if (-not $SkipCodexHookConfig) {
+  $hookApprovalLaunchers = New-DinoBrainHookApprovalLauncher -InstallRoot $InstallRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
+}
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
@@ -920,6 +974,10 @@ if (-not $SkipClaudeCodeConfig) {
 
 if (-not $SkipVerify) {
   Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudeCode:$claudeCodeConfigured -AllowNoGit:(-not $gitAvailable)
+}
+
+if (-not $SkipCodexHookConfig -and -not $SkipCodexRestartFlow) {
+  Start-DinoBrainHookApprovalLauncher -LauncherPaths $hookApprovalLaunchers
 }
 
 Write-Host ""
@@ -934,6 +992,9 @@ foreach ($launcher in $observatoryLaunchers) {
 }
 foreach ($launcher in $hookDiagnoseLaunchers) {
   Write-Host "Hook diagnose launcher: $launcher"
+}
+foreach ($launcher in $hookApprovalLaunchers) {
+  Write-Host "Hook approval launcher: $launcher"
 }
 foreach ($launcher in $uninstallLaunchers) {
   Write-Host "Uninstall launcher: $launcher"

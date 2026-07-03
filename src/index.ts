@@ -347,7 +347,7 @@ function parseGitStatus(stdout: string): Array<{ status: string; path: string }>
 
 const server = new McpServer({
   name: "dinobrain",
-  version: "0.1.3",
+  version: "0.1.4",
 });
 
 server.registerTool(

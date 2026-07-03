@@ -39,9 +39,9 @@ flowchart LR
 - `scripts/dinobrain-observatory.mjs`
 - `AGENTS.md`
 
-The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. It also runs an installed-hook handshake by simulating one `UserPromptSubmit` event through the same PowerShell wrapper Codex will call. The repo keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
+The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. It also runs an installed-hook handshake by simulating one `UserPromptSubmit` event through the same PowerShell wrapper Codex will call. Then it launches `DinoBrain Codex Hook Approval.cmd`, which can restart stale Codex desktop processes, reopen Codex, copy `/hooks`, and show the trust steps. The repo keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
 
-Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake proves the hook command works, but it cannot bypass Codex's trust prompt.
+Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake and approval helper prove and guide the hook command path, but they cannot bypass Codex's trust prompt.
 
 If both the user-level hook and project hook are trusted, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
 
