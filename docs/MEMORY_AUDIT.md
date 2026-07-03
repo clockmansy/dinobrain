@@ -38,7 +38,7 @@ Creates:
 - `observed_used_memory_paths`: declared memories that are reflected by path/title hints in the trace or observed summary
 - `missing_expected_memory`: expected memories not declared as used
 - `hallucinated_memory_reference`: declared memory paths that were neither provided nor present on disk
-- `graph_health_snapshot`: Wiki graph/index health for referenced curated memories
+- `graph_health_snapshot`: shared Wiki graph/index and node-lifecycle health for referenced curated memories
 
 The `trust_score` is evidence quality, not truth itself.
 
@@ -51,6 +51,8 @@ The `trust_score` is evidence quality, not truth itself.
 - trust score
 - verdict
 - graph health score
+
+The same health model also powers `.dino/index/graph-health.json` and the Observatory OS Health panel.
 
 ## Boundaries
 

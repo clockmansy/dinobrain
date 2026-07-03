@@ -80,7 +80,7 @@ Publish the ZIP to GitHub Releases:
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.4 -ReplaceAsset
+npm run release:win -- -Tag v0.1.5 -ReplaceAsset
 ```
 
 Fresh Windows setup from PowerShell:
@@ -150,6 +150,7 @@ npm run verify:os
 npm run index:sqlite
 npm run index:operations
 npm run index:wiki
+npm run graph:health
 npm run graph:vault
 npm run observatory
 ```
@@ -166,10 +167,12 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 
 `npm run index:sqlite` rebuilds SQLite shards at `.dino/index/sqlite/wiki.sqlite` and `.dino/index/sqlite/operations.sqlite`. When present, `wiki_search`, `get_context_pack`, recent task lookup, and Observatory use the SQLite shards before JSON fallbacks. `npm run index:verify:sqlite` checks routed SQLite retrieval.
 
+`npm run graph:health` writes `.dino/index/graph-health.json`; `npm run graph:health:verify` checks empty graph, missing referenced path, accepted instance lineage, missing source mapping, and review queue mapping cases against synthetic vaults.
+
 `npm run session:verify` proves that `import_session` stores only redacted local-only session excerpts, extracts hot/warm/cold review candidates, excludes unreviewed imports from retrieval, and keeps raw archives blocked from git sync.
 
 `npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight, imports the redacted prompt through `import_session`, and avoids leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
 
-`npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events can be watched while working. See `docs/CODEX_HOOKS.md`.
+`npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events, OS health chips, read traces, node lifecycle, sync risk, and the LLM Wiki graph can be watched while working. See `docs/CODEX_HOOKS.md`.
 
 The Windows installer also creates `DinoBrain Observatory.cmd` in the install root and in the `dinobrain` app folder. Double-click it to open the live Observatory with the LLM Wiki graph, task stream, Context Pack stream, traces, and memory audit scores.

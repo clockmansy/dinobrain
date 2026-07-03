@@ -135,8 +135,15 @@ tags: [context-pack]
     const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
     assert(state.ok === true, "State endpoint did not return ok=true");
     assert(state.summary.active_task_count === 1, "State endpoint did not report active task count");
+    assert(state.graph_health && typeof state.graph_health.score === "number", "State endpoint did not include graph health");
+    assert(state.lifecycle && state.lifecycle.counts, "State endpoint did not include node lifecycle");
+    assert(state.read_trace && state.read_trace.status, "State endpoint did not include read trace");
+    assert(state.sync_risk && state.sync_risk.status, "State endpoint did not include sync risk");
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert(health.ok === true && health.observatory_version, "Health endpoint did not report Observatory version");
+    assert(health.graph_health && typeof health.graph_health.score === "number", "Health endpoint did not include graph health");
+    const graphHealth = await fetch(`http://127.0.0.1:${port}/api/graph-health`).then((response) => response.json());
+    assert(graphHealth.ok === true && typeof graphHealth.score === "number", "Graph health endpoint did not return health");
     console.log("observatory live graph verification ok");
   } finally {
     server.kill();

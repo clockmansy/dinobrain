@@ -54,6 +54,14 @@ The preferred fast path is now the SQLite shard:
 
 When the SQLite shard exists, `get_context_pack` and `wiki_search` use it for candidate selection. If the shard is missing, DinoBrain falls back to the JSON index.
 
+Graph health is written to:
+
+```text
+.dino/index/graph-health.json
+```
+
+It scores the Wiki graph and node lifecycle without reading raw conversations. The health record checks empty indexes, unresolved referenced wikilinks, missing referenced paths, accepted instances without durable source lineage, accepted instances whose source file is missing, and candidates that are missing a promotion review record.
+
 The final `get_context_pack` ranking still follows the narrow Phase 3 boundary:
 
 - file name
@@ -81,6 +89,13 @@ npm run build
 npm run index:sqlite
 ```
 
+`index:sqlite` also refreshes `graph-health.json`. To refresh only graph health:
+
+```powershell
+npm run build
+npm run graph:health
+```
+
 ## Verification
 
 The focused index verifier creates a synthetic vault with more than 1,500 records and proves that a rare query is resolved through a smaller candidate set:
@@ -95,6 +110,13 @@ SQLite shard verification:
 ```powershell
 npm run build
 npm run index:verify:sqlite
+```
+
+Graph health verification:
+
+```powershell
+npm run build
+npm run graph:health:verify
 ```
 
 ## Related Operations Index

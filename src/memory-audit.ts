@@ -2,8 +2,8 @@ import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { buildGraphHealth, type GraphHealth } from "./graph-health.js";
 import { redactSensitiveText } from "./session-ingest.js";
-import { ensureWikiIndex, type WikiIndex } from "./wiki-index.js";
 
 export type MemoryAuditInput = {
   taskId?: string;
@@ -31,20 +31,6 @@ type PackItem = {
   title?: string;
   summary?: string;
   score?: number;
-};
-
-type GraphHealth = {
-  status: "healthy" | "degraded" | "index_error";
-  score: number;
-  index_path: string | null;
-  indexed_record_count: number;
-  node_count: number;
-  edge_count: number;
-  unresolved_wiki_link_count: number;
-  referenced_unresolved_wiki_link_count: number;
-  curated_paths_checked: number;
-  curated_paths_missing_from_index: string[];
-  referenced_paths_missing_on_disk: string[];
 };
 
 function nowIso(date: Date): string {
@@ -196,70 +182,6 @@ function observedEvidence(memoryPath: string, observedText: string, metadata?: P
   return matched.length > 0 ? `hint_matched:${matched.join(",")}` : null;
 }
 
-function isCuratedPath(vaultPath: string): boolean {
-  return [
-    "00_Home/",
-    "20_Wiki/",
-    "30_Sources/",
-    "40_Projects/",
-    "50_Instances/accepted/",
-    "60_Operations/",
-    "70_Error_Book/",
-  ].some((prefix) => vaultPath.startsWith(prefix));
-}
-
-async function graphHealth(dataRoot: string, referencedPaths: string[]): Promise<GraphHealth> {
-  const missingOnDisk: string[] = [];
-  for (const referencedPath of referencedPaths) {
-    if (!(await pathExists(dataRoot, referencedPath))) missingOnDisk.push(referencedPath);
-  }
-
-  let index: WikiIndex;
-  try {
-    index = await ensureWikiIndex(dataRoot);
-  } catch {
-    return {
-      status: "index_error",
-      score: Math.max(0, 55 - missingOnDisk.length * 10),
-      index_path: null,
-      indexed_record_count: 0,
-      node_count: 0,
-      edge_count: 0,
-      unresolved_wiki_link_count: 0,
-      referenced_unresolved_wiki_link_count: 0,
-      curated_paths_checked: referencedPaths.filter(isCuratedPath).length,
-      curated_paths_missing_from_index: [],
-      referenced_paths_missing_on_disk: cap(missingOnDisk),
-    };
-  }
-
-  const indexedPaths = new Set(index.records.map((record) => record.path));
-  const curatedPaths = unique(referencedPaths.filter(isCuratedPath));
-  const missingFromIndex = curatedPaths.filter((referencedPath) => !indexedPaths.has(referencedPath));
-  const recordIdByPath = new Map(index.records.map((record) => [record.path, `record:${record.id}`]));
-  const referencedRecordNodes = new Set(
-    curatedPaths.map((referencedPath) => recordIdByPath.get(referencedPath)).filter((node): node is string => Boolean(node)),
-  );
-  const unresolvedEdges = index.edges.filter((edge) => edge.type === "unresolved_wiki_link");
-  const referencedUnresolved = unresolvedEdges.filter((edge) => referencedRecordNodes.has(edge.from)).length;
-  const unresolvedPenalty = Math.min(20, referencedUnresolved);
-  const score = Math.max(0, 100 - missingFromIndex.length * 12 - missingOnDisk.length * 10 - unresolvedPenalty);
-
-  return {
-    status: score >= 80 ? "healthy" : "degraded",
-    score,
-    index_path: index.index_path,
-    indexed_record_count: index.record_count,
-    node_count: index.stats.node_count,
-    edge_count: index.stats.edge_count,
-    unresolved_wiki_link_count: unresolvedEdges.length,
-    referenced_unresolved_wiki_link_count: referencedUnresolved,
-    curated_paths_checked: curatedPaths.length,
-    curated_paths_missing_from_index: cap(missingFromIndex),
-    referenced_paths_missing_on_disk: cap(missingOnDisk),
-  };
-}
-
 function scoreTrust(params: {
   provided: string[];
   declared: string[];
@@ -361,7 +283,7 @@ export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput
     ...sessionArchivePaths,
     ...candidatePaths,
   ]);
-  const graph = await graphHealth(dataRoot, referencedPaths);
+  const graph = await buildGraphHealth(dataRoot, { referencedPaths });
   const trustScore = scoreTrust({
     provided: providedMemoryPaths,
     declared: declaredUsedPaths,

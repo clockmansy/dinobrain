@@ -1,27 +1,22 @@
 import path from "node:path";
 
 import { buildAndWriteGraphHealth } from "./graph-health.js";
-import { buildAndWriteSqliteShards } from "./sqlite-shards.js";
 
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(process.cwd(), "..", "dinobrain-data"));
 
 async function main(): Promise<void> {
   const started = Date.now();
-  const manifest = await buildAndWriteSqliteShards(dataRoot);
-  const graphHealth = await buildAndWriteGraphHealth(dataRoot);
+  const { health, path: healthPath } = await buildAndWriteGraphHealth(dataRoot);
   console.log(
     JSON.stringify(
       {
         ok: true,
         data_root: dataRoot,
         elapsed_ms: Date.now() - started,
-        manifest,
-        graph_health: {
-          path: graphHealth.path,
-          status: graphHealth.health.status,
-          score: graphHealth.health.score,
-          warnings: graphHealth.health.warnings,
-        },
+        graph_health_path: healthPath,
+        status: health.status,
+        score: health.score,
+        warnings: health.warnings,
       },
       null,
       2,

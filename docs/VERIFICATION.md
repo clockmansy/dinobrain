@@ -25,7 +25,7 @@ npm run hook:verify
 npm run verify:os
 npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v0.1.4 -ReplaceAsset
+npm run release:win -- -Tag v0.1.5 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
@@ -161,6 +161,7 @@ The index verifiers use synthetic vaults:
 - `npm run index:verify` checks the JSON Wiki graph index fallback.
 - `npm run index:verify:operations` checks the JSON operations index fallback.
 - `npm run index:verify:sqlite` checks routed SQLite shard retrieval for Wiki search, Context Packs, recent task lookup, and incremental task/event writes.
+- `npm run graph:health:verify` checks empty graph, missing referenced path, accepted instance lineage, missing source mapping, and review queue mapping cases.
 
 ## Evidence Quality
 

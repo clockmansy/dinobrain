@@ -1,14 +1,17 @@
 import http from "node:http";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-01-activity-fossil-graph-v2";
+const observatoryVersion = "2026-07-03-os-health-cockpit-v1";
+const execFileAsync = promisify(execFile);
 
 function rel(filePath) {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
@@ -20,6 +23,15 @@ async function readJson(filePath) {
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     return null;
+  }
+}
+
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -280,6 +292,152 @@ async function readAuditLogs(limit = 50) {
   return await readJsonDir(".dino/audits", limit);
 }
 
+async function readGraphHealth() {
+  const healthPath = path.join(dataRoot, ".dino", "index", "graph-health.json");
+  const health = await readJson(healthPath);
+  if (health && typeof health === "object") {
+    return {
+      ok: true,
+      _path: rel(healthPath),
+      ...health,
+    };
+  }
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    score: 0,
+    generated_at: null,
+    data_root: dataRoot,
+    index_path: null,
+    indexed_record_count: 0,
+    node_count: 0,
+    edge_count: 0,
+    unresolved_wiki_link_count: 0,
+    referenced_unresolved_wiki_link_count: 0,
+    accepted_instance_count: 0,
+    candidate_instance_count: 0,
+    promotion_review_count: 0,
+    quarantine_count: 0,
+    accepted_without_source_count: 0,
+    accepted_missing_source_count: 0,
+    candidate_without_review_count: 0,
+    source_mapping_missing_count: 0,
+    warnings: ["graph_health_missing"],
+    _path: rel(healthPath),
+  };
+}
+
+function sourcePath(record) {
+  return String(record?.source_candidate_path ?? record?.source_path ?? record?.evidence_source ?? "").trim();
+}
+
+async function readLifecycleQueue() {
+  const [candidates, accepted, reviews, quarantines] = await Promise.all([
+    readJsonDir("50_Instances/candidates", 60),
+    readJsonDir("50_Instances/accepted", 80),
+    readJsonDir("80_Review_Queue/promotion", 60),
+    readJsonDir(".dino/quarantine", 40),
+  ]);
+  const reviewIds = new Set(reviews.map((entry) => path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
+  const candidateWithoutReview = candidates.filter((entry) => !reviewIds.has(path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
+  const acceptedWithoutSource = accepted.filter((entry) => !sourcePath(entry));
+  const acceptedMissingSource = [];
+  for (const entry of accepted) {
+    const source = sourcePath(entry);
+    if (source && !(await pathExists(path.join(dataRoot, source.replace(/\//g, path.sep))))) acceptedMissingSource.push(entry);
+  }
+  const retryCandidates = [...candidateWithoutReview, ...acceptedWithoutSource, ...acceptedMissingSource].slice(0, 10);
+  const status = retryCandidates.length > 0 || reviews.length > 0 ? "warning" : "ready";
+  return {
+    status,
+    counts: {
+      candidates: candidates.length,
+      accepted: accepted.length,
+      promotion_reviews: reviews.length,
+      quarantined: quarantines.length,
+      candidate_without_review: candidateWithoutReview.length,
+      accepted_without_source: acceptedWithoutSource.length,
+      accepted_missing_source: acceptedMissingSource.length,
+    },
+    candidates: candidates.slice(0, 12),
+    promotion_reviews: reviews.slice(0, 12),
+    accepted: accepted.slice(0, 12),
+    quarantines: quarantines.slice(0, 8),
+    retry_candidates: retryCandidates,
+  };
+}
+
+async function readSyncRisk() {
+  if (!(await pathExists(path.join(dataRoot, ".git")))) {
+    return {
+      status: "no_repo",
+      dirty_count: 0,
+      staged_count: 0,
+      untracked_count: 0,
+      branch: null,
+      detail: "data root is not a git worktree",
+    };
+  }
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", dataRoot, "status", "--porcelain=v1", "--branch"], {
+      timeout: 3500,
+      windowsHide: true,
+      maxBuffer: 256 * 1024,
+    });
+    const lines = stdout.split(/\r?\n/).filter(Boolean);
+    const branch = lines.find((line) => line.startsWith("##")) ?? null;
+    const changes = lines.filter((line) => !line.startsWith("##"));
+    const staged = changes.filter((line) => /^[ MADRCU][MADRCU]/.test(line) && line[0] !== " ").length;
+    const untracked = changes.filter((line) => line.startsWith("??")).length;
+    return {
+      status: changes.length > 0 ? "at_risk" : "clean",
+      dirty_count: changes.length,
+      staged_count: staged,
+      untracked_count: untracked,
+      branch,
+      detail: changes.slice(0, 12),
+    };
+  } catch (error) {
+    return {
+      status: "unknown",
+      dirty_count: 0,
+      staged_count: 0,
+      untracked_count: 0,
+      branch: null,
+      detail: String(error?.message ?? error),
+    };
+  }
+}
+
+function readTraceSummary(events, packs, traces) {
+  const latestPack = Array.isArray(packs) ? packs[0] : null;
+  const latestTrace = Array.isArray(traces) ? traces[0] : null;
+  const latestPreflight = Array.isArray(events)
+    ? events.find((event) => ["codex_preflight_completed", "context_pack_created"].includes(String(event.event ?? "")))
+    : null;
+  const items = Array.isArray(latestPack?.items) ? latestPack.items : [];
+  const usedMemoryPaths = Array.isArray(latestTrace?.used_memory_paths) ? latestTrace.used_memory_paths : [];
+  return {
+    status: latestPack ? "grounded" : "idle",
+    latest_pack_path: latestPack?._path ?? latestPack?.path ?? null,
+    latest_pack_id: latestPack?.pack_id ?? null,
+    item_count: Number(latestPack?.item_count ?? items.length ?? 0),
+    grounded_items: items.slice(0, 8).map((item) => ({
+      path: item.path,
+      title: item.title,
+      kind: item.kind,
+      score: item.score,
+    })),
+    latest_trace_path: latestTrace?._path ?? latestTrace?.path ?? null,
+    latest_trace_task_id: latestTrace?.task_id ?? null,
+    latest_trace_outcome: latestTrace?.outcome ?? null,
+    used_memory_count: usedMemoryPaths.length,
+    latest_preflight_at: latestPreflight?.at ?? null,
+    latest_preflight_event: latestPreflight?.event ?? null,
+  };
+}
+
 function summarize(events, tasks, packs) {
   const today = new Date().toISOString().slice(0, 10);
   return {
@@ -502,15 +660,34 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const audits = await readAuditLogs();
-  const live = await readLiveOperations();
-  const sqlite = await readSqliteOperations();
+  const [audits, live, sqlite, graphHealth, lifecycle, syncRisk] = await Promise.all([
+    readAuditLogs(),
+    readLiveOperations(),
+    readSqliteOperations(),
+    readGraphHealth(),
+    readLifecycleQueue(),
+    readSyncRisk(),
+  ]);
+  const decorate = (payload) => ({
+    ...payload,
+    summary: {
+      ...payload.summary,
+      graph_health_status: graphHealth.status,
+      graph_health_score: graphHealth.score,
+      lifecycle_status: lifecycle.status,
+      sync_risk_status: syncRisk.status,
+    },
+    graph_health: graphHealth,
+    lifecycle,
+    sync_risk: syncRisk,
+    read_trace: readTraceSummary(payload.events, payload.context_packs, payload.traces),
+  });
   if (sqlite) {
     const events = mergeEvents(sqlite.events, live.events, 120);
     const tasks = mergeByPath(sqlite.tasks, live.tasks, 80);
     const contextPacks = mergeByPath(sqlite.context_packs, live.context_packs, 80);
     const traces = mergeByPath(sqlite.traces, live.traces, 80).map(withTraceDisplay);
-    return {
+    return decorate({
       ok: true,
       summary: {
         data_root: dataRoot,
@@ -529,7 +706,7 @@ async function state() {
       context_packs: contextPacks,
       traces,
       memory_audits: audits,
-    };
+    });
   }
 
   const index = await readOperationIndex();
@@ -538,7 +715,7 @@ async function state() {
     const tasks = mergeByPath((index.recent_tasks ?? []).map(withDisplayPath), live.tasks, 80);
     const contextPacks = mergeByPath((index.recent_context_packs ?? []).map(withDisplayPath), live.context_packs, 80);
     const traces = mergeByPath((index.recent_traces ?? []).map(withTraceDisplay), live.traces, 80).map(withTraceDisplay);
-    return {
+    return decorate({
       ok: true,
       summary: {
         ...summarizeIndex(index),
@@ -555,10 +732,10 @@ async function state() {
       context_packs: contextPacks,
       traces,
       memory_audits: audits,
-    };
+    });
   }
 
-  return {
+  return decorate({
     ok: true,
     summary: { ...summarize(live.events.slice().reverse(), live.tasks, live.context_packs), memory_audit_count: audits.length },
     events: live.events,
@@ -566,7 +743,7 @@ async function state() {
     context_packs: live.context_packs,
     traces: live.traces,
     memory_audits: audits,
-  };
+  });
 }
 
 function html() {
@@ -632,7 +809,7 @@ function html() {
       display: grid;
       grid-template-columns: minmax(360px, 1.25fr) minmax(320px, 0.75fr);
       gap: 1px;
-      min-height: calc(100vh - 57px);
+      min-height: calc(100vh - 138px);
       background: #283226;
     }
     section {
@@ -672,6 +849,54 @@ function html() {
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
+    }
+    .health-strip {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 10px;
+      padding: 12px 18px;
+      border-bottom: 1px solid #243024;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(124, 198, 106, .08), transparent 34%),
+        linear-gradient(90deg, rgba(79, 182, 164, .04), rgba(217, 154, 61, .045)),
+        #090d0a;
+    }
+    .chip {
+      min-height: 58px;
+      border: 1px solid #2d382d;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background:
+        linear-gradient(180deg, rgba(238, 230, 210, .035), transparent),
+        #10150f;
+      overflow: hidden;
+    }
+    .chip strong {
+      display: block;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.1;
+      margin-bottom: 5px;
+    }
+    .chip span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chip.healthy, .chip.ready, .chip.clean, .chip.grounded {
+      border-color: rgba(124, 198, 106, .48);
+      box-shadow: inset 0 0 0 1px rgba(124, 198, 106, .08);
+    }
+    .chip.warning, .chip.at_risk {
+      border-color: rgba(217, 154, 61, .55);
+      box-shadow: inset 0 0 0 1px rgba(217, 154, 61, .08);
+    }
+    .chip.degraded, .chip.index_error, .chip.missing, .chip.unknown {
+      border-color: rgba(223, 107, 85, .55);
+      box-shadow: inset 0 0 0 1px rgba(223, 107, 85, .08);
     }
     .dot {
       width: 9px;
@@ -854,6 +1079,7 @@ function html() {
     }
     @media (max-width: 900px) {
       main { grid-template-columns: 1fr; }
+      .health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .event { grid-template-columns: 1fr; }
       header { align-items: flex-start; flex-direction: column; }
@@ -870,6 +1096,14 @@ function html() {
     <h1>DinoBrain Observatory</h1>
     <div class="toolbar"><span class="dot"></span><span id="status">connecting</span><code id="root"></code></div>
   </header>
+  <nav class="health-strip" aria-label="DinoBrain OS health">
+    <div id="chip-active" class="chip"><strong>Active</strong><span>--</span></div>
+    <div id="chip-mcp" class="chip"><strong>MCP</strong><span>--</span></div>
+    <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
+    <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
+    <div id="chip-graph" class="chip"><strong>Graph Health</strong><span>--</span></div>
+    <div id="chip-sync" class="chip"><strong>GitHub Sync</strong><span>--</span></div>
+  </nav>
   <main>
     <section>
       <div class="stats">
@@ -903,6 +1137,24 @@ function html() {
     </section>
     <section class="details">
       <div class="block">
+        <h2>OS Health</h2>
+        <div id="os-health" class="kv"></div>
+      </div>
+      <div class="block">
+        <h2>Read Trace</h2>
+        <div id="read-trace" class="kv"></div>
+        <div id="read-trace-items" class="list"></div>
+      </div>
+      <div class="block">
+        <h2>Node Lifecycle</h2>
+        <div id="node-lifecycle" class="kv"></div>
+        <div id="lifecycle-retry" class="list"></div>
+      </div>
+      <div class="block">
+        <h2>Sync Risk</h2>
+        <div id="sync-risk" class="kv"></div>
+      </div>
+      <div class="block">
         <h2>Latest Task</h2>
         <div id="latest-task" class="kv"></div>
       </div>
@@ -933,6 +1185,20 @@ function html() {
     const latestPackEl = document.getElementById("latest-pack");
     const latestTraceEl = document.getElementById("latest-trace");
     const latestAuditEl = document.getElementById("latest-audit");
+    const osHealthEl = document.getElementById("os-health");
+    const readTraceEl = document.getElementById("read-trace");
+    const readTraceItemsEl = document.getElementById("read-trace-items");
+    const nodeLifecycleEl = document.getElementById("node-lifecycle");
+    const lifecycleRetryEl = document.getElementById("lifecycle-retry");
+    const syncRiskEl = document.getElementById("sync-risk");
+    const chips = {
+      active: document.getElementById("chip-active"),
+      mcp: document.getElementById("chip-mcp"),
+      read: document.getElementById("chip-read"),
+      lifecycle: document.getElementById("chip-lifecycle"),
+      graph: document.getElementById("chip-graph"),
+      sync: document.getElementById("chip-sync"),
+    };
     const graphCanvas = document.getElementById("wiki-graph");
     const graphCtx = graphCanvas.getContext("2d");
     const graphStatsEl = document.getElementById("graph-stats");
@@ -951,6 +1217,17 @@ function html() {
     };
     function kv(target, rows) {
       target.innerHTML = rows.map(([key, value]) => \`<span>\${esc(key)}</span><code>\${esc(value ?? "--")}</code>\`).join("");
+    }
+    function renderChip(target, label, value, detail, tone) {
+      target.className = "chip " + String(tone || "").replace(/[^a-z0-9_-]/gi, "");
+      target.innerHTML = \`<strong>\${esc(label)} \${esc(value ?? "")}</strong><span>\${esc(detail ?? "")}</span>\`;
+    }
+    function healthTone(value) {
+      const status = String(value ?? "").toLowerCase();
+      if (["healthy", "ready", "clean", "grounded"].includes(status)) return status;
+      if (["warning", "at_risk"].includes(status)) return status;
+      if (["degraded", "index_error", "missing", "unknown"].includes(status)) return status;
+      return "unknown";
     }
     function eventTitle(event) {
       return String(event.event || "event").replaceAll("_", " ");
@@ -1093,10 +1370,12 @@ function html() {
     }
     function drawGraph() {
       const size = graphSize();
+      const now = performance.now();
       graphCtx.clearRect(0, 0, size.width, size.height);
       let focus = null;
       const labelBoxes = [];
-      for (const edge of graphEdges) {
+      for (let edgeIndex = 0; edgeIndex < graphEdges.length; edgeIndex += 1) {
+        const edge = graphEdges[edgeIndex];
         const a = edge.sourceNode;
         const b = edge.targetNode;
         const highlighted = matchesGraphSearch(a) || matchesGraphSearch(b);
@@ -1206,6 +1485,91 @@ function html() {
       document.getElementById("stat-packs").textContent = data.summary.context_pack_count;
       document.getElementById("stat-audits").textContent = data.summary.memory_audit_count ?? 0;
       document.getElementById("stat-active").textContent = data.summary.active_task_count;
+      const graphHealth = data.graph_health || {};
+      const lifecycle = data.lifecycle || { counts: {} };
+      const readTrace = data.read_trace || {};
+      const syncRisk = data.sync_risk || {};
+      renderChip(
+        chips.active,
+        "Active",
+        data.summary.active_task_count || "0",
+        data.summary.active_task_count ? "task loop is open" : "idle",
+        data.summary.active_task_count ? "warning" : "ready",
+      );
+      renderChip(chips.mcp, "MCP", data.summary.event_count || "0", "events observed", data.summary.event_count ? "healthy" : "unknown");
+      renderChip(
+        chips.read,
+        "Read",
+        readTrace.status || "idle",
+        readTrace.latest_pack_path || "no recent Context Pack",
+        healthTone(readTrace.status),
+      );
+      renderChip(
+        chips.lifecycle,
+        "Nodes",
+        lifecycle.status || "--",
+        "review " + (lifecycle.counts?.promotion_reviews ?? 0) + " / accepted " + (lifecycle.counts?.accepted ?? 0),
+        healthTone(lifecycle.status),
+      );
+      renderChip(
+        chips.graph,
+        "Graph",
+        graphHealth.score ?? "--",
+        graphHealth.status || "missing",
+        healthTone(graphHealth.status),
+      );
+      renderChip(
+        chips.sync,
+        "Sync",
+        syncRisk.status || "--",
+        (syncRisk.dirty_count ?? 0) + " dirty / " + (syncRisk.untracked_count ?? 0) + " untracked",
+        healthTone(syncRisk.status),
+      );
+      kv(osHealthEl, [
+        ["status", graphHealth.status],
+        ["score", graphHealth.score],
+        ["records", graphHealth.indexed_record_count],
+        ["nodes", graphHealth.node_count],
+        ["edges", graphHealth.edge_count],
+        ["unresolved", graphHealth.unresolved_wiki_link_count],
+        ["warnings", Array.isArray(graphHealth.warnings) ? graphHealth.warnings.join(", ") : ""],
+        ["path", graphHealth._path],
+      ]);
+      kv(readTraceEl, [
+        ["status", readTrace.status],
+        ["pack", readTrace.latest_pack_path],
+        ["items", readTrace.item_count],
+        ["trace", readTrace.latest_trace_path],
+        ["used", readTrace.used_memory_count],
+        ["preflight", readTrace.latest_preflight_at],
+      ]);
+      readTraceItemsEl.innerHTML = Array.isArray(readTrace.grounded_items) && readTrace.grounded_items.length
+        ? readTrace.grounded_items.map((item) => \`
+          <div class="item"><code>\${esc(item.path)}</code><div class="muted">\${esc(compact(item.title || item.kind || "", 120))}</div></div>
+        \`).join("")
+        : '<p class="muted">No grounded read trace yet.</p>';
+      kv(nodeLifecycleEl, [
+        ["status", lifecycle.status],
+        ["candidates", lifecycle.counts?.candidates],
+        ["review", lifecycle.counts?.promotion_reviews],
+        ["accepted", lifecycle.counts?.accepted],
+        ["quarantined", lifecycle.counts?.quarantined],
+        ["source missing", lifecycle.counts?.accepted_without_source],
+        ["retry", Array.isArray(lifecycle.retry_candidates) ? lifecycle.retry_candidates.length : 0],
+      ]);
+      lifecycleRetryEl.innerHTML = Array.isArray(lifecycle.retry_candidates) && lifecycle.retry_candidates.length
+        ? lifecycle.retry_candidates.slice(0, 6).map((item) => \`
+          <div class="item"><code>\${esc(item._path || item.path || item.candidate_id || item.review_id || "")}</code><div class="muted">\${esc(compact(item.claim || item.title || item.notes || "", 140))}</div></div>
+        \`).join("")
+        : '<p class="muted">No retry candidates.</p>';
+      kv(syncRiskEl, [
+        ["status", syncRisk.status],
+        ["branch", syncRisk.branch],
+        ["dirty", syncRisk.dirty_count],
+        ["staged", syncRisk.staged_count],
+        ["untracked", syncRisk.untracked_count],
+        ["detail", Array.isArray(syncRisk.detail) ? syncRisk.detail.join(" | ") : syncRisk.detail],
+      ]);
       timelineEl.innerHTML = data.events.map((event) => \`
         <article class="event \${esc(event.event)}">
           <time>\${esc(formatTime(event.at))}</time>
@@ -1283,8 +1647,18 @@ const server = http.createServer(async (request, response) => {
       observatory_version: observatoryVersion,
       app_root: root,
       data_root: dataRoot,
-      endpoints: ["/api/health", "/api/state", "/api/graph"],
+      graph_health: await readGraphHealth(),
+      endpoints: ["/api/health", "/api/state", "/api/graph", "/api/graph-health"],
     }, null, 2));
+    return;
+  }
+
+  if (request.url === "/api/graph-health") {
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    response.end(JSON.stringify(await readGraphHealth(), null, 2));
     return;
   }
 

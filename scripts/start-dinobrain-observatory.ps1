@@ -9,7 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ExpectedObservatoryVersion = "2026-07-01-activity-fossil-graph-v2"
+$ExpectedObservatoryVersion = "2026-07-03-os-health-cockpit-v1"
 
 function Get-PortOwnerProcess {
   param([Parameter(Mandatory = $true)][int]$LocalPort)
