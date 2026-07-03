@@ -12,7 +12,8 @@ param(
   [switch]$Draft,
   [switch]$Prerelease,
   [switch]$ReplaceAsset,
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [switch]$SkipUpload
 )
 
 Set-StrictMode -Version Latest
@@ -32,7 +33,7 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
   if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) { $Token = $env:GITHUB_TOKEN }
   elseif (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { $Token = $env:GH_TOKEN }
 }
-if ([string]::IsNullOrWhiteSpace($Token)) {
+if ([string]::IsNullOrWhiteSpace($Token) -and -not $SkipUpload) {
   throw "GitHub token missing. Set GITHUB_TOKEN or GH_TOKEN, or pass -Token."
 }
 
@@ -41,12 +42,84 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 }
 
-if ([string]::IsNullOrWhiteSpace($AssetPath)) {
-  $AssetPath = Join-Path $root "artifacts\DinoBrainSetup.exe"
+function New-DinoBrainReleasePackage {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallerPath,
+    [Parameter(Mandatory = $true)][string]$PackageVersion
+  )
+
+  $InstallerPath = [System.IO.Path]::GetFullPath($InstallerPath)
+  if (-not (Test-Path -LiteralPath $InstallerPath)) {
+    throw "Installer EXE not found: $InstallerPath"
+  }
+
+  $artifactsDir = Join-Path $root "artifacts"
+  $packageDir = Join-Path $artifactsDir "DinoBrainSetup-package"
+  $zipPath = Join-Path $artifactsDir "DinoBrainSetup.zip"
+  $shaPath = Join-Path $artifactsDir "DinoBrainSetup.zip.sha256"
+
+  if (Test-Path -LiteralPath $packageDir) {
+    Remove-Item -LiteralPath $packageDir -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+  Copy-Item -LiteralPath $InstallerPath -Destination (Join-Path $packageDir "DinoBrainSetup.exe") -Force
+  $readme = @"
+DinoBrain Windows Setup $PackageVersion
+
+Install:
+1. Extract this ZIP.
+2. Run DinoBrainSetup.exe.
+3. If Windows blocks the unknown publisher prompt, choose More info, then Run anyway.
+4. Restart or reload Codex, then trust the DinoBrain hook if Codex asks.
+
+Reinstall:
+- Running DinoBrainSetup.exe over the same DinoBrain install folder is supported for normal updates.
+- Existing app and data folders must be DinoBrain git checkouts. Non-git folders are not overwritten.
+
+Full uninstall:
+- Run DinoBrain Uninstall Everything.cmd from the install folder.
+- Type DELETE DINOBRAIN when prompted.
+"@
+  Set-Content -LiteralPath (Join-Path $packageDir "README-INSTALL.txt") -Value $readme -Encoding ASCII
+
+  Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+  Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force
+
+  $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  Set-Content -LiteralPath $shaPath -Value "$hash  DinoBrainSetup.zip" -Encoding ASCII
+
+  [pscustomobject]@{
+    ZipPath = $zipPath
+    ShaPath = $shaPath
+    Sha256 = $hash
+  }
 }
-$AssetPath = [System.IO.Path]::GetFullPath($AssetPath)
-if (-not (Test-Path -LiteralPath $AssetPath)) {
-  throw "Release asset not found: $AssetPath"
+
+$assetPaths = @()
+if ([string]::IsNullOrWhiteSpace($AssetPath)) {
+  $installerPath = Join-Path $root "artifacts\DinoBrainSetup.exe"
+  $releasePackage = New-DinoBrainReleasePackage -InstallerPath $installerPath -PackageVersion ([string]$package.version)
+  $assetPaths += $releasePackage.ZipPath
+  $assetPaths += $releasePackage.ShaPath
+  Write-Host "Packaged release ZIP: $($releasePackage.ZipPath)"
+  Write-Host "ZIP SHA256: $($releasePackage.Sha256)"
+} else {
+  $assetPaths += [System.IO.Path]::GetFullPath($AssetPath)
+}
+
+foreach ($assetPath in $assetPaths) {
+  if (-not (Test-Path -LiteralPath $assetPath)) {
+    throw "Release asset not found: $assetPath"
+  }
+}
+
+if ($SkipUpload) {
+  Write-Host "SkipUpload set; release assets prepared:"
+  foreach ($assetPath in $assetPaths) {
+    Write-Host $assetPath
+  }
+  return
 }
 
 $headers = @{
@@ -93,6 +166,7 @@ DinoBrain Windows installer.
 Asset source commit: $TargetCommitish
 Installer app ref: $InstallerAppRef
 Installer data ref: $DataRef
+Primary asset: DinoBrainSetup.zip
 "@
 if ($null -eq $release) {
   $release = Invoke-GitHubJson -Method "Post" -Uri "https://api.github.com/repos/$Repository/releases" -Body @{
@@ -114,27 +188,35 @@ if ($null -eq $release) {
   Write-Host "Using existing GitHub release: $($release.html_url)"
 }
 
-$assetName = Split-Path -Leaf $AssetPath
-$assets = Invoke-GitHubJson -Method "Get" -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)/assets"
-$existingAsset = @($assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1)
-if ($existingAsset.Count -gt 0) {
-  if (-not $ReplaceAsset) {
-    throw "Release asset already exists: $assetName. Pass -ReplaceAsset to replace it."
+function Publish-ReleaseAsset {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $assetName = Split-Path -Leaf $Path
+  $assets = Invoke-GitHubJson -Method "Get" -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)/assets"
+  $existingAsset = @($assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1)
+  if ($existingAsset.Count -gt 0) {
+    if (-not $ReplaceAsset) {
+      throw "Release asset already exists: $assetName. Pass -ReplaceAsset to replace it."
+    }
+    Invoke-GitHubJson -Method "Delete" -Uri "https://api.github.com/repos/$Repository/releases/assets/$($existingAsset[0].id)" | Out-Null
+    Write-Host "Deleted existing release asset: $assetName"
   }
-  Invoke-GitHubJson -Method "Delete" -Uri "https://api.github.com/repos/$Repository/releases/assets/$($existingAsset[0].id)" | Out-Null
-  Write-Host "Deleted existing release asset: $assetName"
+
+  $uploadBase = [string]$release.upload_url
+  $uploadBase = $uploadBase -replace "\{\?name,label\}$", ""
+  $encodedName = [System.Uri]::EscapeDataString($assetName)
+  $uploadUrl = "${uploadBase}?name=$encodedName"
+  Invoke-RestMethod `
+    -Method Post `
+    -Uri $uploadUrl `
+    -Headers $headers `
+    -ContentType "application/octet-stream" `
+    -InFile $Path | Out-Null
+
+  Write-Host "Uploaded release asset: $assetName"
 }
 
-$uploadBase = [string]$release.upload_url
-$uploadBase = $uploadBase -replace "\{\?name,label\}$", ""
-$encodedName = [System.Uri]::EscapeDataString($assetName)
-$uploadUrl = "${uploadBase}?name=$encodedName"
-Invoke-RestMethod `
-  -Method Post `
-  -Uri $uploadUrl `
-  -Headers $headers `
-  -ContentType "application/octet-stream" `
-  -InFile $AssetPath | Out-Null
-
-Write-Host "Uploaded release asset: $assetName"
+foreach ($assetPath in $assetPaths) {
+  Publish-ReleaseAsset -Path $assetPath
+}
 Write-Host $release.html_url

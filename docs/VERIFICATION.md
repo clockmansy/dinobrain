@@ -24,14 +24,16 @@ npm run index:verify
 npm run hook:verify
 npm run verify:os
 npm run installer:win
-npm run release:win -- -Tag v0.1.2 -ReplaceAsset
+npm run release:win -- -Tag v0.1.3 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run installer:win` builds `artifacts\DinoBrainSetup.exe` and verifies that the generated EXE can extract the embedded `install.ps1`.
 
-`npm run release:win` requires `GITHUB_TOKEN` or `GH_TOKEN`. It rebuilds the installer, creates or reuses the GitHub release, and uploads `DinoBrainSetup.exe` as the release asset.
+`npm run release:win` requires `GITHUB_TOKEN` or `GH_TOKEN`. It rebuilds the installer, creates or reuses the GitHub release, and uploads `DinoBrainSetup.zip` plus `DinoBrainSetup.zip.sha256` as the release assets.
+
+Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
 
 ## What `verify:os` Proves
 

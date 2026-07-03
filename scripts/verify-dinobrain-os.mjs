@@ -186,7 +186,7 @@ function parseCodexUserHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "0.1.2" });
+  const client = new Client({ name, version: "0.1.3" });
   const transport = new StdioClientTransport({
     command,
     args,

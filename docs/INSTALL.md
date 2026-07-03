@@ -46,6 +46,8 @@ After cloning or updating, the installer fetches GitHub again and verifies that 
 
 Git is recommended because it enables normal repo updates and `git_sync` backup workflows. If Git is not installed, the installer can perform a fresh install by downloading GitHub ZIP archives. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
 
+Running the installer over the same install root is supported when the existing `dinobrain` and `dinobrain-data` folders are Git repositories created by DinoBrain. The installer fetches the requested refs, rebuilds the app, refreshes indexes, rewrites the DinoBrain Codex/Claude registrations, and recreates launchers. It does not delete the data vault during reinstall. If an existing target folder is not a Git checkout, or points at a different origin URL without `-Force`, installation stops instead of overwriting it.
+
 From a downloaded `install.ps1`:
 
 ```powershell
@@ -89,7 +91,7 @@ Output:
 artifacts\DinoBrainSetup.exe
 ```
 
-The build uses `installer\DinoBrainSetup`, embeds the repo's current `install.ps1`, publishes a single-file `win-x64` executable, then self-tests that the EXE can extract the embedded installer. Upload `artifacts\DinoBrainSetup.exe` as the GitHub Release asset for installation on another PC.
+The build uses `installer\DinoBrainSetup`, embeds the repo's current `install.ps1`, publishes a single-file `win-x64` executable, then self-tests that the EXE can extract the embedded installer. The release script wraps that EXE in `artifacts\DinoBrainSetup.zip` with a short install readme and SHA256 file, because the ZIP is the preferred GitHub Release asset for installation on another PC.
 
 The EXE runs without requiring .NET on the target PC because it is published self-contained. It does not remove SmartScreen warnings by itself; production distribution still needs code signing if that matters.
 
@@ -99,10 +101,10 @@ Set a token with permission to create releases and upload release assets, then r
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.2 -ReplaceAsset
+npm run release:win -- -Tag v0.1.3 -ReplaceAsset
 ```
 
-This script builds `artifacts\DinoBrainSetup.exe`, creates or reuses the GitHub release for the tag, deletes the old `DinoBrainSetup.exe` asset when `-ReplaceAsset` is passed, and uploads the new EXE. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
+This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrainSetup.zip`, writes `artifacts\DinoBrainSetup.zip.sha256`, creates or reuses the GitHub release for the tag, deletes old matching assets when `-ReplaceAsset` is passed, and uploads the ZIP plus SHA256 file. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
 
 ## What Install Does
 
@@ -154,6 +156,7 @@ claude mcp add `
 11. Runs `npm run verify:os`.
 12. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
 13. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
+14. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
 `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 
@@ -219,6 +222,8 @@ This uses the same idempotent flow as install:
 
 Reinstall is the same as install, but passes `-Force` so a changed repo origin URL can be repaired.
 
+The reinstall path is safe for normal updates over an existing DinoBrain install. It does not remove `dinobrain-data`; it updates the Git checkout and re-indexes it. If you have local uncommitted tracked changes that conflict with Git checkout or pull, Git stops the reinstall before overwriting them.
+
 ## Uninstall
 
 Default uninstall removes the Codex MCP registration, removes the Codex user-level hook registration, removes the Claude Code MCP registration when `claude` is available, and creates config backups:
@@ -238,6 +243,14 @@ Remove the data vault only when you intentionally want to delete local DinoBrain
 ```powershell
 .\uninstall.ps1 -RemoveDataRepo -Force
 ```
+
+Full purge removes app files, the data vault, portable Node, DinoBrain launchers, and DinoBrain-created Codex config/hook backups. It prompts for `DELETE DINOBRAIN` unless `-Yes` is passed:
+
+```powershell
+.\uninstall.ps1 -Purge
+```
+
+The Windows installer also creates `DinoBrain Uninstall Everything.cmd` in the install root and app folder. It runs the same `-Purge` path from a temporary script copy so the app folder can delete itself.
 
 The uninstall script refuses to remove broad paths such as the home directory, Documents directory, or drive root.
 

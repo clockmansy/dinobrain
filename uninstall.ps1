@@ -14,6 +14,10 @@ param(
   [switch]$RemoveAppRepo,
   [switch]$RemoveDataRepo,
   [switch]$RemovePortableNode,
+  [switch]$RemoveLaunchers,
+  [switch]$RemoveCodexBackups,
+  [switch]$Purge,
+  [switch]$Yes,
   [switch]$Force
 )
 
@@ -68,9 +72,9 @@ function ConvertTo-Hashtable {
   if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
     return @($Value | ForEach-Object { ConvertTo-Hashtable $_ })
   }
-  if ($Value.PSObject -and $Value.PSObject.Properties.Count -gt 0 -and $Value.GetType().Name -eq "PSCustomObject") {
+  if ($Value.GetType().Name -eq "PSCustomObject") {
     $result = [ordered]@{}
-    foreach ($property in $Value.PSObject.Properties) {
+    foreach ($property in @($Value.PSObject.Properties)) {
       $result[$property.Name] = ConvertTo-Hashtable $property.Value
     }
     return $result
@@ -132,15 +136,23 @@ function Remove-DinoBrainCodexUserHook {
     return
   }
 
-  $originalGroups = @($config["hooks"]["UserPromptSubmit"])
-  $remainingGroups = @($originalGroups | Where-Object { -not (Test-DinoBrainHookGroup $_) })
+  $originalGroups = New-Object System.Collections.ArrayList
+  foreach ($group in @($config["hooks"]["UserPromptSubmit"])) {
+    [void]$originalGroups.Add($group)
+  }
+  $remainingGroups = New-Object System.Collections.ArrayList
+  foreach ($group in $originalGroups) {
+    if (-not (Test-DinoBrainHookGroup $group)) {
+      [void]$remainingGroups.Add($group)
+    }
+  }
   if ($remainingGroups.Count -eq $originalGroups.Count) {
     Write-Host "DinoBrain user hook was not present: $HooksPath"
     return
   }
 
   if ($remainingGroups.Count -gt 0) {
-    $config["hooks"]["UserPromptSubmit"] = @($remainingGroups)
+    $config["hooks"]["UserPromptSubmit"] = @($remainingGroups.ToArray())
   } else {
     $config["hooks"].Remove("UserPromptSubmit")
   }
@@ -205,6 +217,85 @@ function Remove-InstallPath {
   Remove-Item -LiteralPath $full -Recurse -Force
 }
 
+function Remove-DinoBrainLaunchers {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRootPath,
+    [Parameter(Mandatory = $true)][string]$AppPath
+  )
+
+  $launcherNames = @(
+    "DinoBrain Observatory.cmd",
+    "DinoBrain Hook Diagnose.cmd",
+    "DinoBrain Uninstall Everything.cmd"
+  )
+  $launcherRoots = @($InstallRootPath, $AppPath)
+  foreach ($rootPath in $launcherRoots) {
+    if ([string]::IsNullOrWhiteSpace($rootPath)) { continue }
+    foreach ($launcherName in $launcherNames) {
+      $launcherPath = Join-Path $rootPath $launcherName
+      if (Test-Path -LiteralPath $launcherPath) {
+        Write-Host "Removing launcher: $launcherPath"
+        Remove-Item -LiteralPath $launcherPath -Force
+      }
+    }
+  }
+}
+
+function Remove-DinoBrainCodexBackups {
+  param(
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath
+  )
+
+  foreach ($pathValue in @($ConfigPath, $HooksPath)) {
+    $parent = Split-Path -Parent $pathValue
+    $leaf = Split-Path -Leaf $pathValue
+    if (-not (Test-Path -LiteralPath $parent)) { continue }
+    Get-ChildItem -LiteralPath $parent -File -Filter "$leaf.bak-dinobrain*" | ForEach-Object {
+      Write-Host "Removing DinoBrain backup: $($_.FullName)"
+      Remove-Item -LiteralPath $_.FullName -Force
+    }
+  }
+}
+
+function Remove-EmptyDirectory {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $full = Get-FullPath $TargetPath
+  if (-not (Test-Path -LiteralPath $full)) { return }
+  $items = @(Get-ChildItem -LiteralPath $full -Force -ErrorAction SilentlyContinue)
+  if ($items.Count -eq 0) {
+    Write-Host "Removing empty ${Label}: $full"
+    Remove-Item -LiteralPath $full -Force
+  }
+}
+
+function Confirm-DinoBrainPurge {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$DataPath,
+    [Parameter(Mandatory = $true)][string]$NodePath
+  )
+
+  if ($Yes) { return }
+
+  Write-Host ""
+  Write-Host "DinoBrain purge will permanently remove:"
+  Write-Host "- App repo: $AppPath"
+  Write-Host "- Data vault: $DataPath"
+  Write-Host "- Portable Node: $NodePath"
+  Write-Host "- DinoBrain launchers and DinoBrain config backups"
+  Write-Host ""
+  Write-Host "Codex/Claude registrations will be removed first. This cannot be undone from this machine unless your data repo has been pushed/backed up."
+  $answer = Read-Host "Type DELETE DINOBRAIN to continue"
+  if ($answer -ne "DELETE DINOBRAIN") {
+    throw "Purge canceled."
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
@@ -212,12 +303,22 @@ if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
 
+$InstallRoot = Get-FullPath $InstallRoot
 $AppDir = Get-FullPath $AppDir
 $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
 $CodexHooksPath = Get-FullPath $CodexHooksPath
 $nodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
+
+if ($Purge) {
+  $RemoveAppRepo = $true
+  $RemoveDataRepo = $true
+  $RemovePortableNode = $true
+  $RemoveLaunchers = $true
+  $RemoveCodexBackups = $true
+  $Force = $true
+}
 
 Remove-DinoBrainCodexConfig -ConfigPath $CodexConfigPath
 if (-not $SkipCodexHookConfig) {
@@ -227,12 +328,20 @@ if (-not $SkipClaudeCodeConfig) {
   Remove-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand
 }
 
-if (($RemoveAppRepo -or $RemoveDataRepo -or $RemovePortableNode) -and -not $Force) {
+if (($RemoveAppRepo -or $RemoveDataRepo -or $RemovePortableNode -or $RemoveLaunchers -or $RemoveCodexBackups) -and -not $Force) {
   throw "Pass -Force to remove files from disk. Without remove flags, uninstall only unregisters MCP integrations."
 }
 
+if ($Purge) {
+  Confirm-DinoBrainPurge -AppPath $AppDir -DataPath $DataDir -NodePath $nodeRoot
+}
+
+if ($RemoveLaunchers) { Remove-DinoBrainLaunchers -InstallRootPath $InstallRoot -AppPath $AppDir }
+if ($RemoveCodexBackups) { Remove-DinoBrainCodexBackups -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath }
 if ($RemoveAppRepo) { Remove-InstallPath -TargetPath $AppDir -Label "DinoBrain app repo" }
 if ($RemoveDataRepo) { Remove-InstallPath -TargetPath $DataDir -Label "DinoBrain data repo" }
 if ($RemovePortableNode) { Remove-InstallPath -TargetPath $nodeRoot -Label "DinoBrain portable Node" }
+if ($RemovePortableNode) { Remove-EmptyDirectory -TargetPath $ToolsDir -Label "DinoBrain tools folder" }
+if ($Purge) { Remove-EmptyDirectory -TargetPath $InstallRoot -Label "DinoBrain install root" }
 
 Write-Host "DinoBrain uninstall complete."

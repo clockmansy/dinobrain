@@ -724,6 +724,44 @@ pause
   return $launcherPaths
 }
 
+function New-DinoBrainUninstallLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$ToolsDir,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$ClaudeCommand
+  )
+
+  $uninstallScript = Join-Path $AppPath "uninstall.ps1"
+  if (-not (Test-Path -LiteralPath $uninstallScript)) {
+    Write-Warning "Uninstall script not found: $uninstallScript"
+    return @()
+  }
+
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Uninstall Everything.cmd"),
+    (Join-Path $AppPath "DinoBrain Uninstall Everything.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+set "TMP_SCRIPT=%TEMP%\DinoBrainUninstall-%RANDOM%-%RANDOM%.ps1"
+copy /Y "$uninstallScript" "%TMP_SCRIPT%" >nul
+start "DinoBrain Uninstall" powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%TMP_SCRIPT%" -InstallRoot "$InstallRoot" -AppDir "$AppPath" -DataDir "$VaultPath" -ToolsDir "$ToolsDir" -CodexConfigPath "$ConfigPath" -CodexHooksPath "$HooksPath" -ClaudeCommand "$ClaudeCommand" -Purge
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Uninstall launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
 function Set-DinoBrainClaudeCodeConfig {
   param(
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
@@ -873,6 +911,7 @@ if (-not $SkipCodexHookConfig) {
 
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
+$uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
 if (-not $SkipClaudeCodeConfig) {
@@ -895,5 +934,8 @@ foreach ($launcher in $observatoryLaunchers) {
 }
 foreach ($launcher in $hookDiagnoseLaunchers) {
   Write-Host "Hook diagnose launcher: $launcher"
+}
+foreach ($launcher in $uninstallLaunchers) {
+  Write-Host "Uninstall launcher: $launcher"
 }
 Write-Host "Claude Code MCP scope: $ClaudeScope"

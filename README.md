@@ -65,6 +65,8 @@ The current verification focus is proving that the system behaves like a compoun
 Recommended Windows setup from a release asset:
 
 ```powershell
+Expand-Archive .\DinoBrainSetup.zip -DestinationPath .\DinoBrainSetup
+cd .\DinoBrainSetup
 .\DinoBrainSetup.exe
 ```
 
@@ -74,11 +76,11 @@ Build the release EXE from this repo:
 npm run installer:win
 ```
 
-Publish the EXE to GitHub Releases:
+Publish the ZIP to GitHub Releases:
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.2 -ReplaceAsset
+npm run release:win -- -Tag v0.1.3 -ReplaceAsset
 ```
 
 Fresh Windows setup from PowerShell:
@@ -101,11 +103,13 @@ Update, reinstall, and uninstall entrypoints:
 .\uninstall.ps1
 ```
 
-See `docs/INSTALL.md` for custom paths, private repo prerequisites, and removal flags.
+See `docs/INSTALL.md` for custom paths, private repo prerequisites, reinstall behavior, and removal flags.
 
 The installer configures Codex MCP, registers a user-level Codex prompt hook, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
 
 By default the Windows installer tracks the app and data repositories at `main` and verifies that the local checkouts match their requested GitHub refs after update. A tag or commit can still be passed deliberately for rollback/recovery, but normal installs should not leave Codex running a stale DinoBrain app against newer GitHub data.
+
+Running the installer over the same install folder is supported when `dinobrain` and `dinobrain-data` are the Git checkouts created by DinoBrain. It updates those repos, rebuilds indexes, and refreshes client registrations. It refuses to overwrite existing non-git folders. Use `DinoBrain Uninstall Everything.cmd` or `.\uninstall.ps1 -Purge` only when you intentionally want to remove the app, data vault, portable Node runtime, launchers, and DinoBrain config backups.
 
 ## MCP Development
 
