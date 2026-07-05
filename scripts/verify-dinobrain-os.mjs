@@ -233,7 +233,7 @@ function parseClaudePromptHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "2.0.1" });
+  const client = new Client({ name, version: "2.0.2" });
   const transport = new StdioClientTransport({
     command,
     args,

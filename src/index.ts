@@ -9,7 +9,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
-import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
+import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
+import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
 import {
@@ -401,6 +402,16 @@ function makeGateId(taskId: string): string {
   return `gate-${stamp}-${safeSlug(taskId).slice(0, 36)}`;
 }
 
+type GateContextEvidence = {
+  hasContextPack: boolean;
+  contextItemCount: number;
+  contextPackPath: string | null;
+  verificationStatus: "verified" | "missing" | "not_provided";
+  declaredHasContextPack: boolean;
+  declaredContextItemCount: number;
+  declarationMismatch: boolean;
+};
+
 function makeSourceChunkId(sourceTitle: string): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
   return `sourcechunk-${stamp}-${safeSlug(sourceTitle).slice(0, 36)}`;
@@ -423,6 +434,96 @@ async function writeGateReport(taskId: string, value: Record<string, unknown>): 
   return relDataPath(gatePath);
 }
 
+async function readContextPackEvidence(contextPackPath: string): Promise<{
+  contextPackPath: string;
+  contextItemCount: number;
+} | null> {
+  const normalized = normalizeVaultPath(contextPackPath);
+  const pack = await readJson<Record<string, unknown>>(dataPath(normalized));
+  if (!pack) return null;
+  const items = Array.isArray(pack.items) ? pack.items : [];
+  const contextItemCount = typeof pack.included_item_count === "number" ? pack.included_item_count : items.length;
+  return {
+    contextPackPath: normalized,
+    contextItemCount,
+  };
+}
+
+function eventContextPackPath(event: Record<string, unknown>, taskId: string): string | null {
+  if (event.task_id !== taskId) return null;
+  for (const key of ["context_pack_trace", "context_pack_path"]) {
+    const value = event[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+async function findTaskContextPackPath(taskId: string): Promise<string | null> {
+  const eventDir = dataPath(".dino", "events");
+  let entries: Array<import("node:fs").Dirent>;
+  try {
+    entries = await fs.readdir(eventDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => path.join(eventDir, entry.name))
+    .sort((a, b) => b.localeCompare(a));
+
+  for (const file of files) {
+    const lines = (await fs.readFile(file, "utf8")).split(/\r?\n/).filter(Boolean).reverse();
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        const contextPackPath = eventContextPackPath(event, taskId);
+        if (contextPackPath) return contextPackPath;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+async function deriveGateContextEvidence(params: {
+  taskId: string;
+  contextPackPath?: string;
+  declaredHasContextPack: boolean;
+  declaredContextItemCount: number;
+}): Promise<GateContextEvidence> {
+  const candidates = [
+    params.contextPackPath?.trim() || "",
+    params.taskId ? (await findTaskContextPackPath(params.taskId)) ?? "" : "",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const verified = await readContextPackEvidence(candidate);
+    if (!verified) continue;
+    return {
+      hasContextPack: true,
+      contextItemCount: verified.contextItemCount,
+      contextPackPath: verified.contextPackPath,
+      verificationStatus: "verified",
+      declaredHasContextPack: params.declaredHasContextPack,
+      declaredContextItemCount: params.declaredContextItemCount,
+      declarationMismatch:
+        !params.declaredHasContextPack || params.declaredContextItemCount !== verified.contextItemCount,
+    };
+  }
+
+  return {
+    hasContextPack: false,
+    contextItemCount: 0,
+    contextPackPath: null,
+    verificationStatus: candidates.length > 0 ? "missing" : "not_provided",
+    declaredHasContextPack: params.declaredHasContextPack,
+    declaredContextItemCount: params.declaredContextItemCount,
+    declarationMismatch: params.declaredHasContextPack || params.declaredContextItemCount > 0,
+  };
+}
+
 async function buildContextPackRecord(question: string, limit: number): Promise<Record<string, unknown>> {
   const { records, ranked, stats } = await getContextPackItems(DATA_ROOT, question, limit);
   const packId = makePackId(question);
@@ -443,7 +544,7 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
     os_version: DINOBRAIN_OS_VERSION,
     question,
     created_at: createdAt,
-    ranking_inputs: STANDARD_RANKING_INPUTS,
+    ranking_inputs: standardRankingInputsForMode(stats.retrieval_mode),
     source_roots: SEARCH_ROOTS,
     recent_task_limit: 10,
     candidate_records_excluded: true,
@@ -492,11 +593,7 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
     index_total_candidate_count: stats.total_candidate_count,
     item_count: items.length,
     items,
-    caveats: [
-      "DinoBrain OS v2 uses contextual hybrid retrieval by default.",
-      "Dense retrieval is implemented as local dense-lite lexical similarity until an embedding provider is configured.",
-      "Candidate and review queue records are excluded from default packs.",
-    ],
+    caveats: retrievalCaveatsForMode(stats.retrieval_mode),
   };
 }
 
@@ -881,6 +978,8 @@ server.registerTool(
       graph_health_snapshot: plan.audit.graph_health_snapshot,
       missing_expected_memory: plan.audit.missing_expected_memory,
       hallucinated_memory_reference: plan.audit.hallucinated_memory_reference,
+      observed_artifacts_verified: plan.audit.observed_artifacts_verified,
+      observed_artifacts_unverified: plan.audit.observed_artifacts_unverified,
     });
   },
 );
@@ -935,18 +1034,25 @@ server.registerTool(
     inputSchema: {
       request: z.string().min(1),
       task_id: z.string().optional(),
+      context_pack_path: z.string().optional(),
       context_item_count: z.number().int().min(0).default(0),
       has_context_pack: z.boolean().default(false),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
       backup_risk: z.boolean().default(false),
     },
   },
-  async ({ request, task_id, context_item_count, has_context_pack, sensitivity, backup_risk }) => {
+  async ({ request, task_id, context_pack_path, context_item_count, has_context_pack, sensitivity, backup_risk }) => {
     const gateTaskId = task_id?.trim() || makeTaskId(request);
+    const contextEvidence = await deriveGateContextEvidence({
+      taskId: gateTaskId,
+      contextPackPath: context_pack_path,
+      declaredHasContextPack: has_context_pack,
+      declaredContextItemCount: context_item_count,
+    });
     const gates = evaluateActionGates({
       request,
-      hasContextPack: has_context_pack,
-      contextItemCount: context_item_count,
+      hasContextPack: contextEvidence.hasContextPack,
+      contextItemCount: contextEvidence.contextItemCount,
       sensitivity,
       exposedTools: [...REQUIRED_OS_TOOLS],
       backupRisk: backup_risk,
@@ -955,6 +1061,12 @@ server.registerTool(
       task_id: gateTaskId,
       request,
       generated_at: nowIso(),
+      context_pack_path: contextEvidence.contextPackPath,
+      context_verification_status: contextEvidence.verificationStatus,
+      declared_has_context_pack: contextEvidence.declaredHasContextPack,
+      declared_context_item_count: contextEvidence.declaredContextItemCount,
+      verified_context_item_count: contextEvidence.contextItemCount,
+      context_declaration_mismatch: contextEvidence.declarationMismatch,
       ...gates,
     });
     const eventLog = await appendEvent({
@@ -964,6 +1076,9 @@ server.registerTool(
       gate_status: gates.status,
       fail_closed: gates.fail_closed,
       gate_report_path: gateReportPath,
+      context_pack_path: contextEvidence.contextPackPath,
+      context_verification_status: contextEvidence.verificationStatus,
+      context_declaration_mismatch: contextEvidence.declarationMismatch,
       os_version: DINOBRAIN_OS_VERSION,
     });
     return jsonResult({
@@ -971,6 +1086,12 @@ server.registerTool(
       os_version: DINOBRAIN_OS_VERSION,
       gate_report_path: gateReportPath,
       event_log: eventLog,
+      context_pack_path: contextEvidence.contextPackPath,
+      context_verification_status: contextEvidence.verificationStatus,
+      context_declaration_mismatch: contextEvidence.declarationMismatch,
+      declared_has_context_pack: contextEvidence.declaredHasContextPack,
+      declared_context_item_count: contextEvidence.declaredContextItemCount,
+      verified_context_item_count: contextEvidence.contextItemCount,
       ...gates,
     });
   },

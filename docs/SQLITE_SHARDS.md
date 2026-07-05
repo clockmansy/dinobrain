@@ -1,7 +1,7 @@
 # SQLite Shards
 
-Date: 2026-07-01
-Status: v0 implemented
+Date: 2026-07-05
+Status: v3 implemented
 
 ## Goal
 
@@ -30,7 +30,7 @@ When SQLite shards exist:
 - Observatory reads recent rows from `operations.sqlite`
 - MCP writes update `operations.sqlite` incrementally
 
-If the shards are missing, DinoBrain falls back to the JSON indexes and legacy scanners.
+If the shards are missing or use an old shard metadata version, DinoBrain falls back to the JSON indexes and legacy scanners.
 
 ## Refresh
 
@@ -53,9 +53,9 @@ npm run index:verify:sqlite
 The verifier creates a synthetic vault with more than 1,200 Wiki records and 1,200 operational records. It proves:
 
 - the two shard files and manifest are written
-- direct Wiki search returns `retrieval_mode: sqlite_shards_v0`
-- routed `wiki_search` returns `retrieval_mode: sqlite_shards_v0`
-- routed Context Pack retrieval returns `retrieval_mode: sqlite_shards_v0`
+- direct Wiki search reports `retrieval_mode: lexical_fallback_v2` when no dense vector index is configured
+- routed `wiki_search` reports `retrieval_mode: lexical_fallback_v2` when no dense vector index is configured
+- routed Context Pack retrieval reports `retrieval_mode: lexical_fallback_v2` when no dense vector index is configured
 - recent task lookup comes from SQLite
 - incremental task/event writes are visible without rebuilding the shard
 

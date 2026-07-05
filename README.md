@@ -80,7 +80,7 @@ Publish the ZIP to GitHub Releases:
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v2.0.1 -ReplaceAsset
+npm run release:win -- -Tag v2.0.2 -ReplaceAsset
 ```
 
 Fresh Windows setup from PowerShell:

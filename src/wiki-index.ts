@@ -7,9 +7,17 @@ import {
   dataPath,
   type RankedRecord,
 } from "./context.js";
-import { HYBRID_RETRIEVAL_MODE, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
+import {
+  type RetrievalMode,
+  denseVectorCandidatePaths,
+  isHighFrequencyHybridTerm,
+  loadDenseVectorIndex,
+  rankRecordsHybridV2,
+  retrievalModeFor,
+  tokenizeHybrid,
+} from "./hybrid-retrieval.js";
 
-export const WIKI_INDEX_VERSION = 2;
+export const WIKI_INDEX_VERSION = 3;
 export const WIKI_INDEX_RELATIVE_PATH = ".dino/index/wiki-index.json";
 
 export type WikiIndexRecord = RankedRecord & {
@@ -60,7 +68,7 @@ export type WikiIndex = {
 };
 
 export type IndexedRetrievalStats = {
-  retrieval_mode: typeof HYBRID_RETRIEVAL_MODE;
+  retrieval_mode: RetrievalMode;
   candidate_source: "wiki_index_v2";
   index_path: string;
   index_record_count: number;
@@ -76,46 +84,12 @@ type CandidateSelection = {
   matchingTerms: string[];
 };
 
-const QUERY_STOPWORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "by",
-  "for",
-  "from",
-  "how",
-  "in",
-  "is",
-  "of",
-  "on",
-  "or",
-  "should",
-  "the",
-  "to",
-  "what",
-  "when",
-  "why",
-  "with",
-]);
-
 function nowIso(): string {
   return new Date().toISOString();
 }
 
 function tokenizeForIndex(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}_-]+/u)
-        .map((term) => term.trim())
-        .filter((term) => term.length >= 2 && !QUERY_STOPWORDS.has(term)),
-    ),
-  );
+  return Array.from(new Set(tokenizeHybrid(value)));
 }
 
 function normalizeWikiLink(value: string): string {
@@ -309,6 +283,7 @@ function buildInvertedIndex(records: WikiIndexRecord[]): Record<string, string[]
 
   const invertedIndex: Record<string, string[]> = {};
   for (const [term, recordIds] of Array.from(terms.entries()).sort(([a], [b]) => a.localeCompare(b))) {
+    if (isHighFrequencyHybridTerm(records.length, recordIds.size)) continue;
     invertedIndex[term] = Array.from(recordIds).sort((a, b) => a.localeCompare(b));
   }
   return invertedIndex;
@@ -359,6 +334,23 @@ function selectCandidates(index: WikiIndex, query: string, limit: number): Candi
     totalCandidateCount: scoreByRecordId.size,
     matchingTerms: Array.from(matchedTerms).sort((a, b) => a.localeCompare(b)),
   };
+}
+
+function mergeDenseVectorCandidates(
+  index: WikiIndex,
+  selected: RankedRecord[],
+  query: string,
+  denseVectorIndex: ReturnType<typeof loadDenseVectorIndex>,
+  limit: number,
+): RankedRecord[] {
+  const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
+  if (densePaths.size === 0) return selected;
+  const selectedPaths = new Set(selected.map((record) => record.path));
+  const denseRecords = index.records
+    .filter((record) => densePaths.has(record.path) && !selectedPaths.has(record.path))
+    .slice(0, limit)
+    .map(toRankedRecord);
+  return [...selected, ...denseRecords];
 }
 
 export function getWikiIndexPath(dataRoot: string): string {
@@ -452,16 +444,18 @@ export async function queryIndexedWiki(
   const index = await ensureWikiIndex(dataRoot);
   const candidateLimit = Math.max(limit * 25, 100);
   const candidates = selectCandidates(index, query, candidateLimit);
-  const ranked = rankRecordsHybridV2(candidates.records, query, { limit });
+  const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+  const records = mergeDenseVectorCandidates(index, candidates.records, query, denseVectorIndex, candidateLimit);
+  const ranked = rankRecordsHybridV2(records, query, { limit, denseVectorIndex });
   return {
-    records: candidates.records,
+    records,
     ranked,
     stats: {
-      retrieval_mode: HYBRID_RETRIEVAL_MODE,
+      retrieval_mode: retrievalModeFor(records, query, denseVectorIndex),
       candidate_source: "wiki_index_v2",
       index_path: WIKI_INDEX_RELATIVE_PATH,
       index_record_count: index.record_count,
-      candidate_record_count: candidates.records.length,
+      candidate_record_count: records.length,
       total_candidate_count: candidates.totalCandidateCount,
       matching_terms: candidates.matchingTerms,
     },
@@ -477,13 +471,15 @@ export async function getIndexedPackItems(
   const candidateLimit = Math.min(index.record_count, Math.max(limit * 200, 1000));
   const candidates = selectCandidates(index, question, candidateLimit);
   const recentTasks = await collectRecentTaskRecords(dataRoot, 10);
-  const records = [...candidates.records, ...recentTasks];
-  const ranked = rankRecordsHybridV2(records, question, { limit });
+  const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+  const selectedRecords = mergeDenseVectorCandidates(index, candidates.records, question, denseVectorIndex, candidateLimit);
+  const records = [...selectedRecords, ...recentTasks];
+  const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex });
   return {
     records,
     ranked,
     stats: {
-      retrieval_mode: HYBRID_RETRIEVAL_MODE,
+      retrieval_mode: retrievalModeFor(records, question, denseVectorIndex),
       candidate_source: "wiki_index_v2",
       index_path: WIKI_INDEX_RELATIVE_PATH,
       index_record_count: index.record_count,

@@ -314,7 +314,7 @@ async function waitForSiblingPreflightReport(dedupeKey) {
 }
 
 async function withClient(callback) {
-  const client = new Client({ name: "dinobrain-codex-hook", version: "2.0.1" });
+  const client = new Client({ name: "dinobrain-codex-hook", version: "2.0.2" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -374,7 +374,7 @@ function additionalContext({ start, contextPack, sessionImport, redactions, repo
     start.fail_closed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode for this Codex prompt."
       : "DinoBrain OS preflight completed for this Codex prompt.",
-    `os_version: ${start.os_version || "2.0.1"}`,
+    `os_version: ${start.os_version || "2.0.2"}`,
     `task_id: ${start.task_id}`,
     `task_path: ${start.task_path}`,
     `context_pack_trace: ${contextPack.trace_path}`,
@@ -424,7 +424,7 @@ function siblingContext({ report, reportPath }) {
     failClosed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode by another matching DinoBrain hook."
       : "DinoBrain OS preflight completed by another matching DinoBrain hook.",
-    `os_version: ${report.os_version || "2.0.1"}`,
+    `os_version: ${report.os_version || "2.0.2"}`,
     `task_id: ${report.task_id || "unavailable"}`,
     `task_path: ${report.task_path || "unavailable"}`,
     `context_pack_trace: ${report.context_pack_trace || "unavailable"}`,
@@ -566,7 +566,7 @@ async function main() {
       data_root: dataRoot,
       project,
       cwd: inputCwd(input) || null,
-      os_version: start.os_version || "2.0.1",
+      os_version: start.os_version || "2.0.2",
       task_id: start.task_id,
       task_path: start.task_path,
       context_pack_trace: contextPack.trace_path,

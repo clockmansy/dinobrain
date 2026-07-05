@@ -191,6 +191,7 @@ function scoreTrust(params: {
   missingExpected: string[];
   hallucinated: string[];
   unprovided: string[];
+  unverifiedArtifacts: string[];
   graph: GraphHealth;
 }): number {
   const providedScore = params.provided.length > 0 ? 15 : 0;
@@ -204,7 +205,7 @@ function scoreTrust(params: {
       ? Math.round(10 * ((params.expected.length - params.missingExpected.length) / params.expected.length))
       : 10;
   const graphScore = Math.round(15 * (params.graph.score / 100));
-  const penalty = Math.min(35, params.hallucinated.length * 15 + params.unprovided.length * 5);
+  const penalty = Math.min(45, params.hallucinated.length * 15 + params.unprovided.length * 5 + params.unverifiedArtifacts.length * 5);
   return Math.max(0, Math.min(100, providedScore + declaredScore + overlapScore + observedScore + expectedScore + graphScore - penalty));
 }
 
@@ -213,6 +214,53 @@ function verdict(score: number): "high" | "medium" | "low" | "failed" {
   if (score >= 60) return "medium";
   if (score >= 40) return "low";
   return "failed";
+}
+
+function eventPathValues(event: JsonObject): string[] {
+  const paths: string[] = [];
+  for (const [key, value] of Object.entries(event)) {
+    const lowerKey = key.toLowerCase();
+    if (!lowerKey.endsWith("path") && !lowerKey.endsWith("paths") && lowerKey !== "path") continue;
+    if (typeof value === "string") paths.push(value);
+    else if (Array.isArray(value)) paths.push(...value.map(String));
+  }
+  return paths;
+}
+
+async function collectEventArtifactPaths(dataRoot: string, trace: JsonObject, traceTaskId: string): Promise<string[]> {
+  const eventDir = dataPath(dataRoot, ".dino", "events");
+  let entries: Array<import("node:fs").Dirent>;
+  try {
+    entries = await fs.readdir(eventDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const tracePaths = new Set([
+    typeof trace.trace_path === "string" ? pathKey(trace.trace_path) : "",
+    ...textArray(trace.context_pack_paths).map(pathKey),
+    ...textArray(trace.session_archive_paths).map(pathKey),
+    ...textArray(trace.candidate_paths).map(pathKey),
+  ].filter(Boolean));
+  const collected: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const lines = (await fs.readFile(path.join(eventDir, entry.name), "utf8")).split(/\r?\n/).filter(Boolean);
+    for (const line of lines) {
+      let event: JsonObject;
+      try {
+        event = JSON.parse(line) as JsonObject;
+      } catch {
+        continue;
+      }
+      const eventTaskId = typeof event.task_id === "string" ? event.task_id : "";
+      const paths = eventPathValues(event);
+      const eventTouchesTrace = paths.some((item) => tracePaths.has(pathKey(item)));
+      if (eventTaskId !== traceTaskId && !eventTouchesTrace) continue;
+      collected.push(...paths);
+    }
+  }
+  return normalizeVaultPaths(dataRoot, collected);
 }
 
 export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput): Promise<MemoryAuditPlan> {
@@ -258,6 +306,9 @@ export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput
   const itemByPath = new Map(packItems.map((item) => [pathKey(item.path), item]));
   const providedMemoryPaths = normalizeVaultPaths(dataRoot, packItems.map((item) => item.path));
   const observedText = traceText(trace, input.observedSummary);
+  const eventObservedArtifactPaths = await collectEventArtifactPaths(dataRoot, trace, traceTaskId);
+  const observedArtifactsVerified = intersection(observedArtifactPaths, eventObservedArtifactPaths);
+  const observedArtifactsUnverified = difference(observedArtifactPaths, eventObservedArtifactPaths);
   const observedUsage = declaredUsedPaths
     .map((usedPath) => {
       const evidence = observedEvidence(usedPath, observedText, itemByPath.get(pathKey(usedPath)));
@@ -293,6 +344,7 @@ export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput
     missingExpected: missingExpectedMemory,
     hallucinated: hallucinatedMemoryReferences,
     unprovided: difference(unprovidedUsedPaths, hallucinatedMemoryReferences),
+    unverifiedArtifacts: observedArtifactsUnverified,
     graph,
   });
   const auditId = `audit-${stamp(now)}-${safeSlug(traceTaskId).slice(0, 36)}-${randomUUID().slice(0, 8)}`;
@@ -320,6 +372,9 @@ export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput
     session_archive_paths: cap(sessionArchivePaths),
     candidate_paths: cap(candidatePaths),
     observed_artifact_paths: cap(observedArtifactPaths),
+    event_observed_artifact_paths: cap(eventObservedArtifactPaths),
+    observed_artifacts_verified: cap(observedArtifactsVerified),
+    observed_artifacts_unverified: cap(observedArtifactsUnverified),
     observed_summary_preview: compactText(input.observedSummary),
     auditor_notes: compactText(input.notes),
     counts: {
@@ -330,6 +385,8 @@ export async function buildMemoryAudit(dataRoot: string, input: MemoryAuditInput
       context_packs: contextPackPaths.length,
       session_archives: sessionArchivePaths.length,
       candidates: candidatePaths.length,
+      observed_artifacts_verified: observedArtifactsVerified.length,
+      observed_artifacts_unverified: observedArtifactsUnverified.length,
     },
   };
 

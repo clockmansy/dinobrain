@@ -1,4 +1,4 @@
-export const DINOBRAIN_OS_VERSION = "2.0.1";
+export const DINOBRAIN_OS_VERSION = "2.0.2";
 export const DINOBRAIN_OS_CONTRACT = "dinobrain_os_v2";
 
 export type GateLevel = "pass" | "warn" | "block";
@@ -10,11 +10,13 @@ export type ActionGate = {
   safe_action: string;
 };
 
+export type Sensitivity = "normal" | "sensitive" | "unknown";
+
 export type ActionGateInput = {
   request: string;
   hasContextPack: boolean;
   contextItemCount: number;
-  sensitivity: "normal" | "sensitive" | "unknown";
+  sensitivity: Sensitivity;
   exposedTools: string[];
   backupRisk?: boolean;
 };
@@ -42,12 +44,65 @@ function includesAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
+const SENSITIVITY_PATTERNS: Array<[string, RegExp]> = [
+  ["api_key_assignment", /api[_-]?key\s*[:=]/i],
+  ["secret_assignment", /secret\s*[:=]/i],
+  ["token_assignment", /token\s*[:=]/i],
+  ["password_assignment", /password\s*[:=]/i],
+  ["private_key_block", /BEGIN [A-Z ]*PRIVATE KEY/],
+  ["openai_key_shape", /sk-[A-Za-z0-9_-]{20,}/],
+  ["github_token_shape", /(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})/],
+  ["aws_access_key_shape", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
+  ["jwt_shape", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+  ["cookie_assignment", /(session|sessionid|cookie)\s*[:=]/i],
+  ["korean_password", /\uBE44\uBC00\uBC88\uD638/],
+  ["korean_token", /\uD1A0\uD070/],
+  ["korean_secret", /\uC2DC\uD06C\uB9BF/],
+];
+
+function sensitivityRank(value: Sensitivity): number {
+  if (value === "sensitive") return 2;
+  if (value === "unknown") return 1;
+  return 0;
+}
+
+export function detectSensitivity(request: string): { sensitivity: Sensitivity; hits: string[] } {
+  const hits = SENSITIVITY_PATTERNS.filter(([, pattern]) => pattern.test(request)).map(([name]) => name);
+  return {
+    sensitivity: hits.length > 0 ? "sensitive" : "normal",
+    hits,
+  };
+}
+
+export function effectiveSensitivity(reported: Sensitivity, request: string): {
+  sensitivity: Sensitivity;
+  reported: Sensitivity;
+  detected: Sensitivity;
+  hits: string[];
+  escalated: boolean;
+} {
+  const detected = detectSensitivity(request);
+  const sensitivity = sensitivityRank(detected.sensitivity) > sensitivityRank(reported) ? detected.sensitivity : reported;
+  return {
+    sensitivity,
+    reported,
+    detected: detected.sensitivity,
+    hits: detected.hits,
+    escalated: sensitivity !== reported,
+  };
+}
+
 export function evaluateActionGates(input: ActionGateInput): {
   status: GateLevel;
   fail_closed: boolean;
   gates: ActionGate[];
+  effective_sensitivity: Sensitivity;
+  reported_sensitivity: Sensitivity;
+  detected_sensitivity: Sensitivity;
+  sensitivity_hits: string[];
 } {
   const request = input.request.toLowerCase();
+  const sensitivity = effectiveSensitivity(input.sensitivity, input.request);
   const gates: ActionGate[] = [];
 
   if (!input.hasContextPack) {
@@ -68,7 +123,16 @@ export function evaluateActionGates(input: ActionGateInput): {
     });
   }
 
-  if (input.sensitivity !== "normal") {
+  if (sensitivity.escalated) {
+    gates.push({
+      id: "sensitivity_auto_escalated",
+      level: "warn",
+      reason: "The request matched sensitive-content rules despite a lower reported sensitivity.",
+      safe_action: "Treat the task as sensitive and avoid storing raw credentials, tokens, or private identifiers.",
+    });
+  }
+
+  if (sensitivity.sensitivity !== "normal") {
     gates.push({
       id: "sensitive_prompt",
       level: "warn",
@@ -145,5 +209,9 @@ export function evaluateActionGates(input: ActionGateInput): {
     status: hasBlock ? "block" : hasWarn ? "warn" : "pass",
     fail_closed: hasBlock,
     gates,
+    effective_sensitivity: sensitivity.sensitivity,
+    reported_sensitivity: sensitivity.reported,
+    detected_sensitivity: sensitivity.detected,
+    sensitivity_hits: sensitivity.hits,
   };
 }

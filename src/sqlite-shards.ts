@@ -3,7 +3,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { type RankedRecord } from "./context.js";
-import { HYBRID_RETRIEVAL_MODE, contextualText, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
+import {
+  type RetrievalMode,
+  contextualText,
+  denseVectorCandidatePaths,
+  loadDenseVectorIndex,
+  rankRecordsHybridV2,
+  retrievalModeFor,
+  tokenizeHybrid,
+} from "./hybrid-retrieval.js";
 import {
   collectOperationEntries,
   type OperationContextPackEntry,
@@ -14,7 +22,7 @@ import {
 } from "./operations-index.js";
 import { buildWikiIndex, type WikiIndex, type WikiIndexEdge, type WikiIndexNode, type WikiIndexRecord } from "./wiki-index.js";
 
-export const SQLITE_SHARD_VERSION = 2;
+export const SQLITE_SHARD_VERSION = 3;
 export const SQLITE_INDEX_DIR = ".dino/index/sqlite";
 export const SQLITE_MANIFEST_RELATIVE_PATH = `${SQLITE_INDEX_DIR}/manifest.json`;
 
@@ -22,7 +30,7 @@ type ShardName = "wiki" | "operations";
 type SqlValue = string | number | null;
 
 export type SqliteRetrievalStats = {
-  retrieval_mode: typeof HYBRID_RETRIEVAL_MODE;
+  retrieval_mode: RetrievalMode;
   candidate_source: "sqlite_shards_v2";
   index_path: string;
   index_record_count: number;
@@ -36,32 +44,6 @@ type QueryOptions = {
   includeExcerpt?: boolean;
   rankLimit?: number;
 };
-
-const QUERY_STOPWORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "by",
-  "for",
-  "from",
-  "how",
-  "in",
-  "is",
-  "of",
-  "on",
-  "or",
-  "should",
-  "the",
-  "to",
-  "what",
-  "when",
-  "why",
-  "with",
-]);
 
 type SqliteManifest = {
   version: typeof SQLITE_SHARD_VERSION;
@@ -126,19 +108,23 @@ async function exists(filePath: string): Promise<boolean> {
 }
 
 export async function sqliteShardExists(dataRoot: string, shard: ShardName): Promise<boolean> {
-  return await exists(getSqliteShardPath(dataRoot, shard));
+  const shardPath = getSqliteShardPath(dataRoot, shard);
+  if (!(await exists(shardPath))) return false;
+  try {
+    const db = new DatabaseSync(shardPath, { readOnly: true });
+    try {
+      const row = db.prepare("SELECT value FROM metadata WHERE key = 'version'").get() as { value?: string } | undefined;
+      return Number(row?.value ?? 0) === SQLITE_SHARD_VERSION;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
 }
 
 function tokenize(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}_-]+/u)
-        .map((term) => term.trim())
-        .filter((term) => term.length >= 2 && !QUERY_STOPWORDS.has(term)),
-    ),
-  );
+  return Array.from(new Set(tokenizeHybrid(value)));
 }
 
 async function removeShardFiles(dataRoot: string, shard: ShardName): Promise<void> {
@@ -592,18 +578,31 @@ export async function querySqliteWiki(
       .map(([recordId]) => recordById.get(recordId) as Record<string, unknown> | undefined)
       .filter((row): row is Record<string, unknown> => Boolean(row))
       .map(rowToRecord);
+    const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+    const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
+    if (densePaths.size > 0) {
+      const selectedPaths = new Set(records.map((record) => record.path));
+      const recordByPath = db.prepare("SELECT * FROM records WHERE path = ?");
+      for (const recordPath of densePaths) {
+        if (records.length >= candidateLimit || selectedPaths.has(recordPath)) continue;
+        const row = recordByPath.get(recordPath) as Record<string, unknown> | undefined;
+        if (!row) continue;
+        records.push(rowToRecord(row));
+        selectedPaths.add(recordPath);
+      }
+    }
     if (records.length === 0) {
       records = (db
         .prepare("SELECT * FROM records ORDER BY mtime_ms DESC, path ASC LIMIT ?")
         .all(candidateLimit) as Array<Record<string, unknown>>).map(rowToRecord);
     }
-    const ranked = rankRecordsHybridV2(records, query, { limit });
+    const ranked = rankRecordsHybridV2(records, query, { limit, denseVectorIndex });
     const recordCountRow = db.prepare("SELECT COUNT(*) AS count FROM records").get() as { count: number };
     return {
       records,
       ranked,
       stats: {
-        retrieval_mode: HYBRID_RETRIEVAL_MODE,
+        retrieval_mode: retrievalModeFor(records, query, denseVectorIndex),
         candidate_source: "sqlite_shards_v2",
         index_path: sqliteRelativePath("wiki"),
         index_record_count: recordCountRow.count,

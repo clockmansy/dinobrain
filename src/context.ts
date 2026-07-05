@@ -1,7 +1,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { HYBRID_RANKING_INPUTS, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
+import {
+  LEXICAL_FALLBACK_RETRIEVAL_MODE,
+  type RetrievalMode,
+  rankingInputsForMode,
+  rankRecordsHybridV2,
+} from "./hybrid-retrieval.js";
 import { collectRecentTaskRecordsFromIndex } from "./operations-index.js";
 
 type RecordValue = string | number | boolean | null | Record<string, unknown> | unknown[];
@@ -32,9 +37,13 @@ export const SEARCH_ROOTS = [
 ] as const;
 
 export const STANDARD_RANKING_INPUTS = [
-  ...HYBRID_RANKING_INPUTS,
+  ...rankingInputsForMode(LEXICAL_FALLBACK_RETRIEVAL_MODE),
   "recent task records",
 ] as const;
+
+export function standardRankingInputsForMode(mode: RetrievalMode): string[] {
+  return [...rankingInputsForMode(mode), "recent task records"];
+}
 
 function isInside(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);

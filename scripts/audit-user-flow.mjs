@@ -244,7 +244,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "2.0.1" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "2.0.2" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

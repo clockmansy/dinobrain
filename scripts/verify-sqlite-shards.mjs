@@ -142,17 +142,17 @@ try {
 }
 
 const directSearch = await querySqliteWiki(dataRoot, "sqlite-shard-target", 5);
-assert(directSearch.stats.retrieval_mode === "hybrid_contextual_v2", "direct sqlite query did not report hybrid mode");
+assert(directSearch.stats.retrieval_mode === "lexical_fallback_v2", "direct sqlite query did not report lexical fallback mode without dense vectors");
 assert(directSearch.stats.candidate_source === "sqlite_shards_v2", "direct sqlite query did not report sqlite candidate source");
 assert(directSearch.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "direct sqlite query missed target");
 
 const routedSearch = await searchWiki(dataRoot, "sqlite-shard-target", 5);
-assert(routedSearch.stats.retrieval_mode === "hybrid_contextual_v2", "searchWiki did not report hybrid mode");
+assert(routedSearch.stats.retrieval_mode === "lexical_fallback_v2", "searchWiki did not report lexical fallback mode without dense vectors");
 assert(routedSearch.stats.candidate_source === "sqlite_shards_v2", "searchWiki did not route through sqlite shard candidates");
 assert(routedSearch.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "searchWiki missed target");
 
 const pack = await getContextPackItems(dataRoot, "Why use sqlite shard target retrieval?", 5);
-assert(pack.stats.retrieval_mode === "hybrid_contextual_v2", "Context Pack did not report hybrid mode");
+assert(pack.stats.retrieval_mode === "lexical_fallback_v2", "Context Pack did not report lexical fallback mode without dense vectors");
 assert(pack.stats.candidate_source === "sqlite_shards_v2", "Context Pack did not route through sqlite shard candidates");
 assert(pack.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "Context Pack missed target");
 

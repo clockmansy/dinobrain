@@ -94,7 +94,7 @@ async function readSqliteOperations() {
       .map((row) => JSON.parse(row.payload_json));
     return {
       generated_at: new Date().toISOString(),
-      index_mode: "sqlite_shards_v0",
+      index_mode: "sqlite_shards_v3",
       counts,
       events,
       tasks,
@@ -342,7 +342,7 @@ async function readOsV2Status() {
   const failClosed = latestGate?.fail_closed === true;
   const status = failClosed ? "blocked" : latestGate ? String(latestGate.status ?? "ready") : "pending";
   return {
-    version: "2.0.1",
+    version: "2.0.2",
     status,
     fail_closed: failClosed,
     latest_gate: latestGate,

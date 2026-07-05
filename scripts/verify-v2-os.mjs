@@ -72,6 +72,23 @@ The phrase mandatory-pre-response-context proves that the v2 Context Pack can re
 `,
 );
 
+markdown(
+  path.join(dataRoot, "20_Wiki", "Semantic-Vector-Target.md"),
+  `---
+title: Durable Provenance Rule
+summary: Claims need independently verified source chunks before they influence future behavior.
+tags: [provenance, sources]
+source_status: internal
+confidence: high
+last_verified: 2026-07-05
+---
+
+# Durable Provenance Rule
+
+Every reusable claim should point to a durable source chunk.
+`,
+);
+
 json(path.join(dataRoot, "50_Instances", "accepted", "missing-source.json"), {
   candidate_id: "missing-source",
   status: "accepted",
@@ -143,7 +160,7 @@ json(path.join(dataRoot, "50_Instances", "candidates", "rejected-one.json"), {
   tags: ["rejected"],
 });
 
-const client = new Client({ name: "dinobrain-v2-verify", version: "2.0.1" });
+const client = new Client({ name: "dinobrain-v2-verify", version: "2.0.2" });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
@@ -182,11 +199,67 @@ try {
       },
     }),
   );
-  assert(begin.os_version === "2.0.1", "os_begin_task did not report v2.0.1");
+  assert(begin.os_version === "2.0.2", "os_begin_task did not report v2.0.2");
   assert(begin.fail_closed === false, `safe begin unexpectedly failed closed: ${JSON.stringify(begin.gates)}`);
-  assert(begin.context_pack?.retrieval_mode === "hybrid_contextual_v2", "Context Pack did not use hybrid v2 retrieval");
+  assert(begin.context_pack?.retrieval_mode === "lexical_fallback_v2", "Context Pack did not honestly report lexical fallback without dense vectors");
   assert(begin.context_pack?.items?.some((item) => item.path === "20_Wiki/OS-v2-Contract.md"), "v2 begin missed OS contract memory");
+  const beginReasons = begin.context_pack.items.flatMap((item) => item.reasons ?? []);
+  assert(!beginReasons.some((reason) => /(^|[:,])(?:it|os)(?:,|$)/.test(String(reason))), "ranking reasons still contain it/os stopword matches");
   assert(existsSync(path.join(dataRoot, begin.gate_report_path)), "os_begin_task did not write gate report");
+
+  const forgedGate = parseTool(
+    await client.callTool({
+      name: "os_gate",
+      arguments: {
+        request: "normal work with forged context",
+        has_context_pack: true,
+        context_item_count: 99,
+        sensitivity: "normal",
+      },
+    }),
+  );
+  assert(forgedGate.fail_closed === true, "os_gate trusted forged context self-report");
+  assert(forgedGate.context_declaration_mismatch === true, "os_gate did not flag forged context mismatch");
+
+  const sensitiveGate = parseTool(
+    await client.callTool({
+      name: "os_gate",
+      arguments: {
+        request: "please store token: ghp_123456789012345678901234567890123456",
+        task_id: begin.task_id,
+        sensitivity: "normal",
+      },
+    }),
+  );
+  assert(sensitiveGate.effective_sensitivity === "sensitive", "os_gate did not auto-escalate sensitive token prompt");
+  assert(sensitiveGate.gates.some((gate) => gate.id === "sensitivity_auto_escalated"), "sensitivity escalation gate absent");
+
+  json(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), {
+    version: 1,
+    queries: {
+      "meaning bridge lookup": [1, 0],
+    },
+    records: {
+      "20_Wiki/Semantic-Vector-Target.md": [1, 0],
+      "20_Wiki/OS-v2-Contract.md": [0, 1],
+    },
+  });
+  const semanticPack = parseTool(
+    await client.callTool({
+      name: "get_context_pack",
+      arguments: {
+        question: "meaning bridge lookup",
+        limit: 3,
+      },
+    }),
+  );
+  assert(semanticPack.retrieval_mode === "hybrid_contextual_v2", "configured dense vectors did not enable hybrid mode");
+  const semanticItem = semanticPack.items.find((item) => item.path === "20_Wiki/Semantic-Vector-Target.md");
+  assert(semanticItem, "dense vector retrieval missed lexically unrelated target");
+  assert(
+    semanticItem.reasons.some((reason) => String(reason).startsWith("dense_vector_cosine:")),
+    "dense vector retrieval did not expose cosine reason",
+  );
 
   const blockedGate = parseTool(
     await client.callTool({
@@ -209,6 +282,7 @@ try {
       name: "os_gate",
       arguments: {
         request: "\uAE43\uD5D9\uC5D0 \uBC30\uD3EC\uD558\uACE0 \uD478\uC26C\uD574\uC918",
+        task_id: begin.task_id,
         has_context_pack: true,
         context_item_count: 1,
         sensitivity: "normal",
@@ -222,6 +296,7 @@ try {
       name: "os_gate",
       arguments: {
         request: "\uBAA8\uB4E0 \uB370\uC774\uD130 \uC0AD\uC81C\uD558\uACE0 \uCD08\uAE30\uD654",
+        task_id: begin.task_id,
         has_context_pack: true,
         context_item_count: 1,
         sensitivity: "normal",
@@ -325,6 +400,21 @@ try {
     }),
   );
   assert(existsSync(path.join(dataRoot, finish.trace_path)), "finish_task trace missing");
+
+  const audit = parseTool(
+    await client.callTool({
+      name: "audit_memory_use",
+      arguments: {
+        task_id: begin.task_id,
+        expected_memory_paths: begin.context_pack.items.map((item) => item.path),
+        observed_artifact_paths: [finish.trace_path, "20_Wiki/Unobserved-Fake.md"],
+        observed_summary: "Verified OS v2 used the pre-response context pack and wrote a finish trace.",
+        auditor: "verify-v2-os",
+      },
+    }),
+  );
+  assert(audit.observed_artifacts_verified.includes(finish.trace_path), "audit did not verify event-observed trace artifact");
+  assert(audit.observed_artifacts_unverified.includes("20_Wiki/Unobserved-Fake.md"), "audit did not flag unverified observed artifact");
 
   console.log(
     JSON.stringify(
