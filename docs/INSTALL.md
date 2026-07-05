@@ -101,7 +101,7 @@ Set a token with permission to create releases and upload release assets, then r
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v2.1.0 -ReplaceAsset
+npm run release:win -- -Tag v2.2.0 -ReplaceAsset
 ```
 
 This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrainSetup.zip`, writes `artifacts\DinoBrainSetup.zip.sha256`, creates or reuses the GitHub release for the tag, deletes old matching assets when `-ReplaceAsset` is passed, and uploads the ZIP plus SHA256 file. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
@@ -124,6 +124,11 @@ startup_timeout_sec = 120
 
 [mcp_servers.dinobrain.env]
 DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
+DINOBRAIN_AUTO_GROWTH = '1'
+DINOBRAIN_AUTO_COMPOUND = '1'
+DINOBRAIN_AUTO_SYNC = '1'
+DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '1'
+DINOBRAIN_AUTO_SYNC_PUSH = '1'
 ```
 
 8. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.

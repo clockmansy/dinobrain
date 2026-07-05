@@ -483,6 +483,7 @@ function Set-DinoBrainCodexConfig {
     "[mcp_servers.dinobrain.env]",
     "DINOBRAIN_DATA_DIR = $(ConvertTo-TomlString $VaultPath)",
     "DINOBRAIN_AUTO_GROWTH = `"1`"",
+    "DINOBRAIN_AUTO_COMPOUND = `"1`"",
     "DINOBRAIN_AUTO_SYNC = `"1`"",
     "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = `"1`"",
     "DINOBRAIN_AUTO_SYNC_PUSH = `"1`"",
@@ -506,7 +507,7 @@ function New-DinoBrainCodexHookCommand {
   $hookScript = Join-Path $AppPath "scripts\dinobrain-user-prompt-hook.ps1"
   $hookLiteral = ConvertTo-PowerShellSingleQuotedString $hookScript
   $vaultLiteral = ConvertTo-PowerShellSingleQuotedString $VaultPath
-  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; `$env:DINOBRAIN_AUTO_GROWTH = '1'; `$env:DINOBRAIN_AUTO_SYNC = '1'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '1'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '1'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '1'; & $hookLiteral }`""
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; `$env:DINOBRAIN_AUTO_GROWTH = '1'; `$env:DINOBRAIN_AUTO_COMPOUND = '1'; `$env:DINOBRAIN_AUTO_SYNC = '1'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '1'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '1'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '1'; & $hookLiteral }`""
 }
 
 function Test-DinoBrainHookGroup {

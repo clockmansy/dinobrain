@@ -98,7 +98,7 @@ spawnSync("git", ["config", "user.name", "DinoBrain Smoke"], { cwd: tempDataRoot
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "2.1.0",
+  version: "2.2.0",
 });
 
 const transport = new StdioClientTransport({
@@ -139,6 +139,7 @@ try {
     "quarantine_record",
     "record_feedback_correction",
     "review_candidate",
+    "run_compounding_cycle",
     "search_memory",
     "start_task",
     "wiki_search",

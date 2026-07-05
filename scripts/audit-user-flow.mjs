@@ -35,6 +35,7 @@ const expectedTools = [
   "quarantine_record",
   "record_feedback_correction",
   "review_candidate",
+  "run_compounding_cycle",
   "search_memory",
   "start_task",
   "wiki_search",
@@ -246,7 +247,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "2.1.0" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "2.2.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -255,6 +256,7 @@ async function withClient(dataRoot, callback) {
       ...process.env,
       DINOBRAIN_DATA_DIR: dataRoot,
       DINOBRAIN_AUTO_GROWTH: "1",
+      DINOBRAIN_AUTO_COMPOUND: "1",
       DINOBRAIN_AUTO_SYNC: "0",
     },
     stderr: "pipe",
@@ -427,12 +429,17 @@ async function auditFlow() {
       Array.isArray(finish.growth.created_paths) && finish.growth.created_paths.length >= 2,
       "automatic growth did not create reusable memory records",
     );
+    assert(finish.compounding?.ok === true, "finish_task did not run automatic compounding");
+    assert(
+      Number(finish.compounding.promoted_count ?? 0) + Number(finish.compounding.updated_count ?? 0) >= 1,
+      "automatic compounding did not promote or update behavior rules",
+    );
     checks.push(
       status(
         6,
         "finish_task媛 臾댁뾿???덇퀬 ?대뼡 湲곗뼲???ъ슜?덉쑝硫??⑥? ?쇱씠 萸붿? 湲곕줉?쒕떎.",
         "verified",
-        `Created ${finish.trace_path}; structured memory-use fields and auto-growth records ${finish.growth.created_paths.join(", ")} are recorded.`,
+        `Created ${finish.trace_path}; structured memory-use fields, auto-growth records ${finish.growth.created_paths.join(", ")}, and compounding cycle ${finish.compounding.cycle_path} are recorded.`,
         null,
       ),
     );

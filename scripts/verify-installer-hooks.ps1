@@ -56,6 +56,9 @@ try {
     if ($text -notmatch "DINOBRAIN_HOOK_AUTO_SYNC") {
       throw "DinoBrain hook auto-sync env missing for case $($case.Name)"
     }
+    if ($text -notmatch "DINOBRAIN_AUTO_COMPOUND") {
+      throw "DinoBrain hook auto-compound env missing for case $($case.Name)"
+    }
     $dinoHookCount = 0
     foreach ($group in $groups) {
       foreach ($hook in @($group.hooks)) {
@@ -85,6 +88,9 @@ try {
   if ($claudeRaw -notmatch "dinobrain-user-prompt-hook\.ps1") {
     throw "Claude DinoBrain UserPromptSubmit hook missing"
   }
+  if ($claudeRaw -notmatch "DINOBRAIN_AUTO_COMPOUND") {
+    throw "Claude DinoBrain hook auto-compound env missing"
+  }
   if ($claudeRaw -notmatch "echo claude-old") {
     throw "Existing Claude non-DinoBrain hook was not preserved"
   }
@@ -107,7 +113,7 @@ try {
   if ($configText -notmatch "\[mcp_servers\.dinobrain\]") {
     throw "DinoBrain MCP config was not written"
   }
-  foreach ($envName in @("DINOBRAIN_AUTO_GROWTH", "DINOBRAIN_AUTO_SYNC", "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", "DINOBRAIN_AUTO_SYNC_PUSH")) {
+  foreach ($envName in @("DINOBRAIN_AUTO_GROWTH", "DINOBRAIN_AUTO_COMPOUND", "DINOBRAIN_AUTO_SYNC", "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", "DINOBRAIN_AUTO_SYNC_PUSH")) {
     if ($configText -notmatch "(?m)^$envName = `"1`"\r?$") {
       throw "DinoBrain MCP env missing: $envName"
     }

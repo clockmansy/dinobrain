@@ -8,10 +8,11 @@ DinoBrain v2 closes the memory OS loop around a mandatory pre-response contract:
 4. Node lifecycle is applied through `apply_node_lifecycle`, which detects merge, hold/exclude, delete-candidate, promotion-review repair, and provenance repair work. With `apply=true`, it archives rejected/merged records, marks held records out of retrieval, writes provenance repair records, and writes review evidence for each action.
 5. Durable provenance is stored with `create_source_chunk`, which redacts and bounds source chunks under `30_Sources/chunks` and links claims under `.dino/provenance`.
 6. Direct user corrections are promoted with `record_feedback_correction` into accepted behavior memory so later Context Packs can retrieve them.
-7. Behavior lift is checked with `evaluate_behavior` / `npm run eval:behavior`, comparing memory-on retrieval against a memory-off baseline.
-8. Risk is evaluated with `os_gate`; destructive work, missing verified context traces, auto-detected sensitive prompts, sync/release risk, and missing OS tools produce safe actions.
-9. Recovery equivalence is verified by `npm run verify:v2` plus installer/version alignment checks. A restored PC must expose the same v2 MCP tools and pass the same gate/retrieval/lifecycle/provenance/eval loop.
+7. Completed task traces are distilled by `run_compounding_cycle` into accepted behavior rules. The cycle also merges duplicate behavior rules, holds evidence-poor behavior rules, writes an operation index, and refreshes retrieval indexes. When `DINOBRAIN_AUTO_COMPOUND=1`, `finish_task` runs this cycle before auto sync.
+8. Behavior lift is checked with `evaluate_behavior` / `npm run eval:behavior`, comparing memory-on retrieval against a memory-off baseline. `npm run verify:compounding` proves that an auto-compounded behavior rule is retrieved by a later Context Pack and improves the golden behavior score.
+9. Risk is evaluated with `os_gate`; destructive work, missing verified context traces, auto-detected sensitive prompts, sync/release risk, and missing OS tools produce safe actions.
+10. Recovery equivalence is verified by `npm run verify:v2` plus installer/version alignment checks. A restored PC must expose the same v2 MCP tools and pass the same gate/retrieval/lifecycle/provenance/eval loop.
 
 The practical target is not model-weight learning. The target is a closed, inspectable loop:
 
-user session -> OS preflight -> hybrid memory retrieval -> gated action -> trace/audit/eval -> lifecycle/provenance/writeback -> next session behavior.
+user session -> OS preflight -> hybrid memory retrieval -> gated action -> finish trace -> auto growth -> behavior-rule compounding/cleanup -> behavior eval -> auto sync -> next session behavior.

@@ -23,9 +23,10 @@ npm run index:verify:operations
 npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v2.1.0 -ReplaceAsset
+npm run release:win -- -Tag v2.2.0 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
@@ -37,6 +38,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
 
 `npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
+
+`npm run verify:compounding` proves the closed behavior loop: completed task traces are distilled into accepted behavior rules, later memory search and Context Packs retrieve the promoted rule, memory-on behavior beats the memory-off baseline for the golden case, and invalid/duplicate behavior rules are held or merged.
 
 ## What `verify:os` Proves
 
@@ -61,6 +64,15 @@ Then the script starts the configured MCP command and verifies that these tools 
 - `import_session`
 - `audit_memory_use`
 - `git_sync`
+- `auto_sync`
+- `os_begin_task`
+- `os_gate`
+- `search_memory`
+- `apply_node_lifecycle`
+- `create_source_chunk`
+- `record_feedback_correction`
+- `evaluate_behavior`
+- `run_compounding_cycle`
 - `create_candidate_instance`
 - `review_candidate`
 - `quarantine_record`

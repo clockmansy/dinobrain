@@ -20,6 +20,13 @@ const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_C
 const claudeSettingsPath = path.resolve(process.env.DINOBRAIN_CLAUDE_SETTINGS_PATH ?? path.join(homedir(), ".claude", "settings.json"));
 const requireClaudePromptHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_PROMPT_HOOK ?? "");
 const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
+const requiredCodexEnv = [
+  "DINOBRAIN_AUTO_GROWTH",
+  "DINOBRAIN_AUTO_COMPOUND",
+  "DINOBRAIN_AUTO_SYNC",
+  "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL",
+  "DINOBRAIN_AUTO_SYNC_PUSH",
+];
 
 const expectedTools = [
   "auto_sync",
@@ -37,6 +44,7 @@ const expectedTools = [
   "quarantine_record",
   "record_feedback_correction",
   "review_candidate",
+  "run_compounding_cycle",
   "search_memory",
   "start_task",
   "wiki_search",
@@ -116,6 +124,7 @@ function parseCodexDinoBrainConfig() {
     command,
     args,
     env,
+    missing_required_env: requiredCodexEnv.filter((name) => env[name] !== "1"),
     command_exists: command ? existsSync(command) : false,
     server_entry_exists: args.some((arg) => existsSync(arg)),
     data_root_exists: env.DINOBRAIN_DATA_DIR ? existsSync(env.DINOBRAIN_DATA_DIR) : false,
@@ -184,12 +193,14 @@ function parseCodexUserHookConfig() {
       return /dinobrain-user-prompt-hook\.ps1/i.test(text) || /Loading DinoBrain context/i.test(text);
     });
 
+  const hookCommand = matchedHook ? `${matchedHook.command ?? ""} ${matchedHook.commandWindows ?? ""}`.trim() : "";
+  const hookHasAutoCompound = !matchedHook || /DINOBRAIN_AUTO_COMPOUND/i.test(hookCommand);
   return {
-    ok: Boolean(matchedHook) || !requireCodexUserHook,
+    ok: (Boolean(matchedHook) || !requireCodexUserHook) && hookHasAutoCompound,
     required: requireCodexUserHook,
     registered: Boolean(matchedHook),
     hooks_path: codexHooksPath,
-    reason: matchedHook ? "registered" : "dinobrain_user_prompt_hook_not_registered",
+    reason: matchedHook ? (hookHasAutoCompound ? "registered" : "dinobrain_hook_missing_auto_compound_env") : "dinobrain_user_prompt_hook_not_registered",
     command: matchedHook?.command ?? null,
     timeout: matchedHook?.timeout ?? null,
   };
@@ -223,19 +234,20 @@ function parseClaudePromptHookConfig() {
   const dinobrainHook = commands.find((text) => {
     return /dinobrain-user-prompt-hook\.ps1/i.test(text) || /Loading DinoBrain context/i.test(text);
   });
+  const hookHasAutoCompound = !dinobrainHook || /DINOBRAIN_AUTO_COMPOUND/i.test(dinobrainHook);
   return {
-    ok: Boolean(dinobrainHook) || !requireClaudePromptHook,
+    ok: (Boolean(dinobrainHook) || !requireClaudePromptHook) && hookHasAutoCompound,
     required: requireClaudePromptHook,
     settings_path: claudeSettingsPath,
     user_prompt_submit_group_count: groups.length,
     dinobrain_hook_registered: Boolean(dinobrainHook),
     command: dinobrainHook ?? null,
-    reason: dinobrainHook ? "registered" : "dinobrain_claude_prompt_hook_missing",
+    reason: dinobrainHook ? (hookHasAutoCompound ? "registered" : "dinobrain_claude_hook_missing_auto_compound_env") : "dinobrain_claude_prompt_hook_missing",
   };
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "2.1.0" });
+  const client = new Client({ name, version: "2.2.0" });
   const transport = new StdioClientTransport({
     command,
     args,
@@ -326,6 +338,13 @@ async function verifyConfiguredCodexMcp(config) {
   if (!config.command_exists) return { ok: false, reason: "configured_command_missing" };
   if (!config.server_entry_exists) return { ok: false, reason: "configured_server_entry_missing" };
   if (!config.data_root_exists) return { ok: false, reason: "configured_data_root_missing" };
+  if (Array.isArray(config.missing_required_env) && config.missing_required_env.length > 0) {
+    return {
+      ok: false,
+      reason: "configured_required_env_missing",
+      missing_required_env: config.missing_required_env,
+    };
+  }
 
   return await withClient(
     {

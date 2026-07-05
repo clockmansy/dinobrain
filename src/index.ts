@@ -9,6 +9,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
+import { runCompoundingCycle } from "./compounding.js";
 import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
 import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { buildMemoryAudit } from "./memory-audit.js";
@@ -800,6 +801,41 @@ async function writeFinishGrowthRecords(params: {
   };
 }
 
+async function runCompoundingCycleWithIndexRefresh(options: {
+  apply: boolean;
+  reviewer: string;
+  traceLimit: number;
+}): Promise<Record<string, unknown>> {
+  const report = await runCompoundingCycle(DATA_ROOT, {
+    apply: options.apply,
+    reviewer: options.reviewer,
+    traceLimit: options.traceLimit,
+  });
+  if (report.changed === true) {
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+  }
+  const eventLog = await appendEvent({
+    event: "compounding_cycle_completed",
+    at: nowIso(),
+    apply: options.apply,
+    reviewer: options.reviewer,
+    trace_limit: options.traceLimit,
+    changed: report.changed === true,
+    promoted_count: Number(report.promoted_count ?? 0),
+    updated_count: Number(report.updated_count ?? 0),
+    cleanup_count: Number(report.cleanup_count ?? 0),
+    applied_cleanup_count: Number(report.applied_cleanup_count ?? 0),
+    cycle_path: typeof report.cycle_path === "string" ? report.cycle_path : null,
+    behavior_rule_index_path: typeof report.behavior_rule_index_path === "string" ? report.behavior_rule_index_path : null,
+    os_version: DINOBRAIN_OS_VERSION,
+  });
+  return {
+    ...report,
+    event_log: eventLog,
+  };
+}
+
 async function writeGateReport(taskId: string, value: Record<string, unknown>): Promise<string> {
   const gateId = makeGateId(taskId);
   const gatePath = dataPath(".dino", "gates", `${gateId}.json`);
@@ -1292,6 +1328,22 @@ server.registerTool(
       trace,
       finishedAt,
     });
+    let compounding: Record<string, unknown> | null = null;
+    if (envFlag("DINOBRAIN_AUTO_COMPOUND", false)) {
+      try {
+        const traceLimit = Math.max(1, Math.min(200, Number(process.env.DINOBRAIN_AUTO_COMPOUND_TRACE_LIMIT ?? 50)));
+        compounding = await runCompoundingCycleWithIndexRefresh({
+          apply: true,
+          reviewer: "finish_task:auto-compound",
+          traceLimit,
+        });
+      } catch (error) {
+        compounding = {
+          ok: false,
+          error: safeError(error),
+        };
+      }
+    }
     let autoSync: Record<string, unknown> | null = null;
     if (envFlag("DINOBRAIN_AUTO_SYNC", false)) {
       try {
@@ -1315,6 +1367,7 @@ server.registerTool(
       trace_path: traceRelativePath,
       event_log: eventLog,
       growth,
+      compounding,
       auto_sync: autoSync,
     });
   },
@@ -2071,6 +2124,38 @@ server.registerTool(
       review_path: relDataPath(reviewPath),
       context_pack_effect: "excluded_from_default_context_packs",
     });
+  },
+);
+
+server.registerTool(
+  "run_compounding_cycle",
+  {
+    title: "Run Compounding Cycle",
+    description: "Distill completed task traces into accepted behavior rules, merge duplicates, hold invalid rules, and refresh retrieval indexes.",
+    inputSchema: {
+      apply: z.boolean().default(true),
+      reviewer: z.string().default("manual-compounding-cycle"),
+      trace_limit: z.number().int().min(1).max(200).default(50),
+    },
+  },
+  async ({ apply, reviewer, trace_limit }) => {
+    try {
+      return jsonResult(
+        await runCompoundingCycleWithIndexRefresh({
+          apply,
+          reviewer,
+          traceLimit: trace_limit,
+        }),
+      );
+    } catch (error) {
+      return jsonResult({
+        ok: false,
+        error: safeError(error),
+        apply,
+        reviewer,
+        trace_limit,
+      });
+    }
   },
 );
 
