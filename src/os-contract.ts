@@ -1,4 +1,4 @@
-export const DINOBRAIN_OS_VERSION = "2.0.2";
+export const DINOBRAIN_OS_VERSION = "2.1.0";
 export const DINOBRAIN_OS_CONTRACT = "dinobrain_os_v2";
 
 export type GateLevel = "pass" | "warn" | "block";
@@ -22,6 +22,7 @@ export type ActionGateInput = {
 };
 
 export const REQUIRED_OS_TOOLS = [
+  "auto_sync",
   "audit_memory_use",
   "apply_node_lifecycle",
   "create_candidate_instance",
@@ -36,6 +37,7 @@ export const REQUIRED_OS_TOOLS = [
   "quarantine_record",
   "record_feedback_correction",
   "review_candidate",
+  "search_memory",
   "start_task",
   "wiki_search",
 ] as const;

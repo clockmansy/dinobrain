@@ -22,6 +22,7 @@ const requireClaudePromptHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQ
 const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
 
 const expectedTools = [
+  "auto_sync",
   "apply_node_lifecycle",
   "audit_memory_use",
   "create_candidate_instance",
@@ -36,6 +37,7 @@ const expectedTools = [
   "quarantine_record",
   "record_feedback_correction",
   "review_candidate",
+  "search_memory",
   "start_task",
   "wiki_search",
 ];
@@ -233,7 +235,7 @@ function parseClaudePromptHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "2.0.2" });
+  const client = new Client({ name, version: "2.1.0" });
   const transport = new StdioClientTransport({
     command,
     args,

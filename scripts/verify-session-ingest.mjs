@@ -24,7 +24,7 @@ spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
 const client = new Client({
   name: "dinobrain-session-ingest-verify",
-  version: "2.0.2",
+  version: "2.1.0",
 });
 
 const transport = new StdioClientTransport({

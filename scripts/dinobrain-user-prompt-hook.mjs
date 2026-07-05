@@ -237,13 +237,18 @@ async function releaseHookLock(lock) {
   }
 }
 
-function hookOutput(additionalContext) {
-  return {
+function hookOutput(additionalContext, blockReason = "") {
+  const output = {
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
       additionalContext,
     },
   };
+  if (blockReason) {
+    output.decision = "block";
+    output.reason = blockReason;
+  }
+  return output;
 }
 
 function parseTool(result) {
@@ -314,7 +319,7 @@ async function waitForSiblingPreflightReport(dedupeKey) {
 }
 
 async function withClient(callback) {
-  const client = new Client({ name: "dinobrain-codex-hook", version: "2.0.2" });
+  const client = new Client({ name: "dinobrain-codex-hook", version: "2.1.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -362,7 +367,19 @@ function sessionImportLine(sessionImport) {
   return `session_import: failed (${sessionImport.error ?? "unknown error"})`;
 }
 
-function additionalContext({ start, contextPack, sessionImport, redactions, reportPath }) {
+function autoSyncLine(autoSync) {
+  if (!autoSync) return "auto_sync: unavailable";
+  if (autoSync.skipped) return `auto_sync: skipped (${autoSync.reason})`;
+  if (autoSync.ok) {
+    if (autoSync.committed) {
+      return `auto_sync: committed ${autoSync.commit}${autoSync.pushed ? " and pushed" : ""}`;
+    }
+    return `auto_sync: no commit (${autoSync.reason ?? "no eligible changes"})`;
+  }
+  return `auto_sync: failed (${autoSync.error ?? autoSync.reason ?? "unknown error"})`;
+}
+
+function additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
   const usedMemoryPaths = Array.isArray(contextPack.items)
     ? contextPack.items.map((item) => item.path).filter(Boolean)
@@ -374,7 +391,7 @@ function additionalContext({ start, contextPack, sessionImport, redactions, repo
     start.fail_closed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode for this Codex prompt."
       : "DinoBrain OS preflight completed for this Codex prompt.",
-    `os_version: ${start.os_version || "2.0.2"}`,
+    `os_version: ${start.os_version || "2.1.0"}`,
     `task_id: ${start.task_id}`,
     `task_path: ${start.task_path}`,
     `context_pack_trace: ${contextPack.trace_path}`,
@@ -383,6 +400,7 @@ function additionalContext({ start, contextPack, sessionImport, redactions, repo
     `fail_closed: ${start.fail_closed ? "true" : "false"}`,
     `gate_report: ${start.gate_report_path || "unavailable"}`,
     sessionImportLine(sessionImport),
+    autoSyncLine(autoSync),
     `prompt_redactions: ${redactions.length > 0 ? redactions.join(", ") : "none"}`,
     `hook_report: ${reportRel}`,
     "",
@@ -424,7 +442,7 @@ function siblingContext({ report, reportPath }) {
     failClosed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode by another matching DinoBrain hook."
       : "DinoBrain OS preflight completed by another matching DinoBrain hook.",
-    `os_version: ${report.os_version || "2.0.2"}`,
+    `os_version: ${report.os_version || "2.1.0"}`,
     `task_id: ${report.task_id || "unavailable"}`,
     `task_path: ${report.task_path || "unavailable"}`,
     `context_pack_trace: ${report.context_pack_trace || "unavailable"}`,
@@ -462,9 +480,10 @@ async function main() {
   const hookLock = await acquireHookLock(input, request);
   if (!hookLock.acquired) {
     const sibling = await waitForSiblingPreflightReport(hookLock.key);
+    const context = sibling ? siblingContext(sibling) : failClosedDuplicateContext(hookLock.path);
     process.stdout.write(
       `${JSON.stringify(
-        hookOutput(sibling ? siblingContext(sibling) : failClosedDuplicateContext(hookLock.path)),
+        hookOutput(context, sibling ? "" : "DinoBrain preflight duplicate lock did not produce verified sibling context."),
       )}\n`,
     );
     return;
@@ -539,6 +558,7 @@ async function main() {
       return { start: startResult, contextPack: contextResult, sessionImport: importResult };
     });
 
+    let autoSync;
     await appendDataEvent({
       event: "codex_preflight_completed",
       source: "codex_hook",
@@ -559,6 +579,34 @@ async function main() {
       redactions,
     });
 
+    if (envFlag("DINOBRAIN_HOOK_AUTO_SYNC", true)) {
+      try {
+        autoSync = await withClient(async (client) =>
+          parseTool(
+            await client.callTool({
+              name: "auto_sync",
+              arguments: {
+                include_sensitive_scan: true,
+                allow_conditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
+                push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
+                commit_message: `data: auto sync Codex preflight ${stampForFile(new Date(startedAt))}`,
+              },
+            }),
+          ),
+        );
+      } catch (error) {
+        autoSync = {
+          ok: false,
+          error: safeError(error),
+        };
+      }
+    } else {
+      autoSync = {
+        skipped: true,
+        reason: "DINOBRAIN_HOOK_AUTO_SYNC disabled",
+      };
+    }
+
     const reportPath = await writeReport({
       event: "codex_preflight_completed",
       hook_dedupe_key: hookLock.key,
@@ -566,7 +614,7 @@ async function main() {
       data_root: dataRoot,
       project,
       cwd: inputCwd(input) || null,
-      os_version: start.os_version || "2.0.2",
+      os_version: start.os_version || "2.1.0",
       task_id: start.task_id,
       task_path: start.task_path,
       context_pack_trace: contextPack.trace_path,
@@ -586,11 +634,13 @@ async function main() {
             category_counts: sessionImport.category_counts,
           }
         : sessionImport,
+      auto_sync: autoSync,
       redactions,
     });
 
+    const context = additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath });
     process.stdout.write(
-      `${JSON.stringify(hookOutput(additionalContext({ start, contextPack, sessionImport, redactions, reportPath })))}\n`,
+      `${JSON.stringify(hookOutput(context, start.fail_closed ? "DinoBrain OS gates failed closed before response." : ""))}\n`,
     );
   } finally {
     await releaseHookLock(hookLock);
@@ -619,6 +669,7 @@ main().catch(async (error) => {
           "Only explain the block or repair the DinoBrain hook/MCP setup.",
           "If this persists, run npm run build and npm run hook:verify from the DinoBrain repo.",
         ].join("\n"),
+        "DinoBrain OS preflight failed before context injection.",
       ),
     )}\n`,
   );

@@ -93,10 +93,12 @@ writeFileSync(
 );
 
 spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
+spawnSync("git", ["config", "user.email", "dinobrain-smoke@example.local"], { cwd: tempDataRoot, stdio: "ignore" });
+spawnSync("git", ["config", "user.name", "DinoBrain Smoke"], { cwd: tempDataRoot, stdio: "ignore" });
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "2.0.2",
+  version: "2.1.0",
 });
 
 const transport = new StdioClientTransport({
@@ -122,6 +124,7 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   const expected = [
+    "auto_sync",
     "apply_node_lifecycle",
     "audit_memory_use",
     "create_candidate_instance",
@@ -136,6 +139,7 @@ try {
     "quarantine_record",
     "record_feedback_correction",
     "review_candidate",
+    "search_memory",
     "start_task",
     "wiki_search",
   ];
@@ -529,6 +533,24 @@ try {
     throw new Error("git_sync did not block sensitive pattern");
   }
 
+  const autoSync = parseTool(
+    await client.callTool({
+      name: "auto_sync",
+      arguments: {
+        include_sensitive_scan: true,
+        allow_conditional: true,
+        push: false,
+        commit_message: "data: smoke auto sync allowed DinoBrain records",
+      },
+    }),
+  );
+  if (autoSync.ok !== true || autoSync.committed !== true || autoSync.pushed !== false) {
+    throw new Error(`auto_sync did not commit allowed records without push: ${JSON.stringify(autoSync)}`);
+  }
+  if (!Array.isArray(autoSync.skipped_paths) || !autoSync.skipped_paths.some((file) => file.path === ".dino/secrets.json")) {
+    throw new Error("auto_sync did not skip blocked local-only data");
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -546,6 +568,7 @@ try {
         context_items: contextPack.item_count,
         search_results: search.result_count,
         git_sync_changed_files: gitSync.changed_file_count,
+        auto_sync_commit: autoSync.commit,
       },
       null,
       2,

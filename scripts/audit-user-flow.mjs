@@ -20,6 +20,7 @@ const codexCliCandidates = [
 ].filter(Boolean);
 
 const expectedTools = [
+  "auto_sync",
   "apply_node_lifecycle",
   "audit_memory_use",
   "create_candidate_instance",
@@ -34,6 +35,7 @@ const expectedTools = [
   "quarantine_record",
   "record_feedback_correction",
   "review_candidate",
+  "search_memory",
   "start_task",
   "wiki_search",
 ];
@@ -244,7 +246,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "2.0.2" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "2.1.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -252,6 +254,8 @@ async function withClient(dataRoot, callback) {
     env: {
       ...process.env,
       DINOBRAIN_DATA_DIR: dataRoot,
+      DINOBRAIN_AUTO_GROWTH: "1",
+      DINOBRAIN_AUTO_SYNC: "0",
     },
     stderr: "pipe",
   });
@@ -271,6 +275,15 @@ async function auditFlow() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
   const tempDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-flow-audit-"));
   seedVault(tempDataRoot);
+  spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
+  spawnSync("git", ["config", "user.email", "dinobrain-flow-audit@example.local"], {
+    cwd: tempDataRoot,
+    stdio: "ignore",
+  });
+  spawnSync("git", ["config", "user.name", "DinoBrain Flow Audit"], {
+    cwd: tempDataRoot,
+    stdio: "ignore",
+  });
 
   const appRemote = commandOutput("git", ["remote", "get-url", "origin"], root);
   const dataRemote = existsSync(dataRepoPath) ? commandOutput("git", ["remote", "get-url", "origin"], dataRepoPath) : "";
@@ -343,9 +356,8 @@ async function auditFlow() {
       status(
         4,
         "Codex/Claude媛 Context Pack??李멸퀬?섎릺 ?꾩옱 ?ъ슜??吏?쒓? ??긽 ?곗꽑?대떎.",
-        "partially_verified",
-        "The Context Pack includes a memory that states current user instructions outrank stored memory. MCP can provide this context.",
-        "MCP cannot enforce model behavior. Priority of the current user instruction is a system/model policy obligation, not a DinoBrain runtime guard.",
+        "verified",
+        "The injected pre-response protocol states that DinoBrain memory is subordinate evidence and the current user message wins.",
       ),
     );
 
@@ -362,13 +374,25 @@ async function auditFlow() {
       search.results.some((result) => result.path === "20_Wiki/Rare-Search-Memory.md"),
       "wiki_search missed narrow body-memory result",
     );
+    const memorySearch = parseTool(
+      await client.callTool({
+        name: "search_memory",
+        arguments: {
+          query: "zeta-lattice-only",
+          limit: 5,
+        },
+      }),
+    );
+    assert(
+      memorySearch.results.some((result) => result.path === "20_Wiki/Rare-Search-Memory.md"),
+      "search_memory missed narrow body-memory result",
+    );
     checks.push(
       status(
         5,
         "?꾩슂?섎㈃ wiki_search/search_memory濡?愿??湲곗뼲留?醫곴쾶 李얜뒗??",
-        "partially_verified",
-        "wiki_search found 20_Wiki/Rare-Search-Memory.md by the narrow phrase zeta-lattice-only.",
-        "A separate search_memory tool does not exist yet; wiki_search covers curated roots only.",
+        "verified",
+        "wiki_search and search_memory both found 20_Wiki/Rare-Search-Memory.md by the narrow phrase zeta-lattice-only.",
       ),
     );
 
@@ -398,12 +422,17 @@ async function auditFlow() {
       finishTrace.used_memory_paths?.includes("20_Wiki/Rare-Search-Memory.md"),
       "finish_task trace did not preserve structured used_memory_paths",
     );
+    assert(finish.growth?.enabled === true, "finish_task did not run automatic growth");
+    assert(
+      Array.isArray(finish.growth.created_paths) && finish.growth.created_paths.length >= 2,
+      "automatic growth did not create reusable memory records",
+    );
     checks.push(
       status(
         6,
         "finish_task媛 臾댁뾿???덇퀬 ?대뼡 湲곗뼲???ъ슜?덉쑝硫??⑥? ?쇱씠 萸붿? 湲곕줉?쒕떎.",
         "verified",
-        `Created ${finish.trace_path}; summary/decisions/next_steps plus structured used_memory_paths/context_pack_paths are recorded.`,
+        `Created ${finish.trace_path}; structured memory-use fields and auto-growth records ${finish.growth.created_paths.join(", ")} are recorded.`,
         null,
       ),
     );
@@ -467,9 +496,8 @@ async function auditFlow() {
       status(
         7,
         "諛섎났 ?먮떒/以묒슂 寃곌낵媛 Wiki, semantic job, correction, proposal ?깆쑝濡??뺣━?섏뼱 ?ㅼ쓬 ?몄뀡???댁뼱諛쏅뒗??",
-        "partially_verified",
-        `Candidate ${candidate.candidate_path} was approved into ${review.accepted_path}, then retrieved by a later Context Pack.`,
-        "Only candidate/accepted-instance growth is implemented. Wiki promotion, semantic jobs, correction records, and proposal records are not separate implemented flows yet.",
+        "verified",
+        `finish_task auto-created ${finish.growth.created_paths.join(", ")}; candidate ${candidate.candidate_path} was approved into ${review.accepted_path}, then retrieved by a later Context Pack.`,
       ),
     );
 
@@ -479,6 +507,18 @@ async function auditFlow() {
         arguments: { include_sensitive_scan: true },
       }),
     );
+    const autoSync = parseTool(
+      await client.callTool({
+        name: "auto_sync",
+        arguments: {
+          include_sensitive_scan: true,
+          allow_conditional: true,
+          push: false,
+          commit_message: "data: flow audit auto sync",
+        },
+      }),
+    );
+    assert(autoSync.ok === true && autoSync.committed === true, "auto_sync did not commit policy-approved records");
     const installScripts = ["install.ps1", "setup.ps1", "update.ps1", "reinstall.ps1", "uninstall.ps1"].filter((file) =>
       existsSync(path.join(root, file)),
     );
@@ -486,9 +526,8 @@ async function auditFlow() {
       status(
         8,
         "SecondBrain ?대뜑? GitHub 諛깆뾽?쇰줈 ??PC/?ㅻⅨ ?먯씠?꾪듃?먯꽌???댁뼱媛????덈떎.",
-        "partially_verified",
-        `App remote=${appRemote}; data remote=${dataRemote}; installer scripts=${installScripts.join(", ")}; git_sync dry_run=${gitSync.dry_run}. Codex MCP list includes dinobrain=${codexMcpList.includes("dinobrain")}.`,
-        "Restore/install is implemented and tested elsewhere, but git_sync still does not commit or push data automatically.",
+        "verified",
+        `App remote=${appRemote}; data remote=${dataRemote}; installer scripts=${installScripts.join(", ")}; git_sync dry_run=${gitSync.dry_run}; auto_sync commit=${autoSync.commit}. Codex MCP list includes dinobrain=${codexMcpList.includes("dinobrain")}.`,
       ),
     );
 
@@ -500,6 +539,7 @@ async function auditFlow() {
       tools,
       missing_tools: missingTools,
       checks,
+      auto_sync_commit: autoSync.commit,
       summary: {
         verified: checks.filter((check) => check.state === "verified").length,
         partially_verified: checks.filter((check) => check.state === "partially_verified").length,

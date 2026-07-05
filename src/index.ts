@@ -41,6 +41,12 @@ const DATA_ROOT = path.resolve(
   process.env.DINOBRAIN_DATA_DIR ?? path.join(process.cwd(), "..", "dinobrain-data"),
 );
 
+function envFlag(name: string, defaultValue: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === "") return defaultValue;
+  return /^(1|true|yes|on)$/i.test(value.trim());
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -240,6 +246,42 @@ type SensitivityHit = {
   line: number;
 };
 
+type SyncFileReport = {
+  status: string;
+  path: string;
+  classification: SyncClassification;
+  policy: string;
+  reasons: string[];
+  action: "ready_for_manual_commit" | "requires_review" | "do_not_sync" | "ready_for_auto_commit";
+  sensitivity_scan: {
+    enabled: boolean;
+    scanned: boolean;
+  };
+  sensitive_patterns: SensitivityHit[];
+};
+
+type SyncPlan = {
+  ok: boolean;
+  dry_run: boolean;
+  data_root: string;
+  changed_file_count: number;
+  would_commit: boolean;
+  would_push: boolean;
+  manual_approval_required: boolean;
+  commit_allowed_by_tool: boolean;
+  policy_version: string;
+  files: SyncFileReport[];
+  summary: {
+    syncable: number;
+    conditional: number;
+    blocked: number;
+    ready_for_manual_commit: number;
+    requires_review: number;
+    do_not_sync: number;
+    ready_for_auto_commit: number;
+  };
+};
+
 function classifyPath(normalizedPath: string): PathClassification {
   const blockedPrefixes = [
     "10_Conversations/raw/",
@@ -340,6 +382,236 @@ async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
   }
 }
 
+async function buildSyncPlan(options: {
+  includeSensitiveScan: boolean;
+  allowConditionalAutoSync?: boolean;
+  dryRun: boolean;
+  wouldPush?: boolean;
+}): Promise<SyncPlan> {
+  let stdout = "";
+  try {
+    const result = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+      cwd: DATA_ROOT,
+      windowsHide: true,
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      ok: false,
+      unavailable: true,
+      reason: code === "ENOENT" ? "git_missing" : "data_root_not_git_repository",
+      dry_run: options.dryRun,
+      data_root: DATA_ROOT,
+      changed_file_count: 0,
+      would_commit: false,
+      would_push: false,
+      manual_approval_required: options.dryRun,
+      commit_allowed_by_tool: false,
+      policy_version: options.dryRun ? "phase-6-dry-run" : "phase-7-auto-sync",
+      files: [],
+      summary: {
+        syncable: 0,
+        conditional: 0,
+        blocked: 0,
+        ready_for_manual_commit: 0,
+        requires_review: 0,
+        do_not_sync: 0,
+        ready_for_auto_commit: 0,
+      },
+    } as SyncPlan & { unavailable: true; reason: string };
+  }
+
+  const changes = parseGitStatus(stdout);
+  const files: SyncFileReport[] = [];
+  for (const change of changes) {
+    const classification = classifyPath(change.path);
+    const deleted = change.status.includes("D");
+    const hits = options.includeSensitiveScan && !deleted ? await sensitivityHits(dataPath(change.path)) : [];
+    const finalClassification: SyncClassification = hits.length > 0 ? "blocked" : classification.classification;
+    const reasons =
+      hits.length > 0 ? [...classification.reasons, "sensitive pattern detected"] : classification.reasons;
+    const file: SyncFileReport = {
+      ...change,
+      classification: finalClassification,
+      policy: hits.length > 0 ? "sensitive_pattern_block" : classification.policy,
+      reasons,
+      action:
+        finalClassification === "syncable"
+          ? "ready_for_manual_commit"
+          : finalClassification === "conditional"
+            ? "requires_review"
+            : "do_not_sync",
+      sensitivity_scan: {
+        enabled: options.includeSensitiveScan,
+        scanned: options.includeSensitiveScan && !deleted,
+      },
+      sensitive_patterns: hits,
+    };
+    if (!options.dryRun && isAutoSyncAllowed(file, options.allowConditionalAutoSync === true)) {
+      file.action = "ready_for_auto_commit";
+    }
+    files.push(file);
+  }
+
+  const summary = {
+    syncable: files.filter((file) => file.classification === "syncable").length,
+    conditional: files.filter((file) => file.classification === "conditional").length,
+    blocked: files.filter((file) => file.classification === "blocked").length,
+    ready_for_manual_commit: files.filter((file) => file.action === "ready_for_manual_commit").length,
+    requires_review: files.filter((file) => file.action === "requires_review").length,
+    do_not_sync: files.filter((file) => file.action === "do_not_sync").length,
+    ready_for_auto_commit: files.filter((file) => file.action === "ready_for_auto_commit").length,
+  };
+
+  return {
+    ok: true,
+    dry_run: options.dryRun,
+    data_root: DATA_ROOT,
+    changed_file_count: files.length,
+    would_commit: !options.dryRun && summary.ready_for_auto_commit > 0,
+    would_push: !options.dryRun && options.wouldPush === true && summary.ready_for_auto_commit > 0,
+    manual_approval_required: options.dryRun,
+    commit_allowed_by_tool: !options.dryRun,
+    policy_version: options.dryRun ? "phase-6-dry-run" : "phase-7-auto-sync",
+    files,
+    summary,
+  };
+}
+
+async function gitOutput(args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, {
+    cwd: DATA_ROOT,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 8,
+  });
+  return result.stdout.trim();
+}
+
+async function gitRun(args: string[]): Promise<void> {
+  await execFileAsync("git", args, {
+    cwd: DATA_ROOT,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 8,
+  });
+}
+
+async function hasStagedChanges(): Promise<boolean> {
+  try {
+    await gitRun(["diff", "--cached", "--quiet"]);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function runDataAutoSync(options: {
+  includeSensitiveScan: boolean;
+  allowConditional: boolean;
+  push: boolean;
+  commitMessage: string;
+}): Promise<Record<string, unknown>> {
+  const plan = await buildSyncPlan({
+    includeSensitiveScan: options.includeSensitiveScan,
+    allowConditionalAutoSync: options.allowConditional,
+    dryRun: false,
+    wouldPush: options.push,
+  });
+  if (!plan.ok) return plan as unknown as Record<string, unknown>;
+
+  const allowedPaths = plan.files
+    .filter((file) => isAutoSyncAllowed(file, options.allowConditional))
+    .map((file) => file.path);
+  const skippedPaths = plan.files
+    .filter((file) => !isAutoSyncAllowed(file, options.allowConditional))
+    .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }));
+
+  if (allowedPaths.length === 0) {
+    return {
+      ...plan,
+      committed: false,
+      pushed: false,
+      reason: "no_auto_sync_allowed_changes",
+      skipped_paths: skippedPaths,
+    };
+  }
+
+  const stagedBefore = (await gitOutput(["diff", "--cached", "--name-only"])).split(/\r?\n/).filter(Boolean);
+  const allowedSet = new Set(allowedPaths);
+  const disallowedStaged = stagedBefore.filter((stagedPath) => !allowedSet.has(stagedPath.replace(/\\/g, "/")));
+  if (disallowedStaged.length > 0) {
+    return {
+      ...plan,
+      committed: false,
+      pushed: false,
+      blocked: true,
+      reason: "disallowed_files_already_staged",
+      disallowed_staged_paths: disallowedStaged,
+      skipped_paths: skippedPaths,
+    };
+  }
+
+  await gitRun(["add", "--", ...allowedPaths]);
+  if (!(await hasStagedChanges())) {
+    return {
+      ...plan,
+      committed: false,
+      pushed: false,
+      reason: "no_staged_changes_after_policy_add",
+      allowed_paths: allowedPaths,
+      skipped_paths: skippedPaths,
+    };
+  }
+
+  const message = options.commitMessage.trim() || "data: auto sync DinoBrain OS loop";
+  await gitRun(["commit", "-m", message]);
+  const commit = await gitOutput(["rev-parse", "HEAD"]);
+  const branch = await gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]);
+  let pushed = false;
+  let remote = "";
+  if (options.push) {
+    remote = await gitOutput(["remote", "get-url", "origin"]);
+    await gitRun(["push", "origin", branch]);
+    pushed = true;
+  }
+
+  return {
+    ...plan,
+    committed: true,
+    pushed,
+    commit,
+    branch,
+    remote: remote || null,
+    allowed_paths: allowedPaths,
+    skipped_paths: skippedPaths,
+  };
+}
+
+function isAutoSyncConditionalPath(normalizedPath: string): boolean {
+  const allowedPrefixes = [
+    ".dino/audits/",
+    ".dino/context-packs/",
+    ".dino/events/",
+    ".dino/evaluations/",
+    ".dino/gates/",
+    ".dino/index/",
+    ".dino/lifecycle/",
+    ".dino/provenance/",
+    ".dino/quarantine/",
+    ".dino/tasks/",
+    ".dino/traces/",
+    "50_Instances/candidates/",
+    "80_Review_Queue/",
+  ];
+  return allowedPrefixes.some((prefix) => normalizedPath.startsWith(prefix));
+}
+
+function isAutoSyncAllowed(file: SyncFileReport, allowConditional: boolean): boolean {
+  if (file.classification === "blocked" || file.sensitive_patterns.length > 0) return false;
+  if (file.classification === "syncable") return true;
+  return allowConditional && file.classification === "conditional" && isAutoSyncConditionalPath(file.path);
+}
+
 function redactSensitiveText(value: string): { text: string; redactions: string[]; truncated: boolean } {
   const redactions: string[] = [];
   let text = value.replace(/\r\n/g, "\n");
@@ -420,6 +692,112 @@ function makeSourceChunkId(sourceTitle: string): string {
 function makeFeedbackId(feedback: string): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
   return `feedback-${stamp}-${safeSlug(feedback).slice(0, 36)}`;
+}
+
+async function writeFinishGrowthRecords(params: {
+  taskId: string;
+  taskRecord: Record<string, unknown>;
+  tracePath: string;
+  trace: Record<string, unknown>;
+  finishedAt: string;
+}): Promise<Record<string, unknown>> {
+  if (!envFlag("DINOBRAIN_AUTO_GROWTH", false)) {
+    return {
+      ok: true,
+      enabled: false,
+      reason: "DINOBRAIN_AUTO_GROWTH disabled",
+      created_paths: [],
+    };
+  }
+
+  const summary = firstString(params.trace.summary);
+  if (!summary) {
+    return {
+      ok: false,
+      enabled: true,
+      reason: "finish_trace_has_no_summary",
+      created_paths: [],
+    };
+  }
+
+  const request = firstString(params.taskRecord.request, params.taskId);
+  const project = typeof params.taskRecord.project === "string" ? params.taskRecord.project : null;
+  const outcome = firstString(params.trace.outcome, "completed");
+  const growthId = `task-memory-${safeSlug(params.taskId)}`;
+  const operationPath = dataPath("60_Operations", "task-summaries", `${growthId}.json`);
+  const acceptedPath = dataPath("50_Instances", "accepted", `${growthId}.json`);
+  const decisions = Array.isArray(params.trace.decisions) ? params.trace.decisions.map(String) : [];
+  const nextSteps = Array.isArray(params.trace.next_steps) ? params.trace.next_steps.map(String) : [];
+  const usedMemoryPaths = Array.isArray(params.trace.used_memory_paths) ? params.trace.used_memory_paths.map(String) : [];
+  const contextPackPaths = Array.isArray(params.trace.context_pack_paths)
+    ? params.trace.context_pack_paths.map(String)
+    : [];
+  const tags = Array.from(
+    new Set(
+      [
+        "auto-growth",
+        "task-outcome",
+        `outcome:${safeSlug(outcome).toLowerCase()}`,
+        project ? `project:${safeSlug(project).toLowerCase()}` : null,
+      ].filter((tag): tag is string => typeof tag === "string"),
+    ),
+  );
+  const source = {
+    trace_path: params.tracePath,
+    task_id: params.taskId,
+    task_path: `.dino/tasks/${safeSlug(params.taskId)}.json`,
+  };
+  const operationRecord = {
+    memory_id: growthId,
+    type: "task_summary_memory",
+    status: "accepted",
+    title: `Task outcome: ${request.slice(0, 96)}`,
+    summary,
+    claim: `Task outcome for ${project ?? "DinoBrain"}: ${summary.slice(0, 600)}`,
+    request,
+    outcome,
+    decisions,
+    next_steps: nextSteps,
+    used_memory_paths: usedMemoryPaths,
+    context_pack_paths: contextPackPaths,
+    evidence: {
+      source: params.tracePath,
+      snippet: summary.slice(0, 900),
+    },
+    source_status: "internal",
+    confidence: outcome === "completed" ? "medium" : "low",
+    tags,
+    auto_generated: true,
+    created_at: params.finishedAt,
+    updated_at: params.finishedAt,
+    source,
+  };
+  const acceptedRecord = {
+    ...operationRecord,
+    accepted_at: params.finishedAt,
+    source_operation_path: relDataPath(operationPath),
+  };
+
+  await writeJson(operationPath, operationRecord);
+  await writeJson(acceptedPath, acceptedRecord);
+  await invalidateWikiIndex(DATA_ROOT);
+  await invalidateSqliteWikiShard(DATA_ROOT);
+  const eventLog = await appendEvent({
+    event: "auto_growth_records_created",
+    task_id: params.taskId,
+    at: params.finishedAt,
+    operation_path: relDataPath(operationPath),
+    accepted_path: relDataPath(acceptedPath),
+    os_version: DINOBRAIN_OS_VERSION,
+  });
+
+  return {
+    ok: true,
+    enabled: true,
+    memory_id: growthId,
+    created_paths: [relDataPath(operationPath), relDataPath(acceptedPath)],
+    event_log: eventLog,
+  };
 }
 
 async function writeGateReport(taskId: string, value: Record<string, unknown>): Promise<string> {
@@ -594,6 +972,22 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
     item_count: items.length,
     items,
     caveats: retrievalCaveatsForMode(stats.retrieval_mode),
+  };
+}
+
+async function buildSearchResult(query: string, limit: number): Promise<Record<string, unknown>> {
+  const { ranked, stats } = await searchWiki(DATA_ROOT, query, limit);
+  return {
+    ok: true,
+    query,
+    retrieval_mode: stats.retrieval_mode,
+    index_path: stats.index_path,
+    indexed_record_count: stats.index_record_count,
+    candidate_record_count: stats.candidate_record_count,
+    total_candidate_count: stats.total_candidate_count,
+    matching_terms: stats.matching_terms,
+    result_count: ranked.length,
+    results: ranked,
   };
 }
 
@@ -891,12 +1285,37 @@ server.registerTool(
       candidate_paths: normalizedCandidatePaths,
       search_query_count: normalizedSearchQueries.length,
     });
+    const growth = await writeFinishGrowthRecords({
+      taskId: task_id,
+      taskRecord: updated,
+      tracePath: traceRelativePath,
+      trace,
+      finishedAt,
+    });
+    let autoSync: Record<string, unknown> | null = null;
+    if (envFlag("DINOBRAIN_AUTO_SYNC", false)) {
+      try {
+        autoSync = await runDataAutoSync({
+          includeSensitiveScan: true,
+          allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
+          push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
+          commitMessage: `data: auto sync ${safeSlug(task_id).slice(0, 48)}`,
+        });
+      } catch (error) {
+        autoSync = {
+          ok: false,
+          error: safeError(error),
+        };
+      }
+    }
     return jsonResult({
       ok: true,
       task_id,
       task_path: taskRelativePath,
       trace_path: traceRelativePath,
       event_log: eventLog,
+      growth,
+      auto_sync: autoSync,
     });
   },
 );
@@ -1010,19 +1429,22 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const { ranked, stats } = await searchWiki(DATA_ROOT, query, limit);
-    return jsonResult({
-      ok: true,
-      query,
-      retrieval_mode: stats.retrieval_mode,
-      index_path: stats.index_path,
-      indexed_record_count: stats.index_record_count,
-      candidate_record_count: stats.candidate_record_count,
-      total_candidate_count: stats.total_candidate_count,
-      matching_terms: stats.matching_terms,
-      result_count: ranked.length,
-      results: ranked,
-    });
+    return jsonResult(await buildSearchResult(query, limit));
+  },
+);
+
+server.registerTool(
+  "search_memory",
+  {
+    title: "Search Memory",
+    description: "Alias for narrow DinoBrain memory search across curated Wiki, Source, Project, and accepted Instance records.",
+    inputSchema: {
+      query: z.string().min(1),
+      limit: z.number().int().min(1).max(50).default(10),
+    },
+  },
+  async ({ query, limit }) => {
+    return jsonResult(await buildSearchResult(query, limit));
   },
 );
 
@@ -1653,6 +2075,40 @@ server.registerTool(
 );
 
 server.registerTool(
+  "auto_sync",
+  {
+    title: "Auto Sync",
+    description: "Commit and push policy-approved DinoBrain data changes while excluding blocked local-only records.",
+    inputSchema: {
+      include_sensitive_scan: z.boolean().default(true),
+      allow_conditional: z.boolean().default(true),
+      push: z.boolean().default(true),
+      commit_message: z.string().default("data: auto sync DinoBrain OS loop"),
+    },
+  },
+  async ({ include_sensitive_scan, allow_conditional, push, commit_message }) => {
+    try {
+      return jsonResult(
+        await runDataAutoSync({
+          includeSensitiveScan: include_sensitive_scan,
+          allowConditional: allow_conditional,
+          push,
+          commitMessage: commit_message,
+        }),
+      );
+    } catch (error) {
+      return jsonResult({
+        ok: false,
+        dry_run: false,
+        data_root: DATA_ROOT,
+        error: safeError(error),
+        policy_version: "phase-7-auto-sync",
+      });
+    }
+  },
+);
+
+server.registerTool(
   "git_sync",
   {
     title: "Git Sync Dry Run",
@@ -1662,87 +2118,12 @@ server.registerTool(
     },
   },
   async ({ include_sensitive_scan }) => {
-    let stdout = "";
-    try {
-      const result = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-        cwd: DATA_ROOT,
-        windowsHide: true,
-      });
-      stdout = result.stdout;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      return jsonResult({
-        ok: false,
-        unavailable: true,
-        reason: code === "ENOENT" ? "git_missing" : "data_root_not_git_repository",
-        dry_run: true,
-        data_root: DATA_ROOT,
-        changed_file_count: 0,
-        would_commit: false,
-        would_push: false,
-        manual_approval_required: true,
-        commit_allowed_by_tool: false,
-        policy_version: "phase-6-dry-run",
-        files: [],
-        summary: {
-          syncable: 0,
-          conditional: 0,
-          blocked: 0,
-          ready_for_manual_commit: 0,
-          requires_review: 0,
-          do_not_sync: 0,
-        },
-      });
-    }
-    const changes = parseGitStatus(stdout);
-    const files = [];
-    for (const change of changes) {
-      const classification = classifyPath(change.path);
-      const deleted = change.status.includes("D");
-      const hits = include_sensitive_scan && !deleted ? await sensitivityHits(dataPath(change.path)) : [];
-      const finalClassification: SyncClassification = hits.length > 0 ? "blocked" : classification.classification;
-      const reasons =
-        hits.length > 0 ? [...classification.reasons, "sensitive pattern detected"] : classification.reasons;
-      files.push({
-        ...change,
-        classification: finalClassification,
-        policy: hits.length > 0 ? "sensitive_pattern_block" : classification.policy,
-        reasons,
-        action:
-          finalClassification === "syncable"
-            ? "ready_for_manual_commit"
-            : finalClassification === "conditional"
-              ? "requires_review"
-              : "do_not_sync",
-        sensitivity_scan: {
-          enabled: include_sensitive_scan,
-          scanned: include_sensitive_scan && !deleted,
-        },
-        sensitive_patterns: hits,
-      });
-    }
-    const summary = {
-      syncable: files.filter((file) => file.classification === "syncable").length,
-      conditional: files.filter((file) => file.classification === "conditional").length,
-      blocked: files.filter((file) => file.classification === "blocked").length,
-      ready_for_manual_commit: files.filter((file) => file.action === "ready_for_manual_commit").length,
-      requires_review: files.filter((file) => file.action === "requires_review").length,
-      do_not_sync: files.filter((file) => file.action === "do_not_sync").length,
-    };
-
-    return jsonResult({
-      ok: true,
-      dry_run: true,
-      data_root: DATA_ROOT,
-      changed_file_count: files.length,
-      would_commit: false,
-      would_push: false,
-      manual_approval_required: true,
-      commit_allowed_by_tool: false,
-      policy_version: "phase-6-dry-run",
-      files,
-      summary,
-    });
+    return jsonResult(
+      await buildSyncPlan({
+        includeSensitiveScan: include_sensitive_scan,
+        dryRun: true,
+      }),
+    );
   },
 );
 

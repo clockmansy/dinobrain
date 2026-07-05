@@ -25,7 +25,7 @@ npm run hook:verify
 npm run verify:os
 npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v2.0.2 -ReplaceAsset
+npm run release:win -- -Tag v2.1.0 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.

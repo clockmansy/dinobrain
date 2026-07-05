@@ -11,12 +11,14 @@ const serverPath = path.join(root, "dist", "index.js");
 const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-v2-os-"));
 
 const expectedTools = [
+  "auto_sync",
   "apply_node_lifecycle",
   "create_source_chunk",
   "evaluate_behavior",
   "os_begin_task",
   "os_gate",
   "record_feedback_correction",
+  "search_memory",
 ];
 
 function assert(condition, message) {
@@ -160,7 +162,7 @@ json(path.join(dataRoot, "50_Instances", "candidates", "rejected-one.json"), {
   tags: ["rejected"],
 });
 
-const client = new Client({ name: "dinobrain-v2-verify", version: "2.0.2" });
+const client = new Client({ name: "dinobrain-v2-verify", version: "2.1.0" });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
@@ -199,7 +201,7 @@ try {
       },
     }),
   );
-  assert(begin.os_version === "2.0.2", "os_begin_task did not report v2.0.2");
+  assert(begin.os_version === "2.1.0", "os_begin_task did not report v2.1.0");
   assert(begin.fail_closed === false, `safe begin unexpectedly failed closed: ${JSON.stringify(begin.gates)}`);
   assert(begin.context_pack?.retrieval_mode === "lexical_fallback_v2", "Context Pack did not honestly report lexical fallback without dense vectors");
   assert(begin.context_pack?.items?.some((item) => item.path === "20_Wiki/OS-v2-Contract.md"), "v2 begin missed OS contract memory");
