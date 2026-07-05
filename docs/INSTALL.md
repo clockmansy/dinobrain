@@ -101,7 +101,7 @@ Set a token with permission to create releases and upload release assets, then r
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v0.1.7 -ReplaceAsset
+npm run release:win -- -Tag v2.0.1 -ReplaceAsset
 ```
 
 This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrainSetup.zip`, writes `artifacts\DinoBrainSetup.zip.sha256`, creates or reuses the GitHub release for the tag, deletes old matching assets when `-ReplaceAsset` is passed, and uploads the ZIP plus SHA256 file. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
@@ -142,7 +142,7 @@ The installer immediately simulates a `UserPromptSubmit` event through the same 
 
 This handshake does not bypass Codex hook trust. After hook registration, the installer creates and launches `DinoBrain Codex Hook Approval.cmd`. That helper restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click still has to be done by the user in Codex.
 
-10. Registers DinoBrain in Claude Code when `claude` is available:
+10. Registers DinoBrain in Claude Code. The installer writes a user-level `UserPromptSubmit` hook to `C:\Users\<you>\.claude\settings.json` so Claude Code can receive DinoBrain pre-response context before it processes a prompt. When `claude` is available, it also registers the DinoBrain MCP server:
 
 ```powershell
 claude mcp add `

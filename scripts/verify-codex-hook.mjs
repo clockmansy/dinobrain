@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -118,6 +119,17 @@ function runHook(input, dataRoot, reportRoot) {
   });
 }
 
+function hookDedupeKey(input, request) {
+  const source = JSON.stringify({
+    hookEventName: input.hookEventName ?? input.hook_event_name ?? "UserPromptSubmit",
+    session_id: input.session_id ?? input.sessionId ?? input.conversation_id ?? input.conversationId ?? "",
+    turn_id: input.turn_id ?? input.turnId ?? input.message_id ?? input.messageId ?? "",
+    cwd: input.cwd ?? "",
+    request,
+  });
+  return createHash("sha256").update(source).digest("hex").slice(0, 32);
+}
+
 async function verifyHook() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
   assert(existsSync(hookConfigPath), ".codex/hooks.json is missing.");
@@ -153,6 +165,8 @@ async function verifyHook() {
   assert(output.hookSpecificOutput?.hookEventName === "UserPromptSubmit", "Hook output has wrong event name.");
   assert(additionalContext.includes("DinoBrain OS preflight completed"), "Hook did not inject preflight context.");
   assert(additionalContext.includes("Codex-Hook-Protocol.md"), "Hook did not include seeded memory.");
+  assert(additionalContext.includes("gate_status:"), "Hook did not inject OS gate status.");
+  assert(additionalContext.includes("fail_closed: false"), "Hook did not report non-blocking preflight state.");
   assert(additionalContext.includes("session_import:"), "Hook did not report session import status.");
   assert(additionalContext.includes("finish_task.used_memory_paths"), "Hook did not inject structured finish_task protocol.");
 
@@ -208,6 +222,7 @@ async function verifyHook() {
     "codex_prompt_submitted",
     "task_started",
     "context_pack_created",
+    "os_begin_task_completed",
     "session_imported",
     "codex_preflight_completed",
   ]) {
@@ -218,6 +233,30 @@ async function verifyHook() {
     const text = readFileSync(filePath, "utf8");
     assert(!text.includes("sk-test000000000000000000000000"), `Sensitive token leaked into ${filePath}.`);
   }
+
+  const duplicateDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-duplicate-"));
+  const duplicateReportRoot = path.join(duplicateDataRoot, "hook-reports");
+  seedVault(duplicateDataRoot);
+  const duplicatePrompt = "Duplicate hook lock must fail closed without a verified sibling preflight report.";
+  const duplicateInput = {
+    hookEventName: "UserPromptSubmit",
+    prompt: duplicatePrompt,
+    cwd: root,
+  };
+  const duplicateKey = hookDedupeKey(duplicateInput, duplicatePrompt);
+  const lockDir = path.join(duplicateDataRoot, ".dino", "hook-locks");
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(
+    path.join(lockDir, `${duplicateKey}.json`),
+    `${JSON.stringify({ at: new Date().toISOString(), key: duplicateKey, cwd: root })}\n`,
+    "utf8",
+  );
+  const duplicateRun = runHook(JSON.stringify(duplicateInput), duplicateDataRoot, duplicateReportRoot);
+  assert(duplicateRun.status === 0, `Duplicate hook exited with ${duplicateRun.status}: ${duplicateRun.stderr}`);
+  const duplicateOutput = parseHookOutput(duplicateRun.stdout);
+  const duplicateContext = duplicateOutput.hookSpecificOutput?.additionalContext ?? "";
+  assert(duplicateContext.includes("FAIL-CLOSED"), "Duplicate hook lock did not fail closed without sibling report.");
+  assert(!duplicateContext.includes("Use the other injected DinoBrain context"), "Duplicate hook still used the unsafe skip message.");
 
   return {
     ok: true,

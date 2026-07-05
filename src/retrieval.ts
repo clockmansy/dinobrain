@@ -1,4 +1,5 @@
-import { collectRecentTaskRecords, rankRecords, type RankedRecord } from "./context.js";
+import { collectRecentTaskRecords, type RankedRecord } from "./context.js";
+import { rankRecordsHybridV2 } from "./hybrid-retrieval.js";
 import {
   collectRecentTaskRecordsFromSqlite,
   querySqliteWiki,
@@ -29,14 +30,14 @@ export async function getContextPackItems(
     return await getIndexedPackItems(dataRoot, question, limit);
   }
 
-  const sqlite = await querySqliteWiki(dataRoot, question, Math.max(limit * 25, 100), {
+  const sqlite = await querySqliteWiki(dataRoot, question, Math.max(limit * 200, 1000), {
     includeExcerpt: false,
-    rankLimit: Math.max(limit * 25, 100),
+    rankLimit: Math.max(limit * 200, 1000),
   });
   const recentTasks =
     (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
   const records = [...sqlite.records, ...recentTasks];
-  const ranked = rankRecords(records, question).slice(0, limit);
+  const ranked = rankRecordsHybridV2(records, question, { limit });
 
   return {
     records,

@@ -8,8 +8,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import { SEARCH_ROOTS, STANDARD_RANKING_INPUTS } from "./context.js";
 import { buildMemoryAudit } from "./memory-audit.js";
+import { applyNodeLifecycle } from "./lifecycle.js";
 import {
   type OperationContextPackEntry,
   type OperationEventEntry,
@@ -29,6 +31,7 @@ import {
   upsertSqliteOperationTrace,
 } from "./sqlite-shards.js";
 import { buildSessionImportPlan, type SessionMessageInput } from "./session-ingest.js";
+import { DINOBRAIN_OS_CONTRACT, DINOBRAIN_OS_VERSION, REQUIRED_OS_TOOLS, evaluateActionGates } from "./os-contract.js";
 import { invalidateWikiIndex } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
@@ -219,6 +222,10 @@ function jsonResult(value: unknown): CallToolResult {
   };
 }
 
+function safeError(error: unknown): string {
+  return String((error as Error | undefined)?.message ?? error).replace(/\s+/g, " ").slice(0, 500);
+}
+
 type SyncClassification = "syncable" | "conditional" | "blocked";
 
 type PathClassification = {
@@ -332,6 +339,50 @@ async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
   }
 }
 
+function redactSensitiveText(value: string): { text: string; redactions: string[]; truncated: boolean } {
+  const redactions: string[] = [];
+  let text = value.replace(/\r\n/g, "\n");
+
+  text = text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, () => {
+    redactions.push("private_key_block");
+    return "[REDACTED_PRIVATE_KEY]";
+  });
+  text = text.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, () => {
+    redactions.push("openai_key_shape");
+    return "[REDACTED_OPENAI_KEY]";
+  });
+  text = text.replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})\b/g, () => {
+    redactions.push("github_token_shape");
+    return "[REDACTED_GITHUB_TOKEN]";
+  });
+  text = text.replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, () => {
+    redactions.push("aws_access_key_shape");
+    return "[REDACTED_AWS_ACCESS_KEY]";
+  });
+  text = text.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, () => {
+    redactions.push("jwt_shape");
+    return "[REDACTED_JWT]";
+  });
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, () => {
+    redactions.push("bearer_token");
+    return "Bearer [REDACTED_TOKEN]";
+  });
+  text = text.replace(/\b(api[_-]?key|secret|token|password|session|sessionid|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
+    redactions.push(`${String(key).toLowerCase()}_assignment`);
+    return `${key}: [REDACTED]`;
+  });
+
+  const maxChars = Math.max(2000, Math.min(128000, Number(process.env.DINOBRAIN_SOURCE_CHUNK_MAX_CHARS ?? 24000)));
+  const truncated = text.length > maxChars;
+  if (truncated) text = `${text.slice(0, maxChars)}\n[truncated by DinoBrain source chunk guard]`;
+
+  return {
+    text,
+    redactions: Array.from(new Set(redactions)),
+    truncated,
+  };
+}
+
 function parseGitStatus(stdout: string): Array<{ status: string; path: string }> {
   return stdout
     .split(/\r?\n/)
@@ -345,10 +396,261 @@ function parseGitStatus(stdout: string): Array<{ status: string; path: string }>
     });
 }
 
+function makeGateId(taskId: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `gate-${stamp}-${safeSlug(taskId).slice(0, 36)}`;
+}
+
+function makeSourceChunkId(sourceTitle: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `sourcechunk-${stamp}-${safeSlug(sourceTitle).slice(0, 36)}`;
+}
+
+function makeFeedbackId(feedback: string): string {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `feedback-${stamp}-${safeSlug(feedback).slice(0, 36)}`;
+}
+
+async function writeGateReport(taskId: string, value: Record<string, unknown>): Promise<string> {
+  const gateId = makeGateId(taskId);
+  const gatePath = dataPath(".dino", "gates", `${gateId}.json`);
+  await writeJson(gatePath, {
+    gate_id: gateId,
+    os_version: DINOBRAIN_OS_VERSION,
+    contract: DINOBRAIN_OS_CONTRACT,
+    ...value,
+  });
+  return relDataPath(gatePath);
+}
+
+async function buildContextPackRecord(question: string, limit: number): Promise<Record<string, unknown>> {
+  const { records, ranked, stats } = await getContextPackItems(DATA_ROOT, question, limit);
+  const packId = makePackId(question);
+  const createdAt = nowIso();
+  const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
+  const items = ranked.map(({ path: recordPath, kind, title, summary, tags, score, reasons }) => ({
+    path: recordPath,
+    kind,
+    title,
+    summary,
+    tags,
+    score,
+    reasons,
+  }));
+  const trace = {
+    pack_id: packId,
+    pack_type: "standard",
+    os_version: DINOBRAIN_OS_VERSION,
+    question,
+    created_at: createdAt,
+    ranking_inputs: STANDARD_RANKING_INPUTS,
+    source_roots: SEARCH_ROOTS,
+    recent_task_limit: 10,
+    candidate_records_excluded: true,
+    review_queue_excluded: true,
+    scanned_record_count: records.length,
+    retrieval_mode: stats.retrieval_mode,
+    candidate_source: "candidate_source" in stats ? stats.candidate_source : null,
+    index_path: stats.index_path,
+    indexed_record_count: stats.index_record_count,
+    index_candidate_count: stats.candidate_record_count,
+    index_total_candidate_count: stats.total_candidate_count,
+    index_matching_terms: stats.matching_terms,
+    included_item_count: items.length,
+    excluded_record_count: Math.max(0, stats.index_record_count + (stats.recent_task_count ?? 0) - ranked.length),
+    items,
+  };
+  await writeJson(packPath, trace);
+  const packRelativePath = relDataPath(packPath);
+  await upsertOperationContextPack(DATA_ROOT, packRelativePath, trace);
+  await upsertSqliteOperationContextPack(DATA_ROOT, contextPackEntryFromRecord(packRelativePath, trace));
+  const eventLog = await appendEvent({
+    event: "context_pack_created",
+    pack_id: packId,
+    at: createdAt,
+    path: packRelativePath,
+    item_count: items.length,
+    retrieval_mode: stats.retrieval_mode,
+    os_version: DINOBRAIN_OS_VERSION,
+  });
+  return {
+    ok: true,
+    pack_id: packId,
+    pack_type: "standard",
+    os_version: DINOBRAIN_OS_VERSION,
+    question,
+    data_root: DATA_ROOT,
+    trace_path: packRelativePath,
+    event_log: eventLog,
+    ranking_inputs: trace.ranking_inputs,
+    scanned_record_count: records.length,
+    retrieval_mode: stats.retrieval_mode,
+    candidate_source: trace.candidate_source,
+    index_path: stats.index_path,
+    indexed_record_count: stats.index_record_count,
+    index_candidate_count: stats.candidate_record_count,
+    index_total_candidate_count: stats.total_candidate_count,
+    item_count: items.length,
+    items,
+    caveats: [
+      "DinoBrain OS v2 uses contextual hybrid retrieval by default.",
+      "Dense retrieval is implemented as local dense-lite lexical similarity until an embedding provider is configured.",
+      "Candidate and review queue records are excluded from default packs.",
+    ],
+  };
+}
+
 const server = new McpServer({
   name: "dinobrain",
-  version: "0.1.7",
+  version: DINOBRAIN_OS_VERSION,
 });
+
+server.registerTool(
+  "os_begin_task",
+  {
+    title: "OS Begin Task",
+    description: "Fail-closed DinoBrain OS v2 pre-response entrypoint: start task, retrieve Context Pack, and evaluate action gates.",
+    inputSchema: {
+      request: z.string().min(1),
+      project: z.string().optional(),
+      mode: z.enum(["standard", "deep"]).default("standard"),
+      sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
+      limit: z.number().int().min(1).max(20).default(7),
+    },
+  },
+  async ({ request, project, mode, sensitivity, limit }) => {
+    const taskId = makeTaskId(request);
+    const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
+    const createdAt = nowIso();
+    const record = {
+      task_id: taskId,
+      status: "started",
+      request,
+      project: project ?? null,
+      mode,
+      sensitivity,
+      os_version: DINOBRAIN_OS_VERSION,
+      contract: DINOBRAIN_OS_CONTRACT,
+      created_at: createdAt,
+      updated_at: createdAt,
+      data_root: DATA_ROOT,
+      sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
+    };
+    await writeJson(taskPath, record);
+    const taskRelativePath = relDataPath(taskPath);
+    await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
+    await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
+    const taskEventLog = await appendEvent({
+      event: "task_started",
+      task_id: taskId,
+      at: record.created_at,
+      path: taskRelativePath,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+
+    let contextPack: Record<string, unknown>;
+    try {
+      contextPack = await buildContextPackRecord(request, limit);
+    } catch (error) {
+      const errorMessage = safeError(error);
+      const blockedAt = nowIso();
+      const blockedRecord = {
+        ...record,
+        status: "blocked",
+        block_reason: "context_pack_failed",
+        error: errorMessage,
+        updated_at: blockedAt,
+      };
+      await writeJson(taskPath, blockedRecord);
+      await upsertOperationTask(DATA_ROOT, taskRelativePath, blockedRecord);
+      await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, blockedRecord));
+      const gates = evaluateActionGates({
+        request,
+        hasContextPack: false,
+        contextItemCount: 0,
+        sensitivity,
+        exposedTools: [...REQUIRED_OS_TOOLS],
+      });
+      const gateReportPath = await writeGateReport(taskId, {
+        task_id: taskId,
+        request,
+        generated_at: blockedAt,
+        context_pack_path: null,
+        context_item_count: 0,
+        error: errorMessage,
+        ...gates,
+      });
+      const gateEventLog = await appendEvent({
+        event: "os_begin_task_failed_closed",
+        task_id: taskId,
+        at: blockedAt,
+        gate_status: gates.status,
+        fail_closed: true,
+        gate_report_path: gateReportPath,
+        error: errorMessage,
+        os_version: DINOBRAIN_OS_VERSION,
+      });
+      return jsonResult({
+        ok: false,
+        os_version: DINOBRAIN_OS_VERSION,
+        contract: DINOBRAIN_OS_CONTRACT,
+        fail_closed: true,
+        gate_status: gates.status,
+        gates: gates.gates,
+        task_id: taskId,
+        task_path: taskRelativePath,
+        event_log: taskEventLog,
+        gate_event_log: gateEventLog,
+        gate_report_path: gateReportPath,
+        record: blockedRecord,
+        context_pack: null,
+        error: errorMessage,
+      });
+    }
+    const gates = evaluateActionGates({
+      request,
+      hasContextPack: typeof contextPack.trace_path === "string",
+      contextItemCount: typeof contextPack.item_count === "number" ? contextPack.item_count : 0,
+      sensitivity,
+      exposedTools: [...REQUIRED_OS_TOOLS],
+    });
+    const gateReportPath = await writeGateReport(taskId, {
+      task_id: taskId,
+      request,
+      generated_at: nowIso(),
+      context_pack_path: contextPack.trace_path,
+      context_item_count: contextPack.item_count,
+      ...gates,
+    });
+    const gateEventLog = await appendEvent({
+      event: "os_begin_task_completed",
+      task_id: taskId,
+      at: nowIso(),
+      context_pack_trace: contextPack.trace_path,
+      context_item_count: contextPack.item_count,
+      gate_status: gates.status,
+      fail_closed: gates.fail_closed,
+      gate_report_path: gateReportPath,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+
+    return jsonResult({
+      ok: !gates.fail_closed,
+      os_version: DINOBRAIN_OS_VERSION,
+      contract: DINOBRAIN_OS_CONTRACT,
+      fail_closed: gates.fail_closed,
+      gate_status: gates.status,
+      gates: gates.gates,
+      task_id: taskId,
+      task_path: taskRelativePath,
+      event_log: taskEventLog,
+      gate_event_log: gateEventLog,
+      gate_report_path: gateReportPath,
+      record,
+      context_pack: contextPack,
+    });
+  },
+);
 
 server.registerTool(
   "start_task",
@@ -372,6 +674,8 @@ server.registerTool(
       project: project ?? null,
       mode,
       sensitivity,
+      os_version: DINOBRAIN_OS_VERSION,
+      contract: DINOBRAIN_OS_CONTRACT,
       created_at: nowIso(),
       updated_at: nowIso(),
       data_root: DATA_ROOT,
@@ -592,74 +896,7 @@ server.registerTool(
     },
   },
   async ({ question, limit }) => {
-    const { records, ranked, stats } = await getContextPackItems(DATA_ROOT, question, limit);
-    const packId = makePackId(question);
-    const createdAt = nowIso();
-    const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
-    const items = ranked.map(({ path: recordPath, kind, title, summary, tags, score, reasons }) => ({
-      path: recordPath,
-      kind,
-      title,
-      summary,
-      tags,
-      score,
-      reasons,
-    }));
-    const trace = {
-      pack_id: packId,
-      pack_type: "standard",
-      question,
-      created_at: createdAt,
-      ranking_inputs: STANDARD_RANKING_INPUTS,
-      source_roots: SEARCH_ROOTS,
-      recent_task_limit: 10,
-      candidate_records_excluded: true,
-      review_queue_excluded: true,
-      scanned_record_count: records.length,
-      retrieval_mode: stats.retrieval_mode,
-      index_path: stats.index_path,
-      indexed_record_count: stats.index_record_count,
-      index_candidate_count: stats.candidate_record_count,
-      index_total_candidate_count: stats.total_candidate_count,
-      index_matching_terms: stats.matching_terms,
-      included_item_count: items.length,
-      excluded_record_count: Math.max(0, stats.index_record_count + (stats.recent_task_count ?? 0) - ranked.length),
-      items,
-    };
-    await writeJson(packPath, trace);
-    const packRelativePath = relDataPath(packPath);
-    await upsertOperationContextPack(DATA_ROOT, packRelativePath, trace);
-    await upsertSqliteOperationContextPack(DATA_ROOT, contextPackEntryFromRecord(packRelativePath, trace));
-    const eventLog = await appendEvent({
-      event: "context_pack_created",
-      pack_id: packId,
-      at: createdAt,
-      path: packRelativePath,
-      item_count: items.length,
-    });
-    return jsonResult({
-      ok: true,
-      pack_id: packId,
-      pack_type: "standard",
-      question,
-      data_root: DATA_ROOT,
-      trace_path: packRelativePath,
-      event_log: eventLog,
-      ranking_inputs: trace.ranking_inputs,
-      scanned_record_count: records.length,
-      retrieval_mode: stats.retrieval_mode,
-      index_path: stats.index_path,
-      indexed_record_count: stats.index_record_count,
-      index_candidate_count: stats.candidate_record_count,
-      index_total_candidate_count: stats.total_candidate_count,
-      item_count: items.length,
-      items,
-      caveats: [
-        "Context Pack v0 uses a persistent Wiki index for candidate selection.",
-        "Final Context Pack ranking still uses keyword/frontmatter/recent-task matching only.",
-        "Candidate and review queue records are excluded from default packs.",
-      ],
-    });
+    return jsonResult(await buildContextPackRecord(question, limit));
   },
 );
 
@@ -686,6 +923,259 @@ server.registerTool(
       matching_terms: stats.matching_terms,
       result_count: ranked.length,
       results: ranked,
+    });
+  },
+);
+
+server.registerTool(
+  "os_gate",
+  {
+    title: "OS Action Gate",
+    description: "Evaluate DinoBrain OS v2 action gates and write a gate report.",
+    inputSchema: {
+      request: z.string().min(1),
+      task_id: z.string().optional(),
+      context_item_count: z.number().int().min(0).default(0),
+      has_context_pack: z.boolean().default(false),
+      sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
+      backup_risk: z.boolean().default(false),
+    },
+  },
+  async ({ request, task_id, context_item_count, has_context_pack, sensitivity, backup_risk }) => {
+    const gateTaskId = task_id?.trim() || makeTaskId(request);
+    const gates = evaluateActionGates({
+      request,
+      hasContextPack: has_context_pack,
+      contextItemCount: context_item_count,
+      sensitivity,
+      exposedTools: [...REQUIRED_OS_TOOLS],
+      backupRisk: backup_risk,
+    });
+    const gateReportPath = await writeGateReport(gateTaskId, {
+      task_id: gateTaskId,
+      request,
+      generated_at: nowIso(),
+      ...gates,
+    });
+    const eventLog = await appendEvent({
+      event: "os_gate_evaluated",
+      task_id: gateTaskId,
+      at: nowIso(),
+      gate_status: gates.status,
+      fail_closed: gates.fail_closed,
+      gate_report_path: gateReportPath,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({
+      ok: !gates.fail_closed,
+      os_version: DINOBRAIN_OS_VERSION,
+      gate_report_path: gateReportPath,
+      event_log: eventLog,
+      ...gates,
+    });
+  },
+);
+
+server.registerTool(
+  "apply_node_lifecycle",
+  {
+    title: "Apply Node Lifecycle",
+    description: "Apply DinoBrain OS v2 lifecycle checks and write merge/hold/delete/provenance review records.",
+    inputSchema: {
+      apply: z.boolean().default(false),
+      reviewer: z.string().default("node-lifecycle-v2"),
+    },
+  },
+  async ({ apply, reviewer }) => {
+    const report = await applyNodeLifecycle(DATA_ROOT, { apply, reviewer });
+    if (apply) {
+      await invalidateWikiIndex(DATA_ROOT);
+      await invalidateSqliteWikiShard(DATA_ROOT);
+    }
+    const eventLog = await appendEvent({
+      event: "node_lifecycle_applied",
+      at: nowIso(),
+      lifecycle_id: report.lifecycle_id,
+      lifecycle_path: report.lifecycle_path,
+      apply,
+      status: report.status,
+      counts: report.counts,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({
+      ...report,
+      event_log: eventLog,
+    });
+  },
+);
+
+server.registerTool(
+  "create_source_chunk",
+  {
+    title: "Create Source Chunk",
+    description: "Store an external/internal durable source chunk and link it to claim paths.",
+    inputSchema: {
+      source_title: z.string().min(1),
+      source_uri: z.string().min(1),
+      chunk_text: z.string().min(1),
+      chunk_type: z.enum(["external_doc", "paper", "community", "internal_doc", "conversation_excerpt"]).default("external_doc"),
+      claim_paths: z.array(z.string()).default([]),
+      tags: z.array(z.string()).default([]),
+      last_verified: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    },
+  },
+  async ({ source_title, source_uri, chunk_text, chunk_type, claim_paths, tags, last_verified }) => {
+    const chunkId = makeSourceChunkId(source_title);
+    const createdAt = nowIso();
+    const sourcePath = dataPath("30_Sources", "chunks", `${chunkId}.json`);
+    const normalizedClaimPaths = normalizeVaultPaths(claim_paths);
+    const sanitizedChunk = redactSensitiveText(chunk_text);
+    const sourceRecord = {
+      source_chunk_id: chunkId,
+      type: "source_chunk",
+      status: "active",
+      title: source_title,
+      source_uri,
+      chunk_type,
+      chunk_text: sanitizedChunk.text,
+      chunk_text_redactions: sanitizedChunk.redactions,
+      chunk_text_truncated: sanitizedChunk.truncated,
+      chunk_text_original_length: chunk_text.length,
+      chunk_text_stored_length: sanitizedChunk.text.length,
+      claim_paths: normalizedClaimPaths,
+      tags,
+      last_verified: last_verified ?? dateStamp(),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await writeJson(sourcePath, sourceRecord);
+    const sourceRelativePath = relDataPath(sourcePath);
+    const linkPath = dataPath(".dino", "provenance", `${chunkId}.json`);
+    await writeJson(linkPath, {
+      provenance_id: chunkId,
+      source_chunk_path: sourceRelativePath,
+      claim_paths: normalizedClaimPaths,
+      source_uri,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const eventLog = await appendEvent({
+      event: "source_chunk_created",
+      source_chunk_id: chunkId,
+      at: createdAt,
+      source_chunk_path: sourceRelativePath,
+      provenance_path: relDataPath(linkPath),
+      claim_paths: normalizedClaimPaths,
+      redactions: sanitizedChunk.redactions,
+      truncated: sanitizedChunk.truncated,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({
+      ok: true,
+      source_chunk_id: chunkId,
+      source_chunk_path: sourceRelativePath,
+      provenance_path: relDataPath(linkPath),
+      redactions: sanitizedChunk.redactions,
+      truncated: sanitizedChunk.truncated,
+      event_log: eventLog,
+    });
+  },
+);
+
+server.registerTool(
+  "record_feedback_correction",
+  {
+    title: "Record Feedback Correction",
+    description: "Promote direct user correction into accepted behavior memory for future sessions.",
+    inputSchema: {
+      correction: z.string().min(1),
+      applies_to: z.string().default("agent_behavior"),
+      task_id: z.string().optional(),
+      tags: z.array(z.string()).default([]),
+    },
+  },
+  async ({ correction, applies_to, task_id, tags }) => {
+    const feedbackId = makeFeedbackId(correction);
+    const createdAt = nowIso();
+    const acceptedPath = dataPath("50_Instances", "accepted", `${feedbackId}.json`);
+    const record = {
+      feedback_id: feedbackId,
+      type: "feedback_correction",
+      status: "accepted",
+      claim: correction,
+      behavior_rule: correction,
+      applies_to,
+      evidence: {
+        source: "user_feedback",
+        snippet: correction.slice(0, 600),
+      },
+      source_status: "internal",
+      confidence: "high",
+      last_verified: dateStamp(),
+      tags: Array.from(new Set(["feedback", "correction", "behavior", ...tags])),
+      task_id: task_id ?? null,
+      accepted_at: createdAt,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await writeJson(acceptedPath, record);
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const eventLog = await appendEvent({
+      event: "feedback_correction_accepted",
+      feedback_id: feedbackId,
+      at: createdAt,
+      accepted_path: relDataPath(acceptedPath),
+      task_id: task_id ?? null,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({
+      ok: true,
+      feedback_id: feedbackId,
+      accepted_path: relDataPath(acceptedPath),
+      event_log: eventLog,
+      next_context_effect: "included_in_default_context_packs_after_index_rebuild",
+    });
+  },
+);
+
+server.registerTool(
+  "evaluate_behavior",
+  {
+    title: "Evaluate Behavior",
+    description: "Evaluate whether memory-on behavior beats memory-off baseline for golden OS behavior cases.",
+    inputSchema: {
+      golden_path: z.string().optional(),
+      pack_limit: z.number().int().min(1).max(20).default(8),
+    },
+  },
+  async ({ golden_path, pack_limit }) => {
+    const report = await evaluateBehaviorMemoryLift(DATA_ROOT, {
+      goldenPath: golden_path ? dataPath(normalizeVaultPath(golden_path)) : undefined,
+      packLimit: pack_limit,
+    });
+    const evalId = `behavior-eval-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}`;
+    const evalPath = dataPath(".dino", "evaluations", `${evalId}.json`);
+    await writeJson(evalPath, {
+      evaluation_id: evalId,
+      os_version: DINOBRAIN_OS_VERSION,
+      ...report,
+    });
+    const eventLog = await appendEvent({
+      event: "behavior_eval_completed",
+      evaluation_id: evalId,
+      at: nowIso(),
+      evaluation_path: relDataPath(evalPath),
+      ok: report.ok,
+      average_memory_lift: report.average_memory_lift,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({
+      ...report,
+      evaluation_path: relDataPath(evalPath),
+      event_log: eventLog,
     });
   },
 );

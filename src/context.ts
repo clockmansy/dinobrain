@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { HYBRID_RANKING_INPUTS, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
 import { collectRecentTaskRecordsFromIndex } from "./operations-index.js";
 
 type RecordValue = string | number | boolean | null | Record<string, unknown> | unknown[];
@@ -31,11 +32,7 @@ export const SEARCH_ROOTS = [
 ] as const;
 
 export const STANDARD_RANKING_INPUTS = [
-  "file name",
-  "frontmatter",
-  "title",
-  "summary",
-  "tags",
+  ...HYBRID_RANKING_INPUTS,
   "recent task records",
 ] as const;
 
@@ -375,5 +372,5 @@ export async function getStandardPackItems(
   limit: number,
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[] }> {
   const records = await collectContextRecords(dataRoot);
-  return { records, ranked: rankRecords(records, question).slice(0, limit) };
+  return { records, ranked: rankRecordsHybridV2(records, question, { limit }) };
 }

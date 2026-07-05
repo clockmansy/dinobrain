@@ -2,7 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { rankRecords, type RankedRecord } from "./context.js";
+import { type RankedRecord } from "./context.js";
+import { HYBRID_RETRIEVAL_MODE, contextualText, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
 import {
   collectOperationEntries,
   type OperationContextPackEntry,
@@ -13,7 +14,7 @@ import {
 } from "./operations-index.js";
 import { buildWikiIndex, type WikiIndex, type WikiIndexEdge, type WikiIndexNode, type WikiIndexRecord } from "./wiki-index.js";
 
-export const SQLITE_SHARD_VERSION = 1;
+export const SQLITE_SHARD_VERSION = 2;
 export const SQLITE_INDEX_DIR = ".dino/index/sqlite";
 export const SQLITE_MANIFEST_RELATIVE_PATH = `${SQLITE_INDEX_DIR}/manifest.json`;
 
@@ -21,7 +22,8 @@ type ShardName = "wiki" | "operations";
 type SqlValue = string | number | null;
 
 export type SqliteRetrievalStats = {
-  retrieval_mode: "sqlite_shards_v0";
+  retrieval_mode: typeof HYBRID_RETRIEVAL_MODE;
+  candidate_source: "sqlite_shards_v2";
   index_path: string;
   index_record_count: number;
   candidate_record_count: number;
@@ -34,6 +36,32 @@ type QueryOptions = {
   includeExcerpt?: boolean;
   rankLimit?: number;
 };
+
+const QUERY_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "of",
+  "on",
+  "or",
+  "should",
+  "the",
+  "to",
+  "what",
+  "when",
+  "why",
+  "with",
+]);
 
 type SqliteManifest = {
   version: typeof SQLITE_SHARD_VERSION;
@@ -108,7 +136,7 @@ function tokenize(value: string): string[] {
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .map((term) => term.trim())
-        .filter((term) => term.length >= 2),
+        .filter((term) => term.length >= 2 && !QUERY_STOPWORDS.has(term)),
     ),
   );
 }
@@ -164,6 +192,7 @@ function writeWikiShard(dataRoot: string, wiki: WikiIndex): string {
       summary TEXT NOT NULL,
       tags_json TEXT NOT NULL,
       excerpt TEXT NOT NULL,
+      context_text TEXT NOT NULL,
       root TEXT NOT NULL,
       mtime_ms REAL NOT NULL,
       size_bytes INTEGER NOT NULL,
@@ -203,8 +232,8 @@ function writeWikiShard(dataRoot: string, wiki: WikiIndex): string {
 
   const insertRecord = db.prepare(`
     INSERT INTO records
-      (id, path, kind, title, summary, tags_json, excerpt, root, mtime_ms, size_bytes, links_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, path, kind, title, summary, tags_json, excerpt, context_text, root, mtime_ms, size_bytes, links_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTerm = db.prepare("INSERT OR IGNORE INTO terms (term, record_id) VALUES (?, ?)");
   const insertNode = db.prepare(`
@@ -241,6 +270,7 @@ function insertWikiRecord(stmt: ReturnType<DatabaseSync["prepare"]>, record: Wik
     record.summary,
     JSON.stringify(record.tags),
     record.excerpt,
+    contextualText(record),
     record.root,
     record.mtime_ms,
     record.size_bytes,
@@ -519,7 +549,7 @@ function rowToRecord(row: Record<string, unknown>): RankedRecord {
     tags: parseStringArray(row.tags_json),
     score: 0,
     reasons: [],
-    excerpt: String(row.excerpt ?? ""),
+    excerpt: String(row.context_text ?? row.excerpt ?? ""),
   };
 }
 
@@ -556,19 +586,25 @@ export async function querySqliteWiki(
 
     const candidateLimit = options.rankLimit ?? Math.max(limit * 25, 100);
     const recordById = db.prepare("SELECT * FROM records WHERE id = ?");
-    const records = Array.from(scoreByRecordId.entries())
+    let records = Array.from(scoreByRecordId.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, candidateLimit)
       .map(([recordId]) => recordById.get(recordId) as Record<string, unknown> | undefined)
       .filter((row): row is Record<string, unknown> => Boolean(row))
       .map(rowToRecord);
-    const ranked = rankRecords(records, query, { includeExcerpt: options.includeExcerpt ?? true }).slice(0, limit);
+    if (records.length === 0) {
+      records = (db
+        .prepare("SELECT * FROM records ORDER BY mtime_ms DESC, path ASC LIMIT ?")
+        .all(candidateLimit) as Array<Record<string, unknown>>).map(rowToRecord);
+    }
+    const ranked = rankRecordsHybridV2(records, query, { limit });
     const recordCountRow = db.prepare("SELECT COUNT(*) AS count FROM records").get() as { count: number };
     return {
       records,
       ranked,
       stats: {
-        retrieval_mode: "sqlite_shards_v0",
+        retrieval_mode: HYBRID_RETRIEVAL_MODE,
+        candidate_source: "sqlite_shards_v2",
         index_path: sqliteRelativePath("wiki"),
         index_record_count: recordCountRow.count,
         candidate_record_count: records.length,

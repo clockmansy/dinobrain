@@ -70,6 +70,22 @@ try {
     }
   }
 
+  $claudeSettingsPath = Join-Path $temp "claude-settings.json"
+  [System.IO.File]::WriteAllText($claudeSettingsPath, '{"hooks":{"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"echo claude-old"}]}]}}', [System.Text.UTF8Encoding]::new($false))
+  Set-DinoBrainClaudeUserHook -SettingsPath $claudeSettingsPath -AppPath (Join-Path $temp "dinobrain") -VaultPath (Join-Path $temp "dinobrain-data")
+  $claudeRaw = [System.IO.File]::ReadAllText($claudeSettingsPath)
+  $claudeParsed = $claudeRaw | ConvertFrom-Json
+  $claudeGroups = @($claudeParsed.hooks.UserPromptSubmit)
+  if ($claudeGroups.Count -lt 1) {
+    throw "No Claude UserPromptSubmit groups written"
+  }
+  if ($claudeRaw -notmatch "dinobrain-user-prompt-hook\.ps1") {
+    throw "Claude DinoBrain UserPromptSubmit hook missing"
+  }
+  if ($claudeRaw -notmatch "echo claude-old") {
+    throw "Existing Claude non-DinoBrain hook was not preserved"
+  }
+
   $configPath = Join-Path $temp "config.toml"
   [System.IO.File]::WriteAllText($configPath, "[features]`r`nhooks = false`r`njs_repl = false`r`n", [System.Text.UTF8Encoding]::new($false))
   Set-DinoBrainCodexConfig `

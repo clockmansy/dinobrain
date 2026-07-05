@@ -142,15 +142,18 @@ try {
 }
 
 const directSearch = await querySqliteWiki(dataRoot, "sqlite-shard-target", 5);
-assert(directSearch.stats.retrieval_mode === "sqlite_shards_v0", "direct sqlite query did not report sqlite mode");
+assert(directSearch.stats.retrieval_mode === "hybrid_contextual_v2", "direct sqlite query did not report hybrid mode");
+assert(directSearch.stats.candidate_source === "sqlite_shards_v2", "direct sqlite query did not report sqlite candidate source");
 assert(directSearch.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "direct sqlite query missed target");
 
 const routedSearch = await searchWiki(dataRoot, "sqlite-shard-target", 5);
-assert(routedSearch.stats.retrieval_mode === "sqlite_shards_v0", "searchWiki did not route through sqlite shard");
+assert(routedSearch.stats.retrieval_mode === "hybrid_contextual_v2", "searchWiki did not report hybrid mode");
+assert(routedSearch.stats.candidate_source === "sqlite_shards_v2", "searchWiki did not route through sqlite shard candidates");
 assert(routedSearch.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "searchWiki missed target");
 
 const pack = await getContextPackItems(dataRoot, "Why use sqlite shard target retrieval?", 5);
-assert(pack.stats.retrieval_mode === "sqlite_shards_v0", "Context Pack did not route through sqlite shard");
+assert(pack.stats.retrieval_mode === "hybrid_contextual_v2", "Context Pack did not report hybrid mode");
+assert(pack.stats.candidate_source === "sqlite_shards_v2", "Context Pack did not route through sqlite shard candidates");
 assert(pack.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "Context Pack missed target");
 
 const recent = await collectRecentTaskRecordsFromSqlite(dataRoot, 5);
@@ -220,7 +223,9 @@ console.log(
       build_elapsed_ms: buildElapsedMs,
       direct_search_candidates: directSearch.stats.candidate_record_count,
       routed_retrieval_mode: routedSearch.stats.retrieval_mode,
+      routed_candidate_source: routedSearch.stats.candidate_source,
       pack_retrieval_mode: pack.stats.retrieval_mode,
+      pack_candidate_source: pack.stats.candidate_source,
       latest_sqlite_task: updatedRecent[0].path,
     },
     null,

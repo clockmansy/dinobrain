@@ -17,16 +17,24 @@ const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? pa
 const requireCodexUserHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CODEX_USER_HOOK ?? "");
 const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
 const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
+const claudeSettingsPath = path.resolve(process.env.DINOBRAIN_CLAUDE_SETTINGS_PATH ?? path.join(homedir(), ".claude", "settings.json"));
+const requireClaudePromptHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_PROMPT_HOOK ?? "");
 const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
 
 const expectedTools = [
+  "apply_node_lifecycle",
   "audit_memory_use",
   "create_candidate_instance",
+  "create_source_chunk",
+  "evaluate_behavior",
   "finish_task",
   "get_context_pack",
   "git_sync",
   "import_session",
+  "os_begin_task",
+  "os_gate",
   "quarantine_record",
+  "record_feedback_correction",
   "review_candidate",
   "start_task",
   "wiki_search",
@@ -185,8 +193,47 @@ function parseCodexUserHookConfig() {
   };
 }
 
+function parseClaudePromptHookConfig() {
+  if (!existsSync(claudeSettingsPath)) {
+    return {
+      ok: !requireClaudePromptHook,
+      required: requireClaudePromptHook,
+      settings_path: claudeSettingsPath,
+      reason: "claude_settings_not_found",
+    };
+  }
+  let config;
+  try {
+    config = JSON.parse(readFileSync(claudeSettingsPath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      required: requireClaudePromptHook,
+      settings_path: claudeSettingsPath,
+      reason: "claude_settings_invalid_json",
+      error: error.message,
+    };
+  }
+  const groups = Array.isArray(config.hooks?.UserPromptSubmit) ? config.hooks.UserPromptSubmit : [];
+  const commands = groups
+    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+    .map((hook) => `${hook?.command ?? ""} ${hook?.commandWindows ?? ""}`.trim());
+  const dinobrainHook = commands.find((text) => {
+    return /dinobrain-user-prompt-hook\.ps1/i.test(text) || /Loading DinoBrain context/i.test(text);
+  });
+  return {
+    ok: Boolean(dinobrainHook) || !requireClaudePromptHook,
+    required: requireClaudePromptHook,
+    settings_path: claudeSettingsPath,
+    user_prompt_submit_group_count: groups.length,
+    dinobrain_hook_registered: Boolean(dinobrainHook),
+    command: dinobrainHook ?? null,
+    reason: dinobrainHook ? "registered" : "dinobrain_claude_prompt_hook_missing",
+  };
+}
+
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "0.1.7" });
+  const client = new Client({ name, version: "2.0.1" });
   const transport = new StdioClientTransport({
     command,
     args,
@@ -571,6 +618,7 @@ async function main() {
   const codexConfig = parseCodexDinoBrainConfig();
   const codexHookRuntime = parseCodexHookRuntimeConfig();
   const codexUserHook = parseCodexUserHookConfig();
+  const claudePromptHook = parseClaudePromptHookConfig();
   const [codexMcp, compoundingLoop] = await Promise.all([
     verifyConfiguredCodexMcp(codexConfig),
     verifyCompoundingLoop(),
@@ -585,7 +633,8 @@ async function main() {
       codexUserHook.ok === true &&
       compoundingLoop.ok === true &&
       retrievalEval.ok === true &&
-      claudeCodeMcp.ok === true,
+      claudeCodeMcp.ok === true &&
+      claudePromptHook.ok === true,
     verification_version: "dinobrain-os-2026-07-01",
     codex_integration: {
       config: codexConfig,
@@ -596,7 +645,8 @@ async function main() {
     },
     claude_code_integration: {
       mcp_list: claudeCodeMcp,
-      note: "Claude Code integration is required during installer verification only when the installer successfully registered the local claude CLI.",
+      user_prompt_hook: claudePromptHook,
+      note: "Claude Code pre-response integration requires both the MCP server registration and the UserPromptSubmit hook in Claude settings.",
     },
     compounding_loop: compoundingLoop,
     retrieval_quality: retrievalEval,

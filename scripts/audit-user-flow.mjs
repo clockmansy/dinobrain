@@ -20,13 +20,19 @@ const codexCliCandidates = [
 ].filter(Boolean);
 
 const expectedTools = [
+  "apply_node_lifecycle",
   "audit_memory_use",
   "create_candidate_instance",
+  "create_source_chunk",
+  "evaluate_behavior",
   "finish_task",
   "get_context_pack",
   "git_sync",
   "import_session",
+  "os_begin_task",
+  "os_gate",
   "quarantine_record",
+  "record_feedback_correction",
   "review_candidate",
   "start_task",
   "wiki_search",
@@ -238,7 +244,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "0.1.7" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "2.0.1" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

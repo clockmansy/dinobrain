@@ -211,13 +211,13 @@ async function readWikiGraph() {
   }
 
   const index = await readJson(path.join(dataRoot, ".dino", "index", "wiki-index.json"));
-  if (index?.version === 1 && Array.isArray(index.nodes) && Array.isArray(index.edges)) {
+  if (Number(index?.version ?? 0) >= 1 && Array.isArray(index.nodes) && Array.isArray(index.edges)) {
     const nodes = index.nodes.map(normalizeGraphNode);
     const edges = index.edges.map(normalizeGraphEdge);
     const graph = selectGraphWindow(nodes, edges);
     return {
       ok: true,
-      index_mode: "json_wiki_graph_v0",
+      index_mode: `json_wiki_graph_v${index.version ?? "unknown"}`,
       generated_at: index.generated_at ?? null,
       data_root: dataRoot,
       stats: {
@@ -273,8 +273,8 @@ async function readJsonDir(relativeDir, limit = 50, preserveRecord = () => false
     if (value) records.push({ ...value, _path: rel(file) });
   }
   const sorted = records.sort((a, b) =>
-      String(b.updated_at ?? b.created_at ?? b.finished_at ?? b.audited_at ?? "").localeCompare(
-        String(a.updated_at ?? a.created_at ?? a.finished_at ?? a.audited_at ?? ""),
+      String(b.updated_at ?? b.created_at ?? b.generated_at ?? b.finished_at ?? b.audited_at ?? "").localeCompare(
+        String(a.updated_at ?? a.created_at ?? a.generated_at ?? a.finished_at ?? a.audited_at ?? ""),
       ),
     );
   const selected = sorted.slice(0, limit);
@@ -325,6 +325,36 @@ async function readGraphHealth() {
     source_mapping_missing_count: 0,
     warnings: ["graph_health_missing"],
     _path: rel(healthPath),
+  };
+}
+
+async function readOsV2Status() {
+  const [gates, lifecycleReports, behaviorEvals, provenance, sourceChunks] = await Promise.all([
+    readJsonDir(".dino/gates", 20),
+    readJsonDir(".dino/lifecycle", 20),
+    readJsonDir(".dino/evaluations", 20),
+    readJsonDir(".dino/provenance", 20),
+    readJsonDir("30_Sources/chunks", 20),
+  ]);
+  const latestGate = gates[0] ?? null;
+  const latestBehavior = behaviorEvals.find((entry) => String(entry.evaluation_id ?? "").startsWith("behavior-eval-")) ?? null;
+  const latestLifecycle = lifecycleReports[0] ?? null;
+  const failClosed = latestGate?.fail_closed === true;
+  const status = failClosed ? "blocked" : latestGate ? String(latestGate.status ?? "ready") : "pending";
+  return {
+    version: "2.0.1",
+    status,
+    fail_closed: failClosed,
+    latest_gate: latestGate,
+    latest_behavior_eval: latestBehavior,
+    latest_lifecycle: latestLifecycle,
+    counts: {
+      gates: gates.length,
+      lifecycle_reports: lifecycleReports.length,
+      behavior_evals: behaviorEvals.length,
+      provenance_links: provenance.length,
+      source_chunks: sourceChunks.length,
+    },
   };
 }
 
@@ -660,13 +690,14 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, lifecycle, syncRisk] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
     readLifecycleQueue(),
     readSyncRisk(),
+    readOsV2Status(),
   ]);
   const decorate = (payload) => ({
     ...payload,
@@ -676,10 +707,12 @@ async function state() {
       graph_health_score: graphHealth.score,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
+      os_v2_status: osV2.status,
     },
     graph_health: graphHealth,
     lifecycle,
     sync_risk: syncRisk,
+    os_v2: osV2,
     read_trace: readTraceSummary(payload.events, payload.context_packs, payload.traces),
   });
   if (sqlite) {
@@ -975,16 +1008,16 @@ function html() {
     }
     .graph-wrap {
       position: relative;
-      height: clamp(640px, 72vh, 820px);
-      min-height: 640px;
+      height: clamp(560px, 66vh, 760px);
+      min-height: 560px;
       background:
-        radial-gradient(circle at 46% 52%, rgba(240, 168, 58, .10), transparent 23%),
-        radial-gradient(circle at 83% 16%, rgba(79, 182, 164, .08), transparent 18%),
+        radial-gradient(circle at 50% 48%, rgba(240, 168, 58, .06), transparent 24%),
+        radial-gradient(circle at 72% 32%, rgba(79, 182, 164, .05), transparent 18%),
+        radial-gradient(circle at 24% 38%, rgba(138, 199, 255, .04), transparent 16%),
         linear-gradient(0deg, rgba(230, 220, 194, .04) 1px, transparent 1px),
         linear-gradient(90deg, rgba(230, 220, 194, .025) 1px, transparent 1px),
-        repeating-linear-gradient(176deg, rgba(217, 154, 61, .045) 0 2px, transparent 2px 38px),
         linear-gradient(180deg, #070b08 0%, #0d140e 48%, #070907 100%);
-      background-size: auto, auto, 44px 44px, 44px 44px, auto, auto;
+      background-size: auto, auto, auto, 44px 44px, 44px 44px, auto;
     }
     #wiki-graph {
       display: block;
@@ -1093,7 +1126,7 @@ function html() {
       .graph-meta { align-items: flex-start; flex-direction: column; white-space: normal; width: 100%; }
       .graph-legend { flex-wrap: wrap; }
       #graph-search { width: 100%; }
-      .graph-wrap { height: clamp(460px, 64vh, 620px); min-height: 460px; }
+      .graph-wrap { height: clamp(420px, 62vh, 580px); min-height: 420px; }
       .details { grid-template-columns: 1fr; }
     }
   </style>
@@ -1105,6 +1138,7 @@ function html() {
   </header>
   <nav class="health-strip" aria-label="DinoBrain OS health">
     <div id="chip-active" class="chip"><strong>Active</strong><span>--</span></div>
+    <div id="chip-v2" class="chip"><strong>OS v2</strong><span>--</span></div>
     <div id="chip-mcp" class="chip"><strong>MCP</strong><span>--</span></div>
     <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
     <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
@@ -1122,7 +1156,7 @@ function html() {
       </div>
       <div class="graph-panel">
         <div class="graph-head">
-          <h2>DinoBrain Fossil Graph</h2>
+          <h2>Knowledge Graph</h2>
           <div class="graph-meta">
             <span id="graph-stats">0 nodes / 0 edges</span>
             <span class="graph-legend">
@@ -1146,6 +1180,10 @@ function html() {
       <div class="block">
         <h2>OS Health</h2>
         <div id="os-health" class="kv"></div>
+      </div>
+      <div class="block">
+        <h2>OS v2 Gates</h2>
+        <div id="os-v2" class="kv"></div>
       </div>
       <div class="block">
         <h2>Read Trace</h2>
@@ -1198,8 +1236,10 @@ function html() {
     const nodeLifecycleEl = document.getElementById("node-lifecycle");
     const lifecycleRetryEl = document.getElementById("lifecycle-retry");
     const syncRiskEl = document.getElementById("sync-risk");
+    const osV2El = document.getElementById("os-v2");
     const chips = {
       active: document.getElementById("chip-active"),
+      v2: document.getElementById("chip-v2"),
       mcp: document.getElementById("chip-mcp"),
       read: document.getElementById("chip-read"),
       lifecycle: document.getElementById("chip-lifecycle"),
@@ -1216,7 +1256,6 @@ function html() {
     let graphSignature = "";
     let graphMouse = { x: -9999, y: -9999 };
     let graphSearch = "";
-    const graphFossilPoseLocked = true;
     const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const compact = (value, max = 180) => {
@@ -1232,9 +1271,11 @@ function html() {
     }
     function healthTone(value) {
       const status = String(value ?? "").toLowerCase();
-      if (["healthy", "ready", "clean", "grounded"].includes(status)) return status;
-      if (["warning", "at_risk"].includes(status)) return status;
-      if (["degraded", "index_error", "missing", "unknown"].includes(status)) return status;
+      if (["healthy", "ready", "clean", "grounded", "pass"].includes(status)) return status === "pass" ? "ready" : status;
+      if (["warning", "warn", "at_risk", "pending"].includes(status)) return status === "warn" ? "warning" : status;
+      if (["degraded", "index_error", "missing", "unknown", "block", "blocked"].includes(status)) {
+        return status === "block" || status === "blocked" ? "degraded" : status;
+      }
       return "unknown";
     }
     function eventTitle(event) {
@@ -1255,13 +1296,13 @@ function html() {
       return { width, height, dpr };
     }
     function graphRadius(node) {
-      if (node.type === "root") return node.dinoPart === "heart" ? 10.4 : 8.4;
-      if (node.type === "activity_root") return 11.6;
+      if (node.type === "root") return 10.8;
+      if (node.type === "activity_root") return 12.4;
       if (node.type === "active_task") return 8.9;
       if (node.type === "task") return 6.1;
       if (node.type === "context_pack") return 5.9;
       if (node.type === "event") return 3.8;
-      if (node.type === "folder") return ["head", "skull", "front-foot", "hind-foot"].includes(node.dinoPart) ? 8.1 : 7.1;
+      if (node.type === "folder") return 8.1;
       if (node.type === "tag") return 5.9;
       if (node.type === "kind") return 5.7;
       if (node.type === "record") return 5.1;
@@ -1289,13 +1330,13 @@ function html() {
           bead: true,
         };
       }
-      if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .34)", width: 1.45, bead: true, moving: true };
-      if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .18)", width: .9, bead: true, moving: true };
-      if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .17)", width: .9, bead: true, moving: false };
-      if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .18)", width: .95, bead: true };
-      if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .13)", width: .85, bead: false };
-      if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .12)", width: .85, bead: false };
-      return { color: "rgba(190, 154, 91, .11)", width: .85, bead: false };
+      if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .22)", width: 1.12, bead: true, moving: true };
+      if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .072)", width: .68, bead: true, moving: true };
+      if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .09)", width: .72, bead: true, moving: false };
+      if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .082)", width: .72, bead: true };
+      if (edge.type === "has_tag") return { color: "rgba(124, 198, 106, .05)", width: .62, bead: false };
+      if (edge.type === "in_folder") return { color: "rgba(79, 182, 164, .06)", width: .64, bead: false };
+      return { color: "rgba(190, 154, 91, .048)", width: .64, bead: false };
     }
     function graphHash(value) {
       let hash = 2166136261;
@@ -1309,32 +1350,6 @@ function html() {
     function graphUnit(value) {
       return (graphHash(value) % 1000) / 1000;
     }
-    function graphPointOnPath(points, t) {
-      if (!points.length) return { x: .5, y: .5 };
-      if (points.length === 1) return { x: points[0][0], y: points[0][1] };
-      const segments = [];
-      let total = 0;
-      for (let i = 0; i < points.length - 1; i += 1) {
-        const a = points[i];
-        const b = points[i + 1];
-        const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        segments.push({ a, b, length });
-        total += length;
-      }
-      let remaining = Math.max(0, Math.min(1, t)) * total;
-      for (const segment of segments) {
-        if (remaining <= segment.length || segment === segments[segments.length - 1]) {
-          const local = segment.length ? remaining / segment.length : 0;
-          return {
-            x: segment.a[0] + (segment.b[0] - segment.a[0]) * local,
-            y: segment.a[1] + (segment.b[1] - segment.a[1]) * local,
-          };
-        }
-        remaining -= segment.length;
-      }
-      const last = points[points.length - 1];
-      return { x: last[0], y: last[1] };
-    }
     function graphPoseJitter(node, pose, amount = .018) {
       const jitterX = (graphUnit(node.id + ":x") - .5) * amount;
       const jitterY = (graphUnit(node.id + ":y") - .5) * amount;
@@ -1344,195 +1359,119 @@ function html() {
         y: Math.max(.045, Math.min(.955, pose.y + jitterY)),
       };
     }
-    function graphDinoPart(node, index) {
+    function graphClusterPart(node, index) {
       const label = String(node.label || node.path || node.id || "").toLowerCase();
-      if (node.type === "activity_root") return "heart";
+      if (node.type === "activity_root") return "live";
+      if (node.type === "active_task") return "live";
+      if (node.type === "context_pack") return "context";
+      if (node.type === "event") return "operations";
+      if (node.type === "task") return node.status === "started" ? "live" : "operations";
+      if (node.type === "tag") return "tags";
+      if (node.type === "kind") return "types";
       if (node.type === "root") {
-        if (label.includes("30_sources") || label.includes("source")) return "head";
-        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
-        if (label.includes("40_projects") || label.includes("project")) return "neck";
-        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
-        if (label.includes("60_operations") || label.includes("operation")) return "hind-leg";
-        if (label.includes("70_error") || label.includes("error")) return "tail";
-        return index % 2 === 0 ? "outline" : "back";
+        if (label.includes("30_sources") || label.includes("source")) return "sources";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "wiki";
+        if (label.includes("40_projects") || label.includes("project")) return "projects";
+        if (label.includes("50_instances") || label.includes("instance")) return "instances";
+        if (label.includes("60_operations") || label.includes("operation")) return "operations";
+        if (label.includes("70_error") || label.includes("error")) return "archive";
+        return index % 2 === 0 ? "wiki" : "projects";
       }
       if (node.type === "folder") {
-        if (label.includes("30_sources") || label.includes("source")) return "head";
-        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
-        if (label.includes("40_projects") || label.includes("project")) return "throat";
-        if (label.includes("50_instances") || label.includes("instance")) return "front-foot";
-        if (label.includes("60_operations") || label.includes("operation")) return "hind-foot";
-        if (label.includes("70_error") || label.includes("error")) return "tail";
-        if (label.includes("accepted")) return "belly";
-        return "back";
+        if (label.includes("30_sources") || label.includes("source")) return "sources";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "wiki";
+        if (label.includes("40_projects") || label.includes("project")) return "projects";
+        if (label.includes("50_instances") || label.includes("instance")) return "instances";
+        if (label.includes("60_operations") || label.includes("operation")) return "operations";
+        if (label.includes("70_error") || label.includes("error")) return "archive";
+        if (label.includes("accepted")) return "instances";
+        return "wiki";
       }
       if (node.type === "record") {
-        if (label.includes("30_sources") || label.includes("source")) return "head";
-        if (label.includes("20_wiki") || label.includes("wiki")) return "skull";
-        if (label.includes("40_projects") || label.includes("project")) return "neck";
-        if (label.includes("50_instances") || label.includes("instance")) return "front-leg";
-        if (label.includes("60_operations") || label.includes("operation")) return "hind-leg";
-        if (label.includes("70_error") || label.includes("error")) return "tail";
-        return "rib";
+        if (label.includes("30_sources") || label.includes("source")) return "sources";
+        if (label.includes("20_wiki") || label.includes("wiki")) return "wiki";
+        if (label.includes("40_projects") || label.includes("project")) return "projects";
+        if (label.includes("50_instances") || label.includes("instance")) return "instances";
+        if (label.includes("60_operations") || label.includes("operation")) return "operations";
+        if (label.includes("70_error") || label.includes("error")) return "archive";
+        return "wiki";
       }
-      if (node.type === "context_pack") {
-        const bucket = graphHash(node.id + ":pack") % 6;
-        return ["neck", "back", "rib", "body", "throat", "front-leg"][bucket];
-      }
-      if (node.type === "active_task") {
-        const bucket = graphHash(node.id + ":active") % 6;
-        return ["shoulder", "body", "neck", "front-leg", "rib", "body"][bucket];
-      }
-      if (node.type === "task") {
-        const bucket = graphHash(node.id + ":task") % 8;
-        return ["back", "rib", "belly", "hind-leg", "mid-leg", "front-leg", "body", "outline"][bucket];
-      }
-      if (node.type === "kind") return index % 3 === 0 ? "mid-leg" : "rib";
-      if (node.type === "tag") return index % 6 === 0 ? "outline" : index % 6 === 1 ? "front-leg" : index % 6 === 2 ? "back" : index % 6 === 3 ? "neck" : "rib";
-      if (node.type === "event") {
-        const bucket = graphHash(node.id + ":event") % 12;
-        return ["tail", "tail", "outline", "back", "rib", "belly", "hind-leg", "mid-leg", "front-leg", "neck", "throat", "body"][bucket];
-      }
-      return "body";
+      if (label.includes("context") || label.includes("pack")) return "context";
+      if (label.includes("operation") || label.includes("task") || label.includes("trace")) return "operations";
+      if (label.includes("instance") || label.includes("memory")) return "instances";
+      if (label.includes("project")) return "projects";
+      if (label.includes("source")) return "sources";
+      if (label.includes("wiki")) return "wiki";
+      if (label.includes("error") || label.includes("archive")) return "archive";
+      return index % 3 === 0 ? "wiki" : index % 3 === 1 ? "projects" : "instances";
     }
-    function graphDinoPose(node, ordinal, total, index, graphTotal) {
-      const label = String(node.label || "").toLowerCase();
-      if (node.type === "root") {
-        if (label.includes("30_sources") || label.includes("source")) return { x: .765, y: .11, part: "head", lock: .30 };
-        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .725, y: .16, part: "skull", lock: .29 };
-        if (label.includes("40_projects") || label.includes("project")) return { x: .665, y: .30, part: "neck", lock: .29 };
-        if (label.includes("50_instances") || label.includes("instance")) return { x: .63, y: .72, part: "front-leg", lock: .31 };
-        if (label.includes("60_operations") || label.includes("operation")) return { x: .38, y: .75, part: "hind-leg", lock: .31 };
-        if (label.includes("70_error") || label.includes("error")) return { x: .095, y: .705, part: "tail", lock: .29 };
-      }
+    function graphClusterAnchor(part) {
+      const anchors = {
+        live: { x: .50, y: .48 },
+        wiki: { x: .35, y: .30 },
+        sources: { x: .20, y: .39 },
+        projects: { x: .65, y: .30 },
+        instances: { x: .71, y: .63 },
+        operations: { x: .43, y: .69 },
+        context: { x: .58, y: .62 },
+        tags: { x: .24, y: .66 },
+        types: { x: .30, y: .54 },
+        archive: { x: .14, y: .63 },
+      };
+      return anchors[part] || anchors.wiki;
+    }
+    function graphReadablePose(node, ordinal, total, index) {
+      const part = node.clusterPart || graphClusterPart(node, index);
+      const anchor = graphClusterAnchor(part);
+      const rootish = node.type === "root" || node.type === "folder" || node.type === "activity_root";
+      if (node.type === "activity_root") return graphPoseJitter(node, { ...anchor, part, lock: .095 }, .006);
+      if (node.type === "root") return graphPoseJitter(node, { ...anchor, part, lock: .12 }, .004);
       if (node.type === "folder") {
-        if (label.includes("30_sources") || label.includes("source")) return { x: .805, y: .105, part: "head", lock: .30 };
-        if (label.includes("20_wiki") || label.includes("wiki")) return { x: .775, y: .155, part: "skull", lock: .29 };
-        if (label.includes("40_projects") || label.includes("project")) return { x: .70, y: .305, part: "throat", lock: .28 };
-        if (label.includes("50_instances") || label.includes("instance")) return { x: .665, y: .815, part: "front-foot", lock: .32 };
-        if (label.includes("60_operations") || label.includes("operation")) return { x: .35, y: .825, part: "hind-foot", lock: .32 };
-        if (label.includes("70_error") || label.includes("error")) return { x: .125, y: .72, part: "tail", lock: .27 };
-        if (label.includes("accepted")) return { x: .50, y: .67, part: "belly", lock: .25 };
-      }
-      if (node.type === "activity_root") {
-        const angle = (ordinal / Math.max(1, total)) * Math.PI * 2;
+        const slot = ordinal % 6;
+        const angle = (-Math.PI / 2) + slot * (Math.PI * 2 / 6);
         return graphPoseJitter(node, {
-          x: .43 + Math.cos(angle) * .055,
-          y: .505 + Math.sin(angle) * .045,
-          part: "heart",
-          lock: .27,
-        }, .008);
-      }
-      if (node.type === "active_task") {
-        const lane = total <= 1 ? .5 : ordinal / Math.max(1, total - 1);
-        return graphPoseJitter(node, {
-          x: .56 + Math.cos(lane * Math.PI * 1.4) * .105,
-          y: .43 + lane * .155,
-          part: ordinal < Math.ceil(total / 2) ? "shoulder" : "body",
-          lock: .24,
-        }, .012);
-      }
-      const part = node.dinoPart || graphDinoPart(node, index);
-      const t = total <= 1 ? .5 : ordinal / Math.max(1, total - 1);
-      const allT = graphTotal <= 1 ? .5 : index / Math.max(1, graphTotal - 1);
-      const paths = {
-        outline: [[.055, .69], [.13, .68], [.23, .63], [.33, .52], [.43, .39], [.54, .34], [.64, .37], [.69, .29], [.73, .18], [.80, .10], [.88, .095]],
-        back: [[.19, .62], [.30, .50], [.41, .38], [.52, .335], [.63, .365], [.70, .27], [.76, .15]],
-        tail: [[.045, .70], [.115, .695], [.20, .665], [.285, .60], [.36, .515]],
-        belly: [[.295, .61], [.40, .68], [.52, .68], [.645, .60]],
-        body: [[.29, .51], [.38, .39], [.505, .34], [.625, .42], [.655, .54], [.58, .65], [.43, .675], [.31, .60]],
-        rib: [[.33, .50], [.40, .43], [.49, .405], [.58, .435], [.62, .53], [.56, .615], [.44, .625], [.35, .57]],
-        "hind-leg": [[.34, .57], [.31, .69], [.30, .805]],
-        "mid-leg": [[.465, .575], [.455, .705], [.43, .825]],
-        "front-leg": [[.60, .535], [.65, .665], [.675, .805]],
-        "front-foot": [[.60, .79], [.67, .845], [.745, .835]],
-        "hind-foot": [[.255, .80], [.335, .852], [.425, .842]],
-        shoulder: [[.56, .415], [.625, .385], [.68, .325]],
-        neck: [[.625, .415], [.675, .335], [.70, .25], [.72, .17], [.765, .10]],
-        throat: [[.665, .37], [.705, .285], [.73, .20], [.765, .14]],
-        head: [[.775, .105], [.835, .055], [.91, .085], [.88, .15]],
-        skull: [[.73, .175], [.795, .12], [.865, .135]],
-        heart: [[.385, .46], [.435, .475], [.49, .50]],
-      };
-      const slots = {
-        tail: [[.045, .73], [.10, .725], [.155, .705], [.215, .665], [.275, .615], [.345, .545]],
-        outline: [[.235, .59], [.30, .50], [.36, .43], [.43, .375], [.505, .34], [.58, .355], [.64, .405]],
-        back: [[.255, .575], [.32, .49], [.385, .415], [.46, .36], [.535, .34], [.61, .375], [.675, .31]],
-        belly: [[.315, .61], [.385, .665], [.48, .69], [.575, .655], [.66, .60]],
-        body: [[.355, .515], [.405, .445], [.48, .405], [.56, .425], [.625, .50], [.61, .595], [.52, .64], [.425, .625], [.34, .575], [.47, .52], [.55, .545]],
-        rib: [[.36, .515], [.42, .465], [.49, .445], [.565, .47], [.60, .545], [.545, .60], [.455, .615], [.375, .575]],
-        shoulder: [[.575, .44], [.625, .405], [.675, .36], [.63, .485]],
-        neck: [[.625, .405], [.655, .335], [.675, .26], [.695, .18], [.735, .105]],
-        throat: [[.645, .38], [.68, .30], [.705, .22], [.735, .15]],
-        head: [[.745, .10], [.795, .06], [.85, .085], [.835, .15], [.785, .155]],
-        skull: [[.705, .18], [.765, .13], [.825, .14], [.78, .205]],
-        "hind-leg": [[.34, .585], [.315, .70], [.295, .815], [.39, .61], [.39, .735], [.385, .845]],
-        "mid-leg": [[.465, .59], [.46, .715], [.445, .84], [.525, .61], [.54, .735], [.55, .85]],
-        "front-leg": [[.61, .56], [.655, .68], [.695, .81], [.68, .545], [.735, .68], [.78, .83]],
-        "hind-foot": [[.27, .835], [.345, .875], [.43, .86]],
-        "front-foot": [[.61, .82], [.69, .875], [.77, .855]],
-      };
-      if (slots[part]) {
-        const slot = slots[part][ordinal % slots[part].length];
-        const repeat = Math.floor(ordinal / slots[part].length);
-        return graphPoseJitter(node, {
-          x: slot[0] + ((graphUnit(node.id + ":slot-x") - .5) * .012) + repeat * .006,
-          y: slot[1] + ((graphUnit(node.id + ":slot-y") - .5) * .012) + repeat * .006,
+          x: anchor.x + Math.cos(angle) * .048,
+          y: anchor.y + Math.sin(angle) * .040,
           part,
-          lock: part === "head" || part === "skull" || part === "neck" || part === "throat" ? .34 : part.includes("leg") || part.includes("foot") ? .35 : .31,
-        }, .004);
+          lock: .10,
+        }, .007);
       }
-      if (part === "body") {
-        const angle = allT * Math.PI * 2;
-        return graphPoseJitter(node, {
-          x: .47 + Math.cos(angle) * (.18 + graphUnit(node.id + ":body") * .035),
-          y: .525 + Math.sin(angle) * (.15 + graphUnit(node.id + ":body-y") * .03),
-          part,
-          lock: .24,
-        }, .016);
-      }
-      if (part === "rib") {
-        const ribIndex = ordinal % 5;
-        const ribT = (Math.floor(ordinal / 5) + .5) / Math.max(1, Math.ceil(total / 5));
-        return graphPoseJitter(node, {
-          x: .335 + ribIndex * .075,
-          y: .415 + ribT * .205 + Math.sin(ribIndex * 1.6) * .018,
-          part,
-          lock: .23,
-        }, .01);
-      }
-      if (part === "front-leg" || part === "hind-leg" || part === "mid-leg") {
-        const point = graphPointOnPath(paths[part], t);
-        return graphPoseJitter(node, { ...point, part, lock: .29 }, .01);
-      }
-      const point = graphPointOnPath(paths[part] || paths.body, t);
-      const lock = part === "head" || part === "skull" || part === "throat" || part === "neck" ? .28 : part === "tail" || part === "outline" ? .26 : .23;
-      return graphPoseJitter(node, { ...point, part, lock }, part === "outline" || part === "tail" ? .01 : .014);
+      const ringSize = part === "live" ? 7 : part === "operations" || part === "instances" ? 9 : 8;
+      const slot = ordinal % ringSize;
+      const ring = Math.floor(ordinal / ringSize);
+      const baseAngle = graphUnit(node.id + ":angle") * Math.PI * 2;
+      const angle = slot * (Math.PI * 2 / ringSize) + baseAngle * .28;
+      const density = Math.max(1, total);
+      const spread = Math.min(.13, .055 + ring * .027 + Math.min(.034, density * .0028));
+      const xSpread = part === "sources" || part === "archive" ? spread * 1.15 : spread;
+      const ySpread = part === "live" ? spread * .78 : spread * .86;
+      const typePull = node.type === "event" ? .78 : node.type === "tag" ? .72 : node.type === "context_pack" ? .86 : 1;
+      return graphPoseJitter(node, {
+        x: anchor.x + Math.cos(angle) * xSpread * typePull,
+        y: anchor.y + Math.sin(angle) * ySpread * typePull,
+        part,
+        lock: rootish ? .10 : part === "live" ? .082 : .067,
+      }, .012);
     }
-    function graphDinoTarget(node, size) {
-      const padX = Math.max(28 * size.dpr, size.width * .035);
-      const padY = Math.max(26 * size.dpr, size.height * .055);
+    function graphClusterPose(node, ordinal, total, index, graphTotal) {
+      return graphReadablePose(node, ordinal, total, index, graphTotal);
+    }
+    function graphLayoutTarget(node, size) {
+      const padX = Math.max(34 * size.dpr, size.width * .055);
+      const padY = Math.max(30 * size.dpr, size.height * .075);
       const usableWidth = Math.max(1, size.width - padX * 2);
       const usableHeight = Math.max(1, size.height - padY * 2);
-      const frameWidth = Math.min(usableWidth, usableHeight * 1.58);
-      const frameHeight = Math.min(usableHeight, frameWidth / 1.38);
-      const frameX = padX + (usableWidth - frameWidth) / 2;
-      const frameY = padY + (usableHeight - frameHeight) / 2;
       return {
-        x: frameX + node.poseX * frameWidth,
-        y: frameY + node.poseY * frameHeight,
+        x: padX + node.poseX * usableWidth,
+        y: padY + node.poseY * usableHeight,
       };
     }
     function graphShouldLabel(node, active) {
       if (active) return true;
       if (node.type === "activity_root") return true;
-      if (node.type === "root") return false;
-      if (node.type === "active_task") {
-        const preferred = graphNodes.some((candidate) => candidate.type === "active_task" && /take the dinobrain|improve the dinobrain/i.test(candidate.label || candidate.id || ""));
-        return preferred
-          ? /take the dinobrain|improve the dinobrain/i.test(node.label || node.id || "")
-          : node.dinoOrdinal === 0;
-      }
+      if (node.type === "root") return true;
+      if (node.type === "active_task") return false;
+      if (node.type === "context_pack") return false;
       if (node.type !== "folder") return false;
       const label = String(node.label || "");
       return /^(20|30|40|50|60)_/i.test(label) || /wiki|source|project|instance|operation/i.test(label);
@@ -1541,205 +1480,6 @@ function html() {
       if (!graphSearch) return false;
       const haystack = [node.label, node.path, node.type].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(graphSearch);
-    }
-    function graphPartNodes(parts, sortMode = "x") {
-      const wanted = new Set(parts);
-      return graphNodes
-        .filter((node) => wanted.has(node.dinoPart))
-        .sort((a, b) => {
-          if (sortMode === "y") return a.poseY - b.poseY || a.poseX - b.poseX;
-          if (sortMode === "angle") {
-            const ax = a.poseX - .48;
-            const ay = a.poseY - .55;
-            const bx = b.poseX - .48;
-            const by = b.poseY - .55;
-            return Math.atan2(ay, ax) - Math.atan2(by, bx);
-          }
-          return a.poseX - b.poseX || a.poseY - b.poseY;
-        });
-    }
-    function drawGraphRoute(nodes, size, options = {}) {
-      if (nodes.length < 2) return;
-      graphCtx.save();
-      graphCtx.globalAlpha = options.alpha ?? 1;
-      graphCtx.strokeStyle = options.color || "rgba(217, 154, 61, .34)";
-      graphCtx.lineWidth = Math.max(1, (options.width || 1.6) * size.dpr);
-      graphCtx.lineCap = "round";
-      graphCtx.lineJoin = "round";
-      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .18)";
-      graphCtx.shadowBlur = (options.blur || 6) * size.dpr;
-      graphCtx.beginPath();
-      graphCtx.moveTo(nodes[0].x, nodes[0].y);
-      for (let i = 1; i < nodes.length - 1; i += 1) {
-        const node = nodes[i];
-        const next = nodes[i + 1];
-        graphCtx.quadraticCurveTo(node.x, node.y, (node.x + next.x) / 2, (node.y + next.y) / 2);
-      }
-      const last = nodes[nodes.length - 1];
-      graphCtx.lineTo(last.x, last.y);
-      graphCtx.stroke();
-      graphCtx.restore();
-    }
-    function drawPoseRoute(points, size, options = {}) {
-      if (points.length < 2) return;
-      const mapped = points.map(([poseX, poseY]) => graphDinoTarget({ poseX, poseY }, size));
-      graphCtx.save();
-      graphCtx.globalAlpha = options.alpha ?? 1;
-      graphCtx.strokeStyle = options.color || "rgba(217, 154, 61, .42)";
-      graphCtx.lineWidth = Math.max(1, (options.width || 2) * size.dpr);
-      graphCtx.lineCap = "round";
-      graphCtx.lineJoin = "round";
-      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .24)";
-      graphCtx.shadowBlur = (options.blur || 10) * size.dpr;
-      graphCtx.beginPath();
-      graphCtx.moveTo(mapped[0].x, mapped[0].y);
-      for (let i = 1; i < mapped.length - 1; i += 1) {
-        const point = mapped[i];
-        const next = mapped[i + 1];
-        graphCtx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
-      }
-      const last = mapped[mapped.length - 1];
-      graphCtx.lineTo(last.x, last.y);
-      graphCtx.stroke();
-      graphCtx.restore();
-    }
-    function fillPoseHull(points, size, options = {}) {
-      if (points.length < 3) return;
-      const mapped = points.map(([poseX, poseY]) => graphDinoTarget({ poseX, poseY }, size));
-      graphCtx.save();
-      graphCtx.fillStyle = options.fill || "rgba(217, 154, 61, .055)";
-      graphCtx.strokeStyle = options.stroke || "rgba(217, 154, 61, .18)";
-      graphCtx.lineWidth = Math.max(1, (options.width || 1.1) * size.dpr);
-      graphCtx.shadowColor = options.shadow || "rgba(217, 154, 61, .18)";
-      graphCtx.shadowBlur = (options.blur || 14) * size.dpr;
-      graphCtx.beginPath();
-      graphCtx.moveTo(mapped[0].x, mapped[0].y);
-      for (let i = 1; i < mapped.length; i += 1) graphCtx.lineTo(mapped[i].x, mapped[i].y);
-      graphCtx.closePath();
-      graphCtx.fill();
-      graphCtx.stroke();
-      graphCtx.restore();
-    }
-    function drawPoseScaffold(size) {
-      fillPoseHull([
-        [.28, .58], [.35, .47], [.43, .38], [.52, .335], [.61, .37], [.67, .47],
-        [.64, .59], [.56, .665], [.45, .68], [.34, .63],
-      ], size, {
-        fill: "rgba(217, 154, 61, .075)",
-        stroke: "rgba(217, 154, 61, .24)",
-        width: 1.25,
-        blur: 18,
-      });
-      drawPoseRoute([[.045, .73], [.11, .725], [.18, .695], [.255, .635], [.34, .535], [.43, .39], [.52, .335], [.61, .37], [.67, .44]], size, {
-        color: "rgba(230, 164, 67, .58)",
-        width: 3.2,
-        blur: 16,
-      });
-      drawPoseRoute([[.285, .61], [.38, .675], [.50, .69], [.61, .63], [.67, .53]], size, {
-        color: "rgba(230, 220, 194, .30)",
-        width: 2.05,
-        blur: 8,
-      });
-      drawPoseRoute([[.615, .43], [.655, .335], [.68, .245], [.70, .16], [.745, .095], [.81, .075], [.865, .095]], size, {
-        color: "rgba(230, 164, 67, .62)",
-        width: 3.15,
-        blur: 15,
-      });
-      drawPoseRoute([[.64, .50], [.67, .39], [.69, .285], [.725, .18], [.785, .135], [.855, .15]], size, {
-        color: "rgba(230, 220, 194, .31)",
-        width: 1.75,
-        blur: 8,
-      });
-      drawPoseRoute([[.74, .10], [.795, .055], [.86, .085], [.845, .155], [.79, .17], [.735, .125]], size, {
-        color: "rgba(230, 164, 67, .56)",
-        width: 2.35,
-        blur: 10,
-      });
-      const legs = [
-        [[.34, .59], [.315, .70], [.29, .82], [.26, .85]],
-        [[.46, .60], [.455, .72], [.43, .84], [.38, .86]],
-        [[.56, .60], [.545, .73], [.55, .85], [.62, .86]],
-        [[.63, .56], [.675, .68], [.715, .82], [.78, .84]],
-      ];
-      for (const leg of legs) {
-        drawPoseRoute(leg, size, {
-          color: "rgba(79, 182, 164, .44)",
-          width: 2.25,
-          blur: 9,
-        });
-      }
-      const ribs = [
-        [[.43, .47], [.36, .53]],
-        [[.43, .47], [.42, .61]],
-        [[.43, .47], [.50, .63]],
-        [[.43, .47], [.58, .58]],
-        [[.43, .47], [.61, .48]],
-      ];
-      for (const rib of ribs) {
-        drawPoseRoute(rib, size, {
-          color: "rgba(230, 220, 194, .22)",
-          width: 1.05,
-          blur: 4,
-        });
-      }
-    }
-    function drawDinoScaffold(size, now) {
-      drawPoseScaffold(size);
-      const body = graphPartNodes(["heart", "body", "rib", "back", "belly", "shoulder"], "angle");
-      if (body.length >= 3) {
-        graphCtx.save();
-        graphCtx.fillStyle = "rgba(217, 154, 61, .065)";
-        graphCtx.strokeStyle = "rgba(217, 154, 61, .26)";
-        graphCtx.lineWidth = Math.max(1, 1.55 * size.dpr);
-        graphCtx.shadowColor = "rgba(217, 154, 61, .28)";
-        graphCtx.shadowBlur = 18 * size.dpr;
-        graphCtx.beginPath();
-        graphCtx.moveTo(body[0].x, body[0].y);
-        for (let i = 1; i < body.length; i += 1) graphCtx.lineTo(body[i].x, body[i].y);
-        graphCtx.closePath();
-        graphCtx.fill();
-        graphCtx.stroke();
-        graphCtx.restore();
-      }
-      drawGraphRoute(graphPartNodes(["tail", "outline", "back", "shoulder", "neck", "throat", "skull", "head"], "x"), size, {
-        color: "rgba(230, 164, 67, .48)",
-        width: 3.1,
-        blur: 14,
-      });
-      drawGraphRoute(graphPartNodes(["shoulder", "neck", "throat", "head"], "y"), size, {
-        color: "rgba(230, 220, 194, .34)",
-        width: 2.15,
-        blur: 10,
-      });
-      drawGraphRoute(graphPartNodes(["tail", "belly", "front-leg", "front-foot"], "x"), size, {
-        color: "rgba(230, 220, 194, .25)",
-        width: 1.9,
-        blur: 5,
-      });
-      for (const part of ["hind-leg", "mid-leg", "front-leg"]) {
-        drawGraphRoute(graphPartNodes([part, part === "front-leg" ? "front-foot" : "hind-foot"], "y"), size, {
-          color: part === "front-leg" ? "rgba(79, 182, 164, .42)" : "rgba(217, 154, 61, .36)",
-          width: 2.35,
-          blur: 7,
-        });
-      }
-      const hearts = graphPartNodes(["heart"], "x");
-      const ribs = graphPartNodes(["rib", "belly", "body"], "x").slice(0, 14);
-      const heart = hearts[Math.floor(hearts.length / 2)];
-      if (heart) {
-        graphCtx.save();
-        graphCtx.strokeStyle = "rgba(230, 220, 194, .19)";
-        graphCtx.lineWidth = Math.max(1, .95 * size.dpr);
-        for (const rib of ribs) {
-          const flicker = .72 + Math.sin(now / 720 + rib.x * .01) * .16;
-          graphCtx.globalAlpha = flicker;
-          graphCtx.beginPath();
-          graphCtx.moveTo(heart.x, heart.y);
-          graphCtx.lineTo(rib.x, rib.y);
-          graphCtx.stroke();
-        }
-        graphCtx.restore();
-      }
     }
     function renderGraph(graph) {
       graphStatsEl.textContent = graph.ok
@@ -1750,16 +1490,16 @@ function html() {
       graphSignature = signature;
       const size = graphSize();
       const previous = new Map(graphNodes.map((node) => [node.id, node]));
-      const prepared = graph.nodes.map((node, index) => ({ ...node, dinoPart: graphDinoPart(node, index) }));
+      const prepared = graph.nodes.map((node, index) => ({ ...node, clusterPart: graphClusterPart(node, index) }));
       const partCounts = new Map();
-      for (const node of prepared) partCounts.set(node.dinoPart, (partCounts.get(node.dinoPart) || 0) + 1);
+      for (const node of prepared) partCounts.set(node.clusterPart, (partCounts.get(node.clusterPart) || 0) + 1);
       const partSeen = new Map();
       graphNodes = prepared.map((node, index) => {
         const old = previous.get(node.id);
-        const ordinal = partSeen.get(node.dinoPart) || 0;
-        partSeen.set(node.dinoPart, ordinal + 1);
-        const pose = graphDinoPose(node, ordinal, partCounts.get(node.dinoPart) || 1, index, prepared.length);
-        const target = graphDinoTarget({ poseX: pose.x, poseY: pose.y }, size);
+        const ordinal = partSeen.get(node.clusterPart) || 0;
+        partSeen.set(node.clusterPart, ordinal + 1);
+        const pose = graphClusterPose(node, ordinal, partCounts.get(node.clusterPart) || 1, index, prepared.length);
+        const target = graphLayoutTarget({ poseX: pose.x, poseY: pose.y }, size);
         const driftX = (graphUnit(node.id + ":start-x") - .5) * 7 * size.dpr;
         const driftY = (graphUnit(node.id + ":start-y") - .5) * 7 * size.dpr;
         return {
@@ -1771,8 +1511,8 @@ function html() {
           poseX: pose.x,
           poseY: pose.y,
           poseLock: pose.lock ?? .22,
-          dinoPart: pose.part || node.dinoPart,
-          dinoOrdinal: ordinal,
+          clusterPart: pose.part || node.clusterPart,
+          clusterOrdinal: ordinal,
           r: graphRadius(node),
         };
       });
@@ -1785,18 +1525,6 @@ function html() {
       const size = graphSize();
       const centerX = size.width / 2;
       const centerY = size.height / 2;
-      if (graphFossilPoseLocked) {
-        for (const node of graphNodes) {
-          const target = graphDinoTarget(node, size);
-          node.targetX = target.x;
-          node.targetY = target.y;
-          node.x += (target.x - node.x) * 0.38;
-          node.y += (target.y - node.y) * 0.38;
-          node.vx = 0;
-          node.vy = 0;
-        }
-        return;
-      }
       for (let edgeIndex = 0; edgeIndex < graphEdges.length; edgeIndex += 1) {
         const edge = graphEdges[edgeIndex];
         const a = edge.sourceNode;
@@ -1831,7 +1559,7 @@ function html() {
         }
       }
       for (const node of graphNodes) {
-        const target = graphDinoTarget(node, size);
+        const target = graphLayoutTarget(node, size);
         node.targetX = target.x;
         node.targetY = target.y;
         node.vx += (target.x - node.x) * node.poseLock;
@@ -1873,7 +1601,6 @@ function html() {
           graphCtx.fill();
         }
       }
-      drawDinoScaffold(size, now);
       for (const node of graphNodes) {
         const highlighted = matchesGraphSearch(node);
         const hovered = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y) <= node.r + 5;
@@ -1915,12 +1642,16 @@ function html() {
           graphCtx.font = Math.round(11 * size.dpr) + "px Segoe UI, sans-serif";
           const label = node.label.slice(0, 34);
           const rightSide = node.poseX > .58;
-          const labelX = rightSide ? node.x + node.r + 8 * size.dpr : node.x + node.r + 5 * size.dpr;
-          const labelY = node.y - node.r - (node.type === "folder" ? 6 * size.dpr : 2);
+          const labelWidth = graphCtx.measureText(label).width;
+          const preferredX = rightSide
+            ? node.x - node.r - labelWidth - 10 * size.dpr
+            : node.x + node.r + 7 * size.dpr;
+          const labelX = Math.max(8 * size.dpr, Math.min(size.width - labelWidth - 8 * size.dpr, preferredX));
+          const labelY = node.y - node.r - (node.type === "root" || node.type === "folder" ? 7 * size.dpr : 2);
           const box = {
             x: labelX - 5,
             y: labelY - 15 * size.dpr,
-            width: graphCtx.measureText(label).width + 12,
+            width: labelWidth + 12,
             height: 22 * size.dpr,
           };
           const overlaps = labelBoxes.some((other) =>
@@ -1971,12 +1702,20 @@ function html() {
       const lifecycle = data.lifecycle || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
+      const osV2 = data.os_v2 || { counts: {} };
       renderChip(
         chips.active,
         "Active",
         data.summary.active_task_count || "0",
         data.summary.active_task_count ? "task loop is open" : "idle",
         data.summary.active_task_count ? "warning" : "ready",
+      );
+      renderChip(
+        chips.v2,
+        "OS v2",
+        osV2.status || "--",
+        "gates " + (osV2.counts?.gates ?? 0) + " / evals " + (osV2.counts?.behavior_evals ?? 0),
+        healthTone(osV2.status),
       );
       renderChip(chips.mcp, "MCP", data.summary.event_count || "0", "events observed", data.summary.event_count ? "healthy" : "unknown");
       renderChip(
@@ -2016,6 +1755,17 @@ function html() {
         ["unresolved", graphHealth.unresolved_wiki_link_count],
         ["warnings", Array.isArray(graphHealth.warnings) ? graphHealth.warnings.join(", ") : ""],
         ["path", graphHealth._path],
+      ]);
+      kv(osV2El, [
+        ["version", osV2.version],
+        ["status", osV2.status],
+        ["fail closed", osV2.fail_closed],
+        ["latest gate", osV2.latest_gate && (osV2.latest_gate._path || osV2.latest_gate.gate_id)],
+        ["gate status", osV2.latest_gate && osV2.latest_gate.status],
+        ["behavior lift", osV2.latest_behavior_eval && osV2.latest_behavior_eval.average_memory_lift],
+        ["lifecycle", osV2.latest_lifecycle && (osV2.latest_lifecycle.status || osV2.latest_lifecycle.lifecycle_id)],
+        ["sources", osV2.counts?.source_chunks],
+        ["provenance", osV2.counts?.provenance_links],
       ]);
       kv(readTraceEl, [
         ["status", readTrace.status],

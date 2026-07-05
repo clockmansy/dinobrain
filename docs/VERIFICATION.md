@@ -25,7 +25,7 @@ npm run hook:verify
 npm run verify:os
 npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v0.1.7 -ReplaceAsset
+npm run release:win -- -Tag v2.0.1 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
@@ -85,13 +85,13 @@ The project hook in `.codex/hooks.json` remains for local verification and fallb
 
 ### Claude Code MCP Integration
 
-The installer registers DinoBrain with Claude Code when the `claude` CLI is available:
+The installer registers a Claude Code `UserPromptSubmit` hook in `C:\Users\<you>\.claude\settings.json` so DinoBrain preflight can add context before Claude processes a prompt. When the `claude` CLI is available, the installer also registers the MCP server:
 
 ```powershell
 claude mcp add --env DINOBRAIN_DATA_DIR=<vault> --transport stdio --scope user dinobrain -- <node.exe> <dist\index.js>
 ```
 
-During installer verification, `DINOBRAIN_REQUIRE_CLAUDE_CODE=1` is set only after that registration succeeds. In that mode `verify:os` requires `claude mcp list` to include `dinobrain`.
+During installer verification, `DINOBRAIN_REQUIRE_CLAUDE_PROMPT_HOOK=1` requires the Claude prompt hook to be present. `DINOBRAIN_REQUIRE_CLAUDE_CODE=1` is set only after MCP registration succeeds; in that mode `verify:os` also requires `claude mcp list` to include `dinobrain`.
 
 When running `npm run verify:os` manually on a PC without Claude Code, this check is reported as skipped and does not fail the OS verification.
 

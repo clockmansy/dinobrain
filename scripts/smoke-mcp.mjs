@@ -96,7 +96,7 @@ spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "0.1.7",
+  version: "2.0.1",
 });
 
 const transport = new StdioClientTransport({
@@ -122,19 +122,44 @@ try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   const expected = [
+    "apply_node_lifecycle",
     "audit_memory_use",
     "create_candidate_instance",
+    "create_source_chunk",
+    "evaluate_behavior",
     "finish_task",
     "get_context_pack",
     "git_sync",
     "import_session",
+    "os_begin_task",
+    "os_gate",
     "quarantine_record",
+    "record_feedback_correction",
     "review_candidate",
     "start_task",
     "wiki_search",
   ];
   for (const name of expected) {
     if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
+  }
+
+  const begin = parseTool(
+    await client.callTool({
+      name: "os_begin_task",
+      arguments: {
+        request: "Smoke test DinoBrain OS v2 mandatory pre-response context",
+        project: "dinobrain",
+        mode: "standard",
+        sensitivity: "normal",
+        limit: 5,
+      },
+    }),
+  );
+  if (!begin.context_pack?.trace_path || !existsSync(path.join(tempDataRoot, begin.context_pack.trace_path))) {
+    throw new Error("os_begin_task did not create a Context Pack trace");
+  }
+  if (begin.fail_closed === true) {
+    throw new Error(`os_begin_task unexpectedly failed closed: ${JSON.stringify(begin.gates)}`);
   }
 
   const start = parseTool(

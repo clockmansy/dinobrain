@@ -5,11 +5,11 @@ import {
   collectCuratedRecords,
   collectRecentTaskRecords,
   dataPath,
-  rankRecords,
   type RankedRecord,
 } from "./context.js";
+import { HYBRID_RETRIEVAL_MODE, rankRecordsHybridV2 } from "./hybrid-retrieval.js";
 
-export const WIKI_INDEX_VERSION = 1;
+export const WIKI_INDEX_VERSION = 2;
 export const WIKI_INDEX_RELATIVE_PATH = ".dino/index/wiki-index.json";
 
 export type WikiIndexRecord = RankedRecord & {
@@ -60,7 +60,8 @@ export type WikiIndex = {
 };
 
 export type IndexedRetrievalStats = {
-  retrieval_mode: "wiki_index_v0";
+  retrieval_mode: typeof HYBRID_RETRIEVAL_MODE;
+  candidate_source: "wiki_index_v2";
   index_path: string;
   index_record_count: number;
   candidate_record_count: number;
@@ -75,6 +76,32 @@ type CandidateSelection = {
   matchingTerms: string[];
 };
 
+const QUERY_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "of",
+  "on",
+  "or",
+  "should",
+  "the",
+  "to",
+  "what",
+  "when",
+  "why",
+  "with",
+]);
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -86,7 +113,7 @@ function tokenizeForIndex(value: string): string[] {
         .toLowerCase()
         .split(/[^\p{L}\p{N}_-]+/u)
         .map((term) => term.trim())
-        .filter((term) => term.length >= 2),
+        .filter((term) => term.length >= 2 && !QUERY_STOPWORDS.has(term)),
     ),
   );
 }
@@ -425,12 +452,13 @@ export async function queryIndexedWiki(
   const index = await ensureWikiIndex(dataRoot);
   const candidateLimit = Math.max(limit * 25, 100);
   const candidates = selectCandidates(index, query, candidateLimit);
-  const ranked = rankRecords(candidates.records, query, { includeExcerpt: true }).slice(0, limit);
+  const ranked = rankRecordsHybridV2(candidates.records, query, { limit });
   return {
     records: candidates.records,
     ranked,
     stats: {
-      retrieval_mode: "wiki_index_v0",
+      retrieval_mode: HYBRID_RETRIEVAL_MODE,
+      candidate_source: "wiki_index_v2",
       index_path: WIKI_INDEX_RELATIVE_PATH,
       index_record_count: index.record_count,
       candidate_record_count: candidates.records.length,
@@ -446,16 +474,17 @@ export async function getIndexedPackItems(
   limit: number,
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: IndexedRetrievalStats }> {
   const index = await ensureWikiIndex(dataRoot);
-  const candidateLimit = Math.max(limit * 25, 100);
+  const candidateLimit = Math.min(index.record_count, Math.max(limit * 200, 1000));
   const candidates = selectCandidates(index, question, candidateLimit);
   const recentTasks = await collectRecentTaskRecords(dataRoot, 10);
   const records = [...candidates.records, ...recentTasks];
-  const ranked = rankRecords(records, question).slice(0, limit);
+  const ranked = rankRecordsHybridV2(records, question, { limit });
   return {
     records,
     ranked,
     stats: {
-      retrieval_mode: "wiki_index_v0",
+      retrieval_mode: HYBRID_RETRIEVAL_MODE,
+      candidate_source: "wiki_index_v2",
       index_path: WIKI_INDEX_RELATIVE_PATH,
       index_record_count: index.record_count,
       candidate_record_count: records.length,

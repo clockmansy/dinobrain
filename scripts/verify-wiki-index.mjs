@@ -105,7 +105,8 @@ assert(
 
 const pack = await getIndexedPackItems(dataRoot, "Why should DinoBrain use an Obsidian graph index for LLM Wiki speed?", 5);
 assert(pack.ranked.some((record) => record.path === "20_Wiki/Graph-Speed-Target.md"), "indexed Context Pack missed target record");
-assert(pack.stats.retrieval_mode === "wiki_index_v0", "Context Pack did not report index retrieval mode");
+assert(pack.stats.retrieval_mode === "hybrid_contextual_v2", "Context Pack did not report hybrid retrieval mode");
+assert(pack.stats.candidate_source === "wiki_index_v2", "Context Pack did not report wiki index candidate source");
 
 const invalidated = await invalidateWikiIndex(dataRoot);
 assert(invalidated === true, "wiki index was not invalidated");
