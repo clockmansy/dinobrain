@@ -1,4 +1,4 @@
-﻿# DinoBrain Verification
+# DinoBrain Verification
 
 Date: 2026-07-01
 
@@ -26,7 +26,7 @@ npm run verify:os
 npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:win
-npm run release:win -- -Tag v2.2.0 -ReplaceAsset
+npm run release:win -- -Tag v2.2.1 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.

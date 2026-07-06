@@ -1,4 +1,4 @@
-﻿import { spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -98,7 +98,7 @@ spawnSync("git", ["config", "user.name", "DinoBrain Smoke"], { cwd: tempDataRoot
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "2.2.0",
+  version: "2.2.1",
 });
 
 const transport = new StdioClientTransport({

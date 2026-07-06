@@ -1,4 +1,4 @@
-export const DINOBRAIN_OS_VERSION = "2.2.0";
+export const DINOBRAIN_OS_VERSION = "2.2.1";
 export const DINOBRAIN_OS_CONTRACT = "dinobrain_os_v2";
 
 export type GateLevel = "pass" | "warn" | "block";

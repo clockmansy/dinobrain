@@ -118,6 +118,25 @@ try {
       throw "DinoBrain MCP env missing: $envName"
     }
   }
+  Assert-DinoBrainNoBareCarriageReturnFile -Path $configPath
+
+  $malformedConfigPath = Join-Path $temp "malformed-config.toml"
+  $cr = [string][char]13
+  $lf = [string][char]10
+  $malformedConfig = "[features]$cr$cr$lf" + "hooks = false$cr" + "js_repl = false$lf"
+  [System.IO.File]::WriteAllText($malformedConfigPath, $malformedConfig, [System.Text.UTF8Encoding]::new($false))
+  Set-DinoBrainCodexConfig `
+    -ConfigPath $malformedConfigPath `
+    -NodeExe (Join-Path $temp "node.exe") `
+    -ServerEntry (Join-Path $temp "dinobrain\dist\index.js") `
+    -VaultPath (Join-Path $temp "dinobrain-data") `
+    -EnableHooks
+  Assert-DinoBrainNoBareCarriageReturnFile -Path $malformedConfigPath
+  $malformedConfigText = [System.IO.File]::ReadAllText($malformedConfigPath)
+  Assert-DinoBrainCodexConfigTomlShape -Text $malformedConfigText -ConfigPath $malformedConfigPath
+  if ($malformedConfigText -match "`r(?!`n)") {
+    throw "Malformed config rewrite left a bare carriage return"
+  }
 
   $handshakeApp = Join-Path $temp "handshake-app"
   $handshakeScripts = Join-Path $handshakeApp "scripts"

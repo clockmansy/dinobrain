@@ -1,4 +1,4 @@
-﻿import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -247,7 +247,7 @@ function verifyCodexHookBridge(dataRoot) {
 }
 
 async function withClient(dataRoot, callback) {
-  const client = new Client({ name: "dinobrain-flow-audit", version: "2.2.0" });
+  const client = new Client({ name: "dinobrain-flow-audit", version: "2.2.1" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

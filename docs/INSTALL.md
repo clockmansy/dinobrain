@@ -1,4 +1,4 @@
-﻿# DinoBrain Install
+# DinoBrain Install
 
 Date: 2026-07-01
 
@@ -101,7 +101,7 @@ Set a token with permission to create releases and upload release assets, then r
 
 ```powershell
 $env:GITHUB_TOKEN="<token-with-repo-release-access>"
-npm run release:win -- -Tag v2.2.0 -ReplaceAsset
+npm run release:win -- -Tag v2.2.1 -ReplaceAsset
 ```
 
 This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrainSetup.zip`, writes `artifacts\DinoBrainSetup.zip.sha256`, creates or reuses the GitHub release for the tag, deletes old matching assets when `-ReplaceAsset` is passed, and uploads the ZIP plus SHA256 file. The upload follows GitHub's release asset API: create or retrieve the release, then upload raw binary data to the release `upload_url`.
@@ -140,6 +140,8 @@ C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
 ```
 
 Because this is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The installer also makes sure `[features] hooks = true` is present in `C:\Users\<you>\.codex\config.toml` when hook registration is enabled. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
+
+The Codex config writer normalizes line endings to CRLF, rejects bare carriage return bytes after writing, and validates the DinoBrain TOML block before reporting success. This prevents hidden `\r` bytes in `config.toml` from breaking Codex startup.
 
 9. Runs a Codex hook handshake.
 

@@ -342,7 +342,7 @@ async function readOsV2Status() {
   const failClosed = latestGate?.fail_closed === true;
   const status = failClosed ? "blocked" : latestGate ? String(latestGate.status ?? "ready") : "pending";
   return {
-    version: "2.2.0",
+    version: "2.2.1",
     status,
     fail_closed: failClosed,
     latest_gate: latestGate,

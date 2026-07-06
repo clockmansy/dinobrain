@@ -388,6 +388,66 @@ function ConvertTo-PowerShellSingleQuotedString {
   return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function ConvertTo-DinoBrainCrLfText {
+  param([AllowEmptyString()][AllowNull()][string]$Text)
+  if ($null -eq $Text) { return "" }
+  $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+  return $normalized.Replace("`n", "`r`n")
+}
+
+function Assert-DinoBrainNoBareCarriageReturn {
+  param(
+    [Parameter(Mandatory = $true)][string]$Text,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $match = [regex]::Match($Text, "`r(?!`n)")
+  if ($match.Success) {
+    throw "$Label contains a carriage return that is not followed by a newline at character offset $($match.Index)."
+  }
+}
+
+function Assert-DinoBrainNoBareCarriageReturnFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  for ($i = 0; $i -lt $bytes.Length; $i++) {
+    if ($bytes[$i] -eq 13) {
+      if ($i + 1 -ge $bytes.Length -or $bytes[$i + 1] -ne 10) {
+        throw "Codex config contains a bare carriage return byte at offset $i`: $Path"
+      }
+    }
+  }
+}
+
+function Assert-DinoBrainCodexConfigTomlShape {
+  param(
+    [Parameter(Mandatory = $true)][string]$Text,
+    [Parameter(Mandatory = $true)][string]$ConfigPath
+  )
+
+  Assert-DinoBrainNoBareCarriageReturn -Text $Text -Label $ConfigPath
+  $normalized = ConvertTo-DinoBrainCrLfText $Text
+  $requiredPatterns = @(
+    "(?m)^\[mcp_servers\.dinobrain\]\r?$",
+    "(?m)^args\s*=\s*\[.+\]\r?$",
+    "(?m)^command\s*=\s*(['""]).+\1\r?$",
+    "(?m)^startup_timeout_sec\s*=\s*120\r?$",
+    "(?m)^\[mcp_servers\.dinobrain\.env\]\r?$",
+    "(?m)^DINOBRAIN_DATA_DIR\s*=\s*(['""]).+\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_GROWTH\s*=\s*(['""])1\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_COMPOUND\s*=\s*(['""])1\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_SYNC\s*=\s*(['""])1\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL\s*=\s*(['""])1\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_SYNC_PUSH\s*=\s*(['""])1\1\r?$"
+  )
+  foreach ($pattern in $requiredPatterns) {
+    if ($normalized -notmatch $pattern) {
+      throw "Codex config TOML validation failed for DinoBrain block. Missing or malformed pattern: $pattern"
+    }
+  }
+}
+
 function Remove-TomlSection {
   param(
     [AllowEmptyString()][string]$Text,
@@ -459,7 +519,7 @@ function Set-DinoBrainCodexConfig {
   $content = ""
   $backupPath = $null
   if (Test-Path -LiteralPath $ConfigPath) {
-    $content = [System.IO.File]::ReadAllText($ConfigPath)
+    $content = ConvertTo-DinoBrainCrLfText ([System.IO.File]::ReadAllText($ConfigPath))
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $backupPath = "$ConfigPath.bak-dinobrain-$stamp"
     Copy-Item -LiteralPath $ConfigPath -Destination $backupPath
@@ -491,7 +551,11 @@ function Set-DinoBrainCodexConfig {
   ) -join "`r`n"
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($ConfigPath, $content + $block, $utf8NoBom)
+  $finalContent = ConvertTo-DinoBrainCrLfText ($content + $block)
+  Assert-DinoBrainCodexConfigTomlShape -Text $finalContent -ConfigPath $ConfigPath
+  [System.IO.File]::WriteAllText($ConfigPath, $finalContent, $utf8NoBom)
+  Assert-DinoBrainNoBareCarriageReturnFile -Path $ConfigPath
+  Assert-DinoBrainCodexConfigTomlShape -Text ([System.IO.File]::ReadAllText($ConfigPath)) -ConfigPath $ConfigPath
   if ($backupPath) {
     Write-Host "Codex config backup: $backupPath"
   }

@@ -92,7 +92,7 @@ json(path.join(dataRoot, "50_Instances", "accepted", "duplicate-behavior-rule.js
   tags: ["behavior-rule"],
 });
 
-const client = new Client({ name: "dinobrain-compounding-verify", version: "2.2.0" });
+const client = new Client({ name: "dinobrain-compounding-verify", version: "2.2.1" });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
