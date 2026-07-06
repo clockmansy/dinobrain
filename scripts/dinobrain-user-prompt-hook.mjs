@@ -130,7 +130,7 @@ function redactPrompt(prompt) {
     return "Bearer [REDACTED_TOKEN]";
   });
 
-  text = text.replace(/\b(api[_-]?key|secret|token|password|session|sessionid|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
+  text = text.replace(/\b(api[_-]?key|secret|token|password|session[_-]?id|session[_-]?token|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
     redactions.push(`${String(key).toLowerCase()}_assignment`);
     return `${key}: [REDACTED]`;
   });

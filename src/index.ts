@@ -366,7 +366,7 @@ async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
       ["github_token_shape", /(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})/],
       ["aws_access_key_shape", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
       ["jwt_shape", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
-      ["cookie_assignment", /(session|sessionid|cookie)\s*[:=]/i],
+      ["cookie_assignment", /(session[_-]?id|session[_-]?token|cookie)\s*[:=]/i],
     ];
     const hits: SensitivityHit[] = [];
     const lines = text.split(/\r?\n/);
@@ -641,7 +641,7 @@ function redactSensitiveText(value: string): { text: string; redactions: string[
     redactions.push("bearer_token");
     return "Bearer [REDACTED_TOKEN]";
   });
-  text = text.replace(/\b(api[_-]?key|secret|token|password|session|sessionid|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
+  text = text.replace(/\b(api[_-]?key|secret|token|password|session[_-]?id|session[_-]?token|cookie)\s*[:=]\s*(['"]?)([^\s"',;]+)/gi, (_match, key) => {
     redactions.push(`${String(key).toLowerCase()}_assignment`);
     return `${key}: [REDACTED]`;
   });

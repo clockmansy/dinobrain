@@ -160,7 +160,7 @@ const sensitivePatterns = [
   { id: "jwt_shape", pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   {
     id: "credential_assignment",
-    pattern: /\b(api[_-]?key|secret|token|password|sessionid|session|cookie|refresh[_-]?token)\s*[:=]\s*["']?[^"'\s,;}]{8,}/gi,
+    pattern: /\b(api[_-]?key|secret|token|password|session[_-]?id|session[_-]?token|cookie|refresh[_-]?token)\s*[:=]\s*["']?[^"'\s,;}]{8,}/gi,
   },
 ];
 

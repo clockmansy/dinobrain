@@ -57,7 +57,7 @@ const SENSITIVITY_PATTERNS: Array<[string, RegExp]> = [
   ["github_token_shape", /(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})/],
   ["aws_access_key_shape", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
   ["jwt_shape", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
-  ["cookie_assignment", /(session|sessionid|cookie)\s*[:=]/i],
+  ["cookie_assignment", /(session[_-]?id|session[_-]?token|cookie)\s*[:=]/i],
   ["korean_password", /\uBE44\uBC00\uBC88\uD638/],
   ["korean_token", /\uD1A0\uD070/],
   ["korean_secret", /\uC2DC\uD06C\uB9BF/],

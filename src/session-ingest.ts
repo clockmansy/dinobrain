@@ -224,7 +224,7 @@ export function redactSensitiveText(input: string): { text: string; hits: Redact
   apply("bearer_token", /\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, "Bearer [REDACTED_TOKEN]");
   apply(
     "secret_assignment",
-    /\b(api[_-]?key|secret|token|password|session|sessionid|cookie)\s*[:=]\s*["']?[^"'\s,;}]+/gi,
+    /\b(api[_-]?key|secret|token|password|session[_-]?id|session[_-]?token|cookie)\s*[:=]\s*["']?[^"'\s,;}]+/gi,
     (_match, name: string) => `${name}=[REDACTED_SECRET]`,
   );
 
