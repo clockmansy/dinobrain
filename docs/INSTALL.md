@@ -10,7 +10,7 @@ The installer is idempotent. Running it again updates existing repos, reinstalls
 
 - Windows PowerShell 5.1 or newer
 - `git` on `PATH`
-- GitHub access to both private repos:
+- GitHub access to both repos. Public repos need ordinary network access; private repos require credentials with read permission:
   - `clockmansy/dinobrain`
   - `clockmansy/dinobrain-data`
 - Codex installed or a writable Codex config path at:

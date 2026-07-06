@@ -16,7 +16,9 @@ The verification target has two parts:
 npm run build
 npm run check
 npm run smoke
+npm run sources:rag:seed
 npm run session:verify
+npm run safety:public-data
 npm run eval:context
 npm run index:verify:sqlite
 npm run index:verify:operations
@@ -154,6 +156,31 @@ It verifies:
 - hot/warm/cold labels are present
 - raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`
 - `git_sync` blocks raw archives and marks candidates/review records as conditional
+
+### Public Data Safety
+
+`npm run safety:public-data` scans the real configured data vault and writes a public-safety report under `60_Operations/public-data-safety`.
+
+It verifies:
+
+- tracked local-only paths such as `10_Conversations/raw` are blocked
+- obvious secret, token, credential, private-key, and raw transcript markers are not present in public tracked data
+- accepted memories, tasks, traces, Context Packs, events, gates, audits, and operations records are included in the scan scope
+- candidate and review queue records are not present in the default Wiki index
+- app documentation does not claim the data repo is private when GitHub reports it as public
+- matched secret values are not printed in the report
+
+### RAG Source Anchor Seeding
+
+`npm run sources:rag:seed` records user-provided RAG methodology URLs as
+anchor-only source candidates in the real data vault. It writes a catalog under
+`20_Wiki`, source chunk records under `30_Sources/chunks`, and provenance links
+under `.dino/provenance`.
+
+It does not claim the external pages were read or verified. Every seeded source
+record uses `verification_status: anchor_only_unverified`, so later source-truth
+work must fetch bounded chunks, link concrete claims, and pass review before
+using the source as factual support.
 
 ### Memory Use Audit
 

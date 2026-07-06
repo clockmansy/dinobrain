@@ -7,7 +7,21 @@ Status: Phase 1 foundation
 
 Sync only data that is safe, useful, and intended to be durable.
 
-GitHub is used as a private sync server for curated DinoBrain data. It is not a raw dump of personal files, browser history, conversation transcripts, secrets, or machine-local state.
+GitHub is used as the durable sync and recovery remote for curated DinoBrain data. The remote may be private or public, so the default sync posture treats data as public-safe unless a stricter local policy is configured. It is not a raw dump of personal files, browser history, conversation transcripts, secrets, or machine-local state.
+
+## Public Visibility Rule
+
+If the data remote is public, or if visibility cannot be verified, synced records must be safe to expose publicly. Public-safe means:
+
+- no raw full conversations
+- no raw personal files or private attachments
+- no secrets, tokens, credentials, cookies, or private keys
+- no machine-local caches
+- no tracked local-only paths such as `10_Conversations/raw`
+- no candidate or review queue records in the default Wiki index
+- no documentation that claims the data remote is private when GitHub reports it as public
+
+Run `npm run safety:public-data` from the app repo to generate the current safety report under `60_Operations/public-data-safety`.
 
 ## Always Syncable After Review
 
@@ -51,9 +65,9 @@ These data types are local-only unless the plan is explicitly changed:
 - `.dino/local.json`
 - `10_Conversations/raw`
 
-## `git_sync` MVP Behavior
+## `git_sync` And `auto_sync` Behavior
 
-In Phase 6, `git_sync` is dry-run only.
+`git_sync` is the dry-run classifier. It reports what would be safe, conditional, or blocked without committing.
 
 It must report:
 
@@ -64,7 +78,7 @@ It must report:
 - per-file recommended action
 - whether manual approval is required
 
-It must not commit or push until manual approval is added in a later phase.
+`auto_sync` is the bounded writer. It may commit and push only policy-approved records after sensitivity scanning and path classification. It must skip blocked local-only records and report skipped paths.
 
 Required dry-run fields:
 
@@ -73,6 +87,19 @@ Required dry-run fields:
 - `would_push: false`
 - `manual_approval_required: true`
 - `commit_allowed_by_tool: false`
+
+## Public Data Safety Report
+
+The public-data safety report is stricter than a minimal token scan. It scans tracked accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, indexes, and source/provenance records. It also classifies local untracked records so blocked local-only material is visible before a future sync.
+
+The report is written to:
+
+```text
+60_Operations/public-data-safety/public-data-safety-report.json
+60_Operations/public-data-safety/public-data-safety-report.md
+```
+
+The report stores only relative paths, finding ids, pattern names, line numbers, counts, and GitHub visibility metadata. It does not print matched secret values.
 
 ## Commit Rule
 

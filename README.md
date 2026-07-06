@@ -11,7 +11,7 @@ This repository contains the app side of DinoBrain:
 - trace console
 - tests and evaluation harness
 
-The data vault lives in a separate private repository:
+The data vault lives in a separate repository. It may be private or public, so DinoBrain treats synced data as public-safe unless a stricter local policy is configured:
 
 - `clockmansy/dinobrain-data`
 
@@ -42,7 +42,7 @@ The current verification focus is proving that the system behaves like a compoun
 | Repository | Purpose |
 | --- | --- |
 | `dinobrain` | App, MCP server, policies, tests, trace console |
-| `dinobrain-data` | Private data vault, wiki, sources, project records, instances |
+| `dinobrain-data` | Data vault, wiki, sources, project records, instances, and policy-approved operations records |
 
 ## Key Documents
 
@@ -103,7 +103,7 @@ Update, reinstall, and uninstall entrypoints:
 .\uninstall.ps1
 ```
 
-See `docs/INSTALL.md` for custom paths, private repo prerequisites, reinstall behavior, and removal flags.
+See `docs/INSTALL.md` for custom paths, repository access prerequisites, reinstall behavior, and removal flags.
 
 The installer configures Codex MCP, registers a user-level Codex prompt hook, starts the Codex hook approval helper, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
 
@@ -145,6 +145,7 @@ npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
 npm run session:verify
+npm run safety:public-data
 npm run hook:verify
 npm run verify:os
 npm run index:sqlite
