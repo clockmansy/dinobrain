@@ -451,6 +451,9 @@ async function main() {
     } else if (policy.classification === "unknown") {
       addFinding("warning", "unknown_untracked_present", relativePath, { policy: policy.policy });
     }
+    if (pathExists(relativePath)) {
+      scanFile(relativePath, false);
+    }
   }
 
   const indexExclusion = checkIndexExclusions();

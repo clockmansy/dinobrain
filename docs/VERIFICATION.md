@@ -18,6 +18,7 @@ npm run check
 npm run smoke
 npm run sources:rag:seed
 npm run session:verify
+npm run session:promote
 npm run safety:public-data
 npm run eval:context
 npm run index:verify:sqlite
@@ -157,6 +158,21 @@ It verifies:
 - raw archives, candidates, and review queue records are excluded from `wiki_search` and `get_context_pack`
 - `git_sync` blocks raw archives and marks candidates/review records as conditional
 
+### Session Knowledge Promotion
+
+`npm run session:promote` performs the next knowledge-compounding step on the
+real local Codex session history. It converts repeated session patterns into
+accepted behavior/preference/decision memories and matching review records.
+
+It verifies by construction:
+
+- raw full transcripts are not stored
+- message content is not stored
+- evidence uses session refs and redacted message hashes rather than raw text
+- promoted records link back to the metadata-only Codex Conversation Registry
+- generated memories enter `50_Instances/accepted` so they can be indexed and
+  retrieved by later Context Packs
+
 ### Public Data Safety
 
 `npm run safety:public-data` scans the real configured data vault and writes a public-safety report under `60_Operations/public-data-safety`.
@@ -165,7 +181,7 @@ It verifies:
 
 - tracked local-only paths such as `10_Conversations/raw` are blocked
 - obvious secret, token, credential, private-key, and raw transcript markers are not present in public tracked data
-- accepted memories, tasks, traces, Context Packs, events, gates, audits, and operations records are included in the scan scope
+- accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, and currently untracked sync candidates are included in the scan scope
 - candidate and review queue records are not present in the default Wiki index
 - app documentation does not claim the data repo is private when GitHub reports it as public
 - matched secret values are not printed in the report

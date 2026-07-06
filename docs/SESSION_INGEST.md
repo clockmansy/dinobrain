@@ -83,6 +83,32 @@ Temperature labels:
 - `warm`: how-to notes, fix notes, general project decisions
 - `cold`: ideas and raw session archives
 
+## Aggregate Promotion From Local Codex Sessions
+
+`npm run session:promote` is the reviewed promotion pass after the metadata-only
+registry exists. It reads local Codex JSONL sessions, but it does not write raw
+message text, previews, or absolute session paths to the data vault.
+
+It writes:
+
+- `20_Wiki/Codex-Session-Knowledge-Profile.md`
+- `50_Instances/accepted/codex-session-knowledge-*.json`
+- `80_Review_Queue/session-knowledge/codex-session-knowledge-*.json`
+- `60_Operations/session-promotions/codex-session-knowledge-promotion.json`
+- `60_Operations/session-promotions/codex-session-knowledge-promotion.md`
+
+The evidence stored in accepted memory is limited to:
+
+- session refs derived from hashes
+- redacted message hashes
+- role, count, category, and score metadata
+- matched pattern names
+- links back to the metadata-only registry and promotion report
+
+The promoted memory is internal behavior and preference memory. It is not
+external source truth. Current user instructions still outrank promoted memory,
+and stale or overbroad memories should be edited, merged, held, or quarantined.
+
 ## Retrieval Boundary
 
 Before review, imported records remain outside default retrieval:
@@ -96,6 +122,7 @@ Before review, imported records remain outside default retrieval:
 ```powershell
 npm run build
 npm run session:verify
+npm run session:promote
 ```
 
 The verifier proves:

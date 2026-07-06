@@ -90,7 +90,7 @@ Required dry-run fields:
 
 ## Public Data Safety Report
 
-The public-data safety report is stricter than a minimal token scan. It scans tracked accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, indexes, and source/provenance records. It also classifies local untracked records so blocked local-only material is visible before a future sync.
+The public-data safety report is stricter than a minimal token scan. It scans tracked accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, indexes, source/provenance records, and currently untracked candidate sync records. It classifies local untracked records so blocked local-only material is visible before a future sync.
 
 The report is written to:
 
