@@ -1,0 +1,86 @@
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href;
+const {
+  buildAndWriteFullMemoryAudit,
+  FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
+  FULL_MEMORY_MANIFEST_RELATIVE_PATH,
+} = await import(modulePath);
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function json(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function text(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, value, "utf8");
+}
+
+async function main() {
+  const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-full-memory-audit-"));
+  try {
+    text(
+      path.join(dataRoot, "20_Wiki", "Stable.md"),
+      `---
+title: Stable
+summary: Stable memory record
+---
+
+# Stable
+`,
+    );
+    json(path.join(dataRoot, "50_Instances", "accepted", "stable.json"), {
+      candidate_id: "stable",
+      claim: "Full-memory audit should hash accepted memory.",
+      source_paths: ["20_Wiki/Stable.md"],
+      evidence: { snippet: "Stable source exists." },
+      confidence: "high",
+      last_verified: "2026-07-07",
+    });
+
+    let result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "baseline_created", `expected baseline_created, got ${result.report.status}`);
+    assert(existsSync(path.join(dataRoot, FULL_MEMORY_MANIFEST_RELATIVE_PATH)), "manifest missing");
+    assert(existsSync(path.join(dataRoot, FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH)), "status missing");
+    assert(result.manifest.entries.some((entry) => entry.path === "20_Wiki/Stable.md"), "stable wiki path not audited");
+
+    text(path.join(dataRoot, ".dino", "events", "2026-07-07.jsonl"), `${JSON.stringify({ event: "task_started" })}\n`);
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "drift_classified", `expected classified drift, got ${result.report.status}`);
+    assert(result.report.counts.unclassified_drift === 0, "live OS write was treated as unclassified");
+    assert(result.report.drift.by_class.live_os_write > 0, "live OS drift class missing");
+    assert(result.report.drift.by_class.audit_artifact > 0, "audit artifact drift class missing");
+
+    text(path.join(dataRoot, "20_Wiki", "New-Decision.md"), "# New Decision\n\nThis is unclassified content drift.\n");
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);
+    assert(result.report.counts.unclassified_drift > 0, "content drift was not counted as unclassified");
+
+    text(path.join(dataRoot, ".dino", "events", "bad.jsonl"), "{bad json}\n");
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "parse_error", `expected parse_error, got ${result.report.status}`);
+    assert(result.report.parse_errors.some((entry) => entry.path === ".dino/events/bad.jsonl"), "parse error path missing");
+
+    const persisted = JSON.parse(readFileSync(path.join(dataRoot, FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH), "utf8"));
+    assert(persisted.manifest_sha256 && persisted.manifest_sha256.length === 64, "manifest sha missing");
+
+    console.log("full memory audit verification ok");
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  console.error(`cwd=${root}`);
+  process.exit(1);
+});

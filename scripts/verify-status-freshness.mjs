@@ -1,0 +1,121 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAndWriteOperationsIndex }, {
+  buildAndWriteStatusFreshness,
+  buildStatusFreshness,
+  MONITORING_STATUS_RELATIVE_PATH,
+}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }] = await Promise.all([
+  import(pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "graph-health.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "operations-index.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "status-freshness.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "sqlite-shards.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "wiki-index.js")).href),
+]);
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function json(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function text(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, value, "utf8");
+}
+
+async function seedVault(dataRoot) {
+  text(
+    path.join(dataRoot, "20_Wiki", "Freshness.md"),
+    `---
+title: Freshness
+summary: Status artifacts must not be older than their source data.
+tags: [freshness]
+---
+
+# Freshness
+`,
+  );
+  json(path.join(dataRoot, "50_Instances", "accepted", "freshness.json"), {
+    candidate_id: "freshness",
+    claim: "Status freshness reports stale proof artifacts.",
+    source_paths: ["20_Wiki/Freshness.md"],
+    evidence: { snippet: "Freshness source exists." },
+    confidence: "high",
+    last_verified: "2026-07-07",
+  });
+  json(path.join(dataRoot, ".dino", "tasks", "task-freshness.json"), {
+    task_id: "task-freshness",
+    status: "completed",
+    request: "Verify status freshness.",
+    created_at: "2026-07-07T00:00:00.000Z",
+    updated_at: "2026-07-07T00:00:00.000Z",
+  });
+  json(path.join(dataRoot, ".dino", "traces", "task-freshness.json"), {
+    task_id: "task-freshness",
+    outcome: "completed",
+    summary: "Trace fixture.",
+    finished_at: "2026-07-07T00:01:00.000Z",
+  });
+  text(path.join(dataRoot, ".dino", "events", "2026-07-07.jsonl"), `${JSON.stringify({ event: "task_finished" })}\n`);
+}
+
+async function refreshAllRequiredArtifacts(dataRoot) {
+  await buildAndWriteWikiIndex(dataRoot);
+  await buildAndWriteOperationsIndex(dataRoot);
+  await buildAndWriteSqliteShards(dataRoot);
+  await buildAndWriteGraphHealth(dataRoot);
+  await buildAndWriteFullMemoryAudit(dataRoot);
+}
+
+async function main() {
+  const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-status-freshness-"));
+  const missingRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-status-freshness-missing-"));
+  try {
+    await seedVault(dataRoot);
+    await refreshAllRequiredArtifacts(dataRoot);
+    let status = await buildStatusFreshness(dataRoot, { staleAfterMs: 0 });
+    assert(status.status === "healthy", `expected healthy freshness, got ${status.status}`);
+    assert(status.counts.missing === 0, "fresh vault should not have missing required artifacts");
+    assert(status.checks.every((check) => check.visible_status), "visible status labels missing");
+
+    const written = await buildAndWriteStatusFreshness(dataRoot, { staleAfterMs: 0 });
+    assert(
+      written.path.replace(/\\/g, "/").endsWith(MONITORING_STATUS_RELATIVE_PATH),
+      "monitoring status path mismatch",
+    );
+
+    const future = new Date(Date.now() + 60_000);
+    text(path.join(dataRoot, "20_Wiki", "Freshness-Update.md"), "# Freshness Update\n");
+    await import("node:fs").then(({ utimesSync }) => {
+      utimesSync(path.join(dataRoot, "20_Wiki", "Freshness-Update.md"), future, future);
+    });
+    status = await buildStatusFreshness(dataRoot, { staleAfterMs: 0 });
+    assert(status.status === "needs_refresh", `expected needs_refresh after source change, got ${status.status}`);
+    assert(status.checks.some((check) => check.status === "stale"), "stale check missing after source change");
+
+    await seedVault(missingRoot);
+    status = await buildStatusFreshness(missingRoot, { staleAfterMs: 0 });
+    assert(status.status === "degraded", `expected degraded with missing artifacts, got ${status.status}`);
+    assert(status.counts.required_missing > 0, "missing required artifact count not reported");
+
+    console.log("status freshness verification ok");
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+    rmSync(missingRoot, { recursive: true, force: true });
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  console.error(`cwd=${root}`);
+  process.exit(1);
+});

@@ -16,6 +16,10 @@ The verification target has two parts:
 npm run build
 npm run check
 npm run smoke
+npm run audit:full-memory
+npm run audit:full-memory:verify
+npm run status:freshness
+npm run status:freshness:verify
 npm run sources:rag:seed
 npm run session:verify
 npm run session:promote
@@ -40,6 +44,14 @@ npm run release:win -- -Tag v2.2.1 -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
+
+`npm run audit:full-memory` writes `.dino/state/full_memory_manifest.json` and `.dino/state/full_memory_audit_status.json`. The manifest records every non-Git data-vault file by path, byte size, SHA-256, mtime, and parse status. The status report compares against the previous manifest and classifies drift as live OS writes, review-queue writes, audit artifacts, or unclassified content drift. Unclassified drift and parse errors must block final readiness.
+
+`npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
+
+`npm run status:freshness` writes `.dino/state/monitoring_status.json`. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, and graph-health artifact are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
+
+`npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
 
 `npm run installer:win` builds `artifacts\DinoBrainSetup.exe` and verifies that the generated EXE can extract the embedded `install.ps1`.
 

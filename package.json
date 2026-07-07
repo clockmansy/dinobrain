@@ -9,8 +9,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "audit:full-memory": "node dist/build-full-memory-audit.js",
+    "audit:full-memory:verify": "node scripts/verify-full-memory-audit.mjs",
     "flow:audit": "node scripts/audit-user-flow.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
+    "status:freshness": "node dist/build-status-freshness.js",
+    "status:freshness:verify": "node scripts/verify-status-freshness.mjs",
     "eval:context": "node dist/evaluate-context.js",
     "eval:behavior": "node dist/evaluate-behavior.js",
     "graph:health": "node dist/build-graph-health.js",
