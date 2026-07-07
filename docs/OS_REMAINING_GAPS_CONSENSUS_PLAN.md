@@ -1,9 +1,16 @@
 # DinoBrain OS Remaining Gaps Consensus Plan
 
-Status: consensus-approved completion contract; remaining implementation gates still open
+Status: superseded historical consensus draft
 Date: 2026-07-07
 Target: DinoBrain OS v2.2.x completion hardening
-Governing document: `docs/OS_COMPLETION_CONDITIONS.md`
+Governing document: `docs/OS_UNFINISHED_IMPROVEMENT_REVIEW_20260708.md`
+
+Superseded note: this draft is preserved as historical context. The current
+ten-agent accepted remaining-work contract is
+`docs/OS_UNFINISHED_IMPROVEMENT_REVIEW_20260708.md`, which adds the later
+false-green blockers for dynamic live semantic retrieval, factual project and
+accepted-instance source lineage, behavior-trigger coverage, review backlog,
+active task buildup, and compounding lifecycle pressure.
 
 ## Final Target
 
