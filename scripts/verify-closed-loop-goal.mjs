@@ -108,6 +108,30 @@ function hasClosedLoopEvidence(check) {
   );
 }
 
+function nextActionFor(requirementEvidence) {
+  const blocker = requirementEvidence.find((item) => !item.ok)?.blocker;
+  switch (blocker) {
+    case undefined:
+      return "Goal evidence is complete. It is now safe to mark the goal complete after reviewing this report.";
+    case "stale_codex_processes":
+      return "Run npm run codex:hooks:approval so Codex reloads hooks, then run npm run codex:live-proof, approve the DinoBrain hook in /hooks if prompted, paste the proof prompt into a fresh Codex Desktop thread, and rerun npm run verify:goal.";
+    case "current_codex_thread_stale_for_hooks":
+      return "The current Codex thread predates hooks.json. Run npm run codex:live-proof, paste the copied proof prompt into a newly created Codex Desktop thread, wait for the proof window to pass, then rerun npm run verify:goal.";
+    case "user_prompt_hook_not_registered":
+    case "codex_hooks_runtime_not_enabled":
+      return "Run the DinoBrain installer or npm run codex:hooks:diagnose, fix the hook registration/runtime failure, then rerun npm run verify:goal.";
+    case "stale_dinobrain_mcp_processes":
+      return "Run npm run codex:hooks:approval so stale DinoBrain MCP processes are restarted, then rerun npm run verify:goal.";
+    case "missing_live_codex_desktop_prompt_event":
+      return "Run npm run codex:live-proof, approve the DinoBrain hook in /hooks if prompted, paste the proof prompt into a fresh Codex Desktop thread, then rerun npm run verify:goal.";
+    case "missing_live_preflight_completion_event":
+    case "missing_live_hook_report":
+      return "Inspect the latest reports/live-hooks output and .dino/events entries for the proof prompt, fix the hook completion/reporting path, then rerun npm run verify:goal.";
+    default:
+      return "Fix the failed requirement, then rerun npm run verify:goal.";
+  }
+}
+
 function main() {
   const node = process.execPath;
   const checks = [
@@ -209,11 +233,7 @@ function main() {
       "Any Codex session must run DinoBrain pre-response, expose memory context, perform work, grow knowledge, and push policy-approved GitHub data.",
     checks,
     requirements: requirementEvidence,
-    next_action: ok
-      ? "Goal evidence is complete. It is now safe to mark the goal complete after reviewing this report."
-      : requirementEvidence.find((item) => !item.ok)?.blocker === "stale_codex_processes"
-        ? "Run npm run codex:live-proof, trust the DinoBrain hook in /hooks if prompted, paste the proof prompt into a fresh Codex thread, then rerun npm run verify:goal."
-        : "Fix the failed requirement, then rerun npm run verify:goal.",
+    next_action: nextActionFor(requirementEvidence),
   };
   console.log(JSON.stringify(report, null, 2));
   if (!ok) process.exit(1);

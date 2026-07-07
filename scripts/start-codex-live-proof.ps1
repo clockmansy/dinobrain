@@ -7,7 +7,7 @@ param(
   [string]$ConfigPath = "",
   [string]$NodeExe = "",
   [string]$Snippet = "",
-  [int]$TimeoutSeconds = 600,
+  [int]$TimeoutSeconds = 3600,
   [int]$PollSeconds = 5,
   [switch]$Detached,
   [switch]$SkipApproval,

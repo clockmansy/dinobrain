@@ -74,7 +74,8 @@ Codex process is stale.
 The live-proof helper then opens a separate proof window, copies a unique proof
 prompt, and keeps polling the real live verifier until a `codex_desktop`
 preflight event appears. The `npm run codex:live-proof` command itself returns
-after the proof window starts.
+after the proof window starts. By default the proof window waits up to one hour,
+so there is time to approve hooks and create the fresh proof thread.
 
 Use a fresh Codex Desktop thread for the proof. A long-running thread that was
 created before `hooks.json` changed can keep running without dispatching the new
