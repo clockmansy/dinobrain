@@ -30,8 +30,16 @@ try {
       Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo old","timeout":5}]}]}}'
     },
     @{
+      Name = "two-groups"
+      Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo first","timeout":5}]},{"hooks":[{"type":"command","command":"echo second","timeout":5}]}]}}'
+    },
+    @{
       Name = "single-object"
       Json = '{"hooks":{"UserPromptSubmit":{"hooks":[{"type":"command","command":"echo old","timeout":5}]}}}'
+    },
+    @{
+      Name = "mixed-dinobrain"
+      Json = '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo old","timeout":5},{"type":"command","command":"powershell dinobrain-user-prompt-hook.ps1","statusMessage":"Loading DinoBrain context"}]}]}}'
     },
     @{
       Name = "existing-dinobrain"
@@ -71,8 +79,24 @@ try {
     if ($dinoHookCount -ne 1) {
       throw "Unexpected DinoBrain hook count for case $($case.Name): $dinoHookCount"
     }
-    if (($case.Name -eq "array" -or $case.Name -eq "single-object") -and $text -notmatch "echo old") {
+    if (($case.Name -eq "array" -or $case.Name -eq "single-object" -or $case.Name -eq "mixed-dinobrain") -and $text -notmatch "echo old") {
       throw "Existing non-DinoBrain hook was not preserved for case $($case.Name)"
+    }
+    if ($case.Name -eq "two-groups") {
+      if ($groups.Count -ne 2) {
+        throw "Two existing UserPromptSubmit groups should remain two groups after merge"
+      }
+      $firstGroupText = $groups[0] | ConvertTo-Json -Depth 20 -Compress
+      $secondGroupText = $groups[1] | ConvertTo-Json -Depth 20 -Compress
+      if ($firstGroupText -notmatch "echo first" -or $firstGroupText -notmatch "dinobrain-user-prompt-hook\.ps1") {
+        throw "DinoBrain hook was not merged into the first existing UserPromptSubmit group"
+      }
+      if ($secondGroupText -notmatch "echo second" -or $secondGroupText -match "dinobrain-user-prompt-hook\.ps1") {
+        throw "DinoBrain hook should not be appended as a separate later group"
+      }
+    }
+    if ($case.Name -eq "mixed-dinobrain" -and $groups.Count -ne 1) {
+      throw "Mixed DinoBrain group should keep the non-Dino hook in the same first group"
     }
   }
 
@@ -93,6 +117,10 @@ try {
   }
   if ($claudeRaw -notmatch "echo claude-old") {
     throw "Existing Claude non-DinoBrain hook was not preserved"
+  }
+  $claudeFirstGroupText = $claudeGroups[0] | ConvertTo-Json -Depth 20 -Compress
+  if ($claudeFirstGroupText -notmatch "echo claude-old" -or $claudeFirstGroupText -notmatch "dinobrain-user-prompt-hook\.ps1") {
+    throw "Claude DinoBrain hook was not merged into the first existing UserPromptSubmit group"
   }
 
   $configPath = Join-Path $temp "config.toml"

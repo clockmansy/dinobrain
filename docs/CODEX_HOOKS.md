@@ -51,6 +51,7 @@ If both the user-level hook and project hook are trusted, the hook runtime uses 
 npm run build
 npm run hook:verify
 npm run verify:codex-loop
+npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 npm run observatory
 ```
@@ -93,6 +94,7 @@ Environment variables:
 
 - Codex must trust project hooks before the hook runs.
 - Codex must trust the user-level hook before global preflight runs.
+- Synthetic verification is not live proof. `verify:codex-live:recent` must pass before claiming the current Codex Desktop session is actually dispatching pre-response DinoBrain preflight.
 - The current already-running session may not retroactively load this hook, although the installer now verifies the wrapper path with a synthetic prompt.
 - Automatic import currently sees the submitted user prompt, not the later assistant response.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work, but the injected protocol now includes structured `context_pack_paths`, `used_memory_paths`, `session_archive_paths`, and `candidate_paths` values to preserve.

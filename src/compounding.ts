@@ -136,14 +136,22 @@ function normalizeRule(value: string): string {
     .trim();
 }
 
+function hasKoreanBehaviorCue(value: string): boolean {
+  return /(\uBB34\uC870\uAC74|\uD56D\uC0C1|\uBC18\uB4DC\uC2DC|\uD574\uC57C|\uD558\uC9C0\uB9C8|\uD558\uBA74 \uC548 \uB3FC|\uC120\uD638|\uC6D0\uD574|\uAC80\uC99D|\uD655\uC778|\uAE30\uC900|\uC544\uB2C8\uC57C|\uADF8\uAC8C \uC544\uB2C8\uB77C|\uB0B4\uAC00 \uC6D0\uD55C \uAC74|\uC544\uC26C\uC6B4\uB370|\uB35C\uC5B4\uB0B4\uC790|\uC911\uC694)/.test(
+    value,
+  );
+}
+
 function toBehaviorRule(value: string): string {
   const text = compact(value);
+  if (hasKoreanBehaviorCue(text)) return text;
   if (/^(when|before|after|always|never|do not|don't|verify|use|prefer|avoid)\b/i.test(text)) return text;
   if (/(무조건|항상|하지마|하지 말|해야|검증|확인|선호|원함|원해)/.test(text)) return text;
   return `In similar future work, apply this decision: ${text}`;
 }
 
 function hasBehaviorCue(value: string): boolean {
+  if (hasKoreanBehaviorCue(value)) return true;
   return /(always|never|must|should|do not|don't|prefer|verify|check|fail-closed|before|after|무조건|항상|반드시|해야|하지마|하지 말|선호|검증|확인|기준)/i.test(value);
 }
 

@@ -615,6 +615,68 @@ function Test-DinoBrainHookGroup {
   return $text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context"
 }
 
+function Test-DinoBrainHookRecord {
+  param([AllowNull()][object]$Hook)
+  if ($null -eq $Hook) { return $false }
+  $text = ($Hook | ConvertTo-Json -Depth 20 -Compress)
+  return $text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context"
+}
+
+function Get-UserPromptSubmitGroupsWithoutDinoBrain {
+  param([AllowNull()][object]$Groups)
+
+  $result = @()
+  foreach ($group in @($Groups)) {
+    if ($null -eq $group) { continue }
+    $groupTable = ConvertTo-Hashtable $group
+    if (-not ($groupTable -is [System.Collections.IDictionary])) { continue }
+
+    $keptHooks = @()
+    if ($groupTable.Contains("hooks") -and $null -ne $groupTable["hooks"]) {
+      foreach ($hook in @($groupTable["hooks"])) {
+        if (-not (Test-DinoBrainHookRecord $hook)) {
+          $keptHooks += (ConvertTo-Hashtable $hook)
+        }
+      }
+    }
+
+    if ($keptHooks.Count -gt 0) {
+      $groupTable["hooks"] = @($keptHooks)
+      $result += $groupTable
+    }
+  }
+
+  return @($result)
+}
+
+function Add-HookToFirstUserPromptSubmitGroup {
+  param(
+    [AllowNull()][object[]]$Groups,
+    [Parameter(Mandatory = $true)][object]$HookRecord,
+    [Parameter(Mandatory = $true)][object]$FallbackGroup
+  )
+
+  $normalized = New-Object System.Collections.ArrayList
+  foreach ($group in @($Groups)) {
+    if ($null -ne $group) {
+      $normalized.Add((ConvertTo-Hashtable $group)) | Out-Null
+    }
+  }
+
+  if ($normalized.Count -gt 0) {
+    $first = ConvertTo-Hashtable $normalized[0]
+    $existingHooks = @()
+    if ($first.Contains("hooks") -and $null -ne $first["hooks"]) {
+      $existingHooks = @($first["hooks"])
+    }
+    $first["hooks"] = @($existingHooks + $HookRecord)
+    $normalized[0] = $first
+    return @($normalized.ToArray())
+  }
+
+  return @($FallbackGroup)
+}
+
 function Set-DinoBrainCodexUserHook {
   param(
     [Parameter(Mandatory = $true)][string]$HooksPath,
@@ -646,21 +708,19 @@ function Set-DinoBrainCodexUserHook {
 
   $groups = @()
   if ($config["hooks"].Contains("UserPromptSubmit") -and $null -ne $config["hooks"]["UserPromptSubmit"]) {
-    $groups = @(@($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) })
+    $groups = Get-UserPromptSubmitGroupsWithoutDinoBrain -Groups $config["hooks"]["UserPromptSubmit"]
   }
 
   $command = New-DinoBrainCodexHookCommand -AppPath $AppPath -VaultPath $VaultPath
-  $groups += [ordered]@{
-    hooks = @(
-      [ordered]@{
-        type = "command"
-        command = $command
-        commandWindows = $command
-        timeout = 30
-        statusMessage = "Loading DinoBrain context"
-      }
-    )
+  $hookRecord = [ordered]@{
+    type = "command"
+    command = $command
+    commandWindows = $command
+    timeout = 30
+    statusMessage = "Loading DinoBrain context"
   }
+  $fallbackGroup = [ordered]@{ hooks = @($hookRecord) }
+  $groups = Add-HookToFirstUserPromptSubmitGroup -Groups $groups -HookRecord $hookRecord -FallbackGroup $fallbackGroup
   $config["hooks"]["UserPromptSubmit"] = @($groups)
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -702,20 +762,20 @@ function Set-DinoBrainClaudeUserHook {
 
   $groups = @()
   if ($config["hooks"].Contains("UserPromptSubmit") -and $null -ne $config["hooks"]["UserPromptSubmit"]) {
-    $groups = @(@($config["hooks"]["UserPromptSubmit"]) | Where-Object { -not (Test-DinoBrainHookGroup $_) })
+    $groups = Get-UserPromptSubmitGroupsWithoutDinoBrain -Groups $config["hooks"]["UserPromptSubmit"]
   }
 
   $command = New-DinoBrainCodexHookCommand -AppPath $AppPath -VaultPath $VaultPath
-  $groups += [ordered]@{
-    matcher = ""
-    hooks = @(
-      [ordered]@{
-        type = "command"
-        command = $command
-        timeout = 30
-      }
-    )
+  $hookRecord = [ordered]@{
+    type = "command"
+    command = $command
+    timeout = 30
   }
+  $fallbackGroup = [ordered]@{
+    matcher = ""
+    hooks = @($hookRecord)
+  }
+  $groups = Add-HookToFirstUserPromptSubmitGroup -Groups $groups -HookRecord $hookRecord -FallbackGroup $fallbackGroup
   $config["hooks"]["UserPromptSubmit"] = @($groups)
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -908,7 +968,7 @@ function New-DinoBrainHookApprovalLauncher {
   $content = @"
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript" -AppPath "$AppPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RestartStaleCodex
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript" -AppPath "$AppPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RestartStaleCodex -RestartStaleMcp
 "@
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

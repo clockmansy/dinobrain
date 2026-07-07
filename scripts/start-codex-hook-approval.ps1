@@ -5,6 +5,7 @@ param(
   [string]$HooksPath = "",
   [string]$ConfigPath = "",
   [switch]$RestartStaleCodex,
+  [switch]$RestartStaleMcp,
   [switch]$NoRestart,
   [switch]$NoOpen,
   [switch]$NoUi,
@@ -66,6 +67,50 @@ function Stop-DinoBrainCodexProcesses {
       if ($process.HasExited) { continue }
       Stop-Process -Id $process.Id -Force -ErrorAction Stop
       [void]$stopped.Add($process.Id)
+    } catch {}
+  }
+  return @($stopped)
+}
+
+function Get-DinoBrainStaleMcpProcesses {
+  param([Parameter(Mandatory = $true)][string]$DinoBrainAppPath)
+
+  $serverEntry = Resolve-DefaultPath (Join-Path $DinoBrainAppPath "dist\index.js")
+  if (-not (Test-Path -LiteralPath $serverEntry)) {
+    return @()
+  }
+
+  $serverNeedle = $serverEntry.ToLowerInvariant()
+  $buildTime = (Get-Item -LiteralPath $serverEntry).LastWriteTime
+  try {
+    return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+      $commandLine = [string]$_.CommandLine
+      $isNode = $_.Name -match "^(?i:node(\.exe)?)$"
+      $isDinoBrainServer = $commandLine.ToLowerInvariant().Replace("/", "\") -match [regex]::Escape($serverNeedle)
+      $isStale = $true
+      if ($_.CreationDate) {
+        try {
+          $startedAt = [System.Management.ManagementDateTimeConverter]::ToDateTime($_.CreationDate)
+          $isStale = $startedAt -lt $buildTime
+        } catch {
+          $isStale = $true
+        }
+      }
+      $isNode -and $isDinoBrainServer -and $isStale
+    })
+  } catch {
+    return @()
+  }
+}
+
+function Stop-DinoBrainMcpProcesses {
+  param([Parameter(Mandatory = $true)][object[]]$Processes)
+
+  $stopped = New-Object System.Collections.ArrayList
+  foreach ($process in @($Processes)) {
+    try {
+      Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
+      [void]$stopped.Add([int]$process.ProcessId)
     } catch {}
   }
   return @($stopped)
@@ -137,12 +182,20 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 
 $runningBefore = @(Get-DinoBrainCodexGuiProcesses)
 $staleProcesses = @(Get-DinoBrainStaleCodexProcesses -UserHooksPath $HooksPath)
+$staleMcpProcesses = @(Get-DinoBrainStaleMcpProcesses -DinoBrainAppPath $AppPath)
 $stoppedIds = @()
+$stoppedMcpIds = @()
 $startedVia = ""
 
 if ($RestartStaleCodex -and -not $NoRestart -and $staleProcesses.Count -gt 0) {
   Write-Host "Restarting Codex so it reloads DinoBrain hooks..."
   $stoppedIds = @(Stop-DinoBrainCodexProcesses -Processes $staleProcesses)
+  Start-Sleep -Seconds 1
+}
+
+if (($RestartStaleMcp -or $RestartStaleCodex) -and -not $NoRestart -and $staleMcpProcesses.Count -gt 0) {
+  Write-Host "Stopping stale DinoBrain MCP server processes so Codex reloads the rebuilt server..."
+  $stoppedMcpIds = @(Stop-DinoBrainMcpProcesses -Processes $staleMcpProcesses)
   Start-Sleep -Seconds 1
 }
 
@@ -175,7 +228,9 @@ $report = [ordered]@{
   config_path = $ConfigPath
   running_codex_before = $runningBefore.Count
   stale_codex_before = $staleProcesses.Count
+  stale_mcp_before = $staleMcpProcesses.Count
   restarted_process_ids = @($stoppedIds)
+  restarted_mcp_process_ids = @($stoppedMcpIds)
   started_via = $startedVia
   clipboard_hint = "/hooks"
   user_trust_required = $true

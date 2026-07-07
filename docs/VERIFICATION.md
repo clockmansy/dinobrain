@@ -28,6 +28,7 @@ npm run hooks:data:verify
 npm run hook:verify
 npm run verify:os
 npm run verify:codex-loop
+npm run verify:codex-live:recent
 npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:win
@@ -51,6 +52,8 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 The same verifier also checks the safety valve for read-only work: `finish_task` with `growth_policy: "trace_only"` must write the task trace but skip auto-growth, compounding, and auto-sync push even when those environment flags are enabled.
 
 `npm run verify:codex-live -- --snippet "<prompt text>" --since "<iso timestamp>"` is stricter in a different way: it checks the real data vault and `reports/live-hooks` for a live Codex `UserPromptSubmit` event/report after the given time. It is expected to fail until a fresh trusted Codex session actually dispatches the installed hook for that prompt.
+
+`npm run verify:codex-live:recent` is the no-snippet live gate. It uses the same real-vault evidence path and fails unless a recent real Codex Desktop prompt produced a `codex_prompt_submitted` event, a matching `codex_preflight_completed` event, and a live hook report with selected memory paths. A green synthetic `hook:verify`, `verify:os`, or `verify:codex-loop` run does not replace this live proof.
 
 `npm run verify:compounding` proves the closed behavior loop: completed task traces are distilled into accepted behavior rules, later memory search and Context Packs retrieve the promoted rule, memory-on behavior beats the memory-off baseline for the golden case, and invalid/duplicate behavior rules are held or merged.
 

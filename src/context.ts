@@ -182,6 +182,18 @@ function isQuarantinedRecord(value: Record<string, unknown>, relativePath: strin
   return status === "quarantined" || status === "quarantine" || quarantineFlag || quarantinedPaths.has(relativePath);
 }
 
+export function isDefaultRetrievalExcludedPath(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, "/");
+  return (
+    normalized.startsWith("60_Operations/task-summaries/") ||
+    normalized.startsWith(".dino/context-packs/") ||
+    normalized.startsWith(".dino/events/") ||
+    normalized.startsWith(".dino/gates/") ||
+    normalized.startsWith(".dino/tasks/") ||
+    normalized.startsWith(".dino/traces/")
+  );
+}
+
 async function walkSupportedRecords(dir: string, records: string[] = []): Promise<string[]> {
   let entries: Array<import("node:fs").Dirent>;
   try {
@@ -217,6 +229,8 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
     if (stat.size > 256 * 1024) continue;
 
     const relativePath = relDataPath(dataRoot, file);
+    if (isDefaultRetrievalExcludedPath(relativePath)) continue;
+
     const raw = await fs.readFile(file, "utf8");
     const extension = path.extname(file).toLowerCase();
 
@@ -238,7 +252,6 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
         typeof jsonRecord.source_candidate_path === "string" ? `source_candidate_path=${jsonRecord.source_candidate_path}` : "",
         typeof jsonRecord.reviewed_by === "string" ? `reviewed_by=${jsonRecord.reviewed_by}` : "",
         typeof jsonRecord.reviewed_at === "string" ? `reviewed_at=${jsonRecord.reviewed_at}` : "",
-        typeof jsonRecord.accepted_at === "string" ? `accepted_at=${jsonRecord.accepted_at}` : "",
         String(jsonRecord.review_status ?? "").toLowerCase() === "accepted_by_agent_review"
           ? "review_status=accepted_by_agent_review"
           : "",

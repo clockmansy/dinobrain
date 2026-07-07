@@ -365,10 +365,16 @@ export function rootIntentsForQuery(query: string): string[] {
   return intents.filter(([, pattern]) => pattern.test(lower)).map(([prefix]) => prefix);
 }
 
-function takeWithRecentTaskBudget(records: RankedRecord[], limit: number): RankedRecord[] {
+function allowsRecentTaskContext(query: string): boolean {
+  return /\b(recent|latest|active|current|task|tasks|trace|audit|hook|session|operation|operations|status|work|verifier|pending|blocked)\b/i.test(
+    query,
+  ) || /최근|현재|작업|태스크|추적|감사|훅|세션|운영|상태|검증|보류|차단/.test(query);
+}
+
+function takeWithRecentTaskBudget(records: RankedRecord[], limit: number, query: string): RankedRecord[] {
   const selected: RankedRecord[] = [];
   let recentTaskCount = 0;
-  const maxRecentTasks = Math.min(2, limit);
+  const maxRecentTasks = allowsRecentTaskContext(query) ? Math.min(1, limit) : 0;
   for (const record of records) {
     if (record.kind === "recent_task" || record.path.startsWith(".dino/tasks/")) {
       if (recentTaskCount >= maxRecentTasks) continue;
@@ -384,12 +390,12 @@ function applyContextPackIntentBudget(records: RankedRecord[], query: string, li
   const targetLimit = typeof limit === "number" ? limit : records.length;
   if (targetLimit <= 0) return [];
   const intents = rootIntentsForQuery(query);
-  if (intents.length === 0) return takeWithRecentTaskBudget(records, targetLimit);
+  if (intents.length === 0) return takeWithRecentTaskBudget(records, targetLimit, query);
 
   const primary = records.filter((record) => intents.some((prefix) => record.path.startsWith(prefix)));
   const secondary = records.filter((record) => !intents.some((prefix) => record.path.startsWith(prefix)));
   const maxSecondary = Math.min(2, Math.max(0, targetLimit - primary.length));
-  return takeWithRecentTaskBudget([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit);
+  return takeWithRecentTaskBudget([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit, query);
 }
 
 function hasReviewLineage(record: RankedRecord): boolean {

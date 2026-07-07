@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-import { type RankedRecord } from "./context.js";
+import { isDefaultRetrievalExcludedPath, type RankedRecord } from "./context.js";
 import {
   type RetrievalMode,
   contextualText,
@@ -129,8 +129,12 @@ function tokenize(value: string): string[] {
 
 async function removeShardFiles(dataRoot: string, shard: ShardName): Promise<void> {
   const shardPath = getSqliteShardPath(dataRoot, shard);
+  await removeSqliteFiles(shardPath);
+}
+
+async function removeSqliteFiles(basePath: string): Promise<void> {
   await Promise.all(
-    [shardPath, `${shardPath}-shm`, `${shardPath}-wal`].map(async (filePath) => {
+    [basePath, `${basePath}-shm`, `${basePath}-wal`, `${basePath}-journal`].map(async (filePath) => {
       try {
         await fs.rm(filePath, { force: true });
       } catch (error) {
@@ -138,6 +142,33 @@ async function removeShardFiles(dataRoot: string, shard: ShardName): Promise<voi
       }
     }),
   );
+}
+
+function tempShardPath(dataRoot: string, shard: ShardName): string {
+  const shardPath = getSqliteShardPath(dataRoot, shard);
+  return `${shardPath}.${process.pid}.${Date.now()}.tmp`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function replaceShardWithRetry(dataRoot: string, shard: ShardName, tempPath: string): Promise<string> {
+  const shardPath = getSqliteShardPath(dataRoot, shard);
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await removeSqliteFiles(shardPath);
+      await fs.rename(tempPath, shardPath);
+      await removeSqliteFiles(tempPath);
+      return shardPath;
+    } catch (error) {
+      lastError = error;
+      await sleep(125 * (attempt + 1));
+    }
+  }
+  await removeSqliteFiles(tempPath);
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function openWritableDatabase(filePath: string): DatabaseSync {
@@ -166,9 +197,10 @@ function writeMetadata(db: DatabaseSync, metadata: Record<string, SqlValue>): vo
   }
 }
 
-function writeWikiShard(dataRoot: string, wiki: WikiIndex): string {
-  const shardPath = getSqliteShardPath(dataRoot, "wiki");
-  const db = openWritableDatabase(shardPath);
+async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string> {
+  const tempPath = tempShardPath(dataRoot, "wiki");
+  await removeSqliteFiles(tempPath);
+  const db = openWritableDatabase(tempPath);
   db.exec(`
     CREATE TABLE records (
       id TEXT PRIMARY KEY,
@@ -243,7 +275,7 @@ function writeWikiShard(dataRoot: string, wiki: WikiIndex): string {
     db.close();
   }
 
-  return shardPath;
+  return await replaceShardWithRetry(dataRoot, "wiki", tempPath);
 }
 
 function insertWikiRecord(stmt: ReturnType<DatabaseSync["prepare"]>, record: WikiIndexRecord): void {
@@ -272,12 +304,13 @@ function insertWikiEdge(stmt: ReturnType<DatabaseSync["prepare"]>, edge: WikiInd
   run(stmt, edge.from, edge.to, edge.type);
 }
 
-function writeOperationsShard(
+async function writeOperationsShard(
   dataRoot: string,
   operations: OperationEntries,
-): string {
-  const shardPath = getSqliteShardPath(dataRoot, "operations");
-  const db = openWritableDatabase(shardPath);
+): Promise<string> {
+  const tempPath = tempShardPath(dataRoot, "operations");
+  await removeSqliteFiles(tempPath);
+  const db = openWritableDatabase(tempPath);
   db.exec(`
     CREATE TABLE tasks (
       path TEXT PRIMARY KEY,
@@ -381,7 +414,7 @@ function writeOperationsShard(
     db.close();
   }
 
-  return shardPath;
+  return await replaceShardWithRetry(dataRoot, "operations", tempPath);
 }
 
 function insertOperationTask(stmt: ReturnType<DatabaseSync["prepare"]>, task: OperationTaskEntry): void {
@@ -474,12 +507,10 @@ async function shardSize(filePath: string): Promise<number> {
 
 export async function buildAndWriteSqliteShards(dataRoot: string): Promise<SqliteManifest> {
   await fs.mkdir(dataPath(dataRoot, ...SQLITE_INDEX_DIR.split("/")), { recursive: true });
-  await removeShardFiles(dataRoot, "wiki");
-  await removeShardFiles(dataRoot, "operations");
 
   const [wiki, operations] = await Promise.all([buildWikiIndex(dataRoot), collectOperationEntries(dataRoot)]);
-  const wikiPath = writeWikiShard(dataRoot, wiki);
-  const operationsPath = writeOperationsShard(dataRoot, operations);
+  const wikiPath = await writeWikiShard(dataRoot, wiki);
+  const operationsPath = await writeOperationsShard(dataRoot, operations);
   const manifest: SqliteManifest = {
     version: SQLITE_SHARD_VERSION,
     generated_at: nowIso(),
@@ -577,6 +608,7 @@ export async function querySqliteWiki(
       .slice(0, candidateLimit)
       .map(([recordId]) => recordById.get(recordId) as Record<string, unknown> | undefined)
       .filter((row): row is Record<string, unknown> => Boolean(row))
+      .filter((row) => !isDefaultRetrievalExcludedPath(String(row.path ?? "")))
       .map(rowToRecord);
     const denseVectorIndex = loadDenseVectorIndex(dataRoot);
     const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
@@ -584,6 +616,7 @@ export async function querySqliteWiki(
       const selectedPaths = new Set(records.map((record) => record.path));
       const recordByPath = db.prepare("SELECT * FROM records WHERE path = ?");
       for (const recordPath of densePaths) {
+        if (isDefaultRetrievalExcludedPath(recordPath)) continue;
         if (records.length >= candidateLimit || selectedPaths.has(recordPath)) continue;
         const row = recordByPath.get(recordPath) as Record<string, unknown> | undefined;
         if (!row) continue;
@@ -594,7 +627,9 @@ export async function querySqliteWiki(
     if (records.length === 0) {
       records = (db
         .prepare("SELECT * FROM records ORDER BY mtime_ms DESC, path ASC LIMIT ?")
-        .all(candidateLimit) as Array<Record<string, unknown>>).map(rowToRecord);
+        .all(candidateLimit) as Array<Record<string, unknown>>)
+        .filter((row) => !isDefaultRetrievalExcludedPath(String(row.path ?? "")))
+        .map(rowToRecord);
     }
     const ranked = rankRecordsHybridV2(records, query, { limit, denseVectorIndex });
     const recordCountRow = db.prepare("SELECT COUNT(*) AS count FROM records").get() as { count: number };

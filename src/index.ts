@@ -842,7 +842,7 @@ async function writeFinishGrowthRecords(params: {
   const operationRecord = {
     memory_id: growthId,
     type: "task_summary_memory",
-    status: "accepted",
+    status: "pending_review",
     title: `Task outcome: ${request.slice(0, 96)}`,
     summary,
     claim: `Task outcome for ${project ?? "DinoBrain"}: ${summary.slice(0, 600)}`,

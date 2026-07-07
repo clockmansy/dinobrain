@@ -180,8 +180,11 @@ If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd
 To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
 
 ```powershell
+npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 ```
+
+`verify:codex-live:recent` is the no-snippet live proof. It fails when the latest work only passed synthetic hook simulations and no recent real Codex Desktop prompt produced matching hook events plus a live report.
 
 ## Custom Paths
 
@@ -287,6 +290,7 @@ npm run verify:os
 npm run verify:codex-loop
 npm run hooks:data:verify
 npm run hook:verify
+npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 npm run observatory
 ```

@@ -16,6 +16,10 @@ observable and harder to accidentally overclaim.
 This pass targets the biggest completion disqualifier that can be improved
 without pretending live hook attention has been proven:
 
+- Gate 1, Live Pre-Response OS Loop
+- Gate 4, Retrieval Quality And Honest Mode
+- Gate 5, LLM Wiki And Graph Health
+- Gate 6, Memory Lifecycle And Compounding Hygiene
 - Gate 12, Safety, Privacy, And Public Data
 - Gate 14, Sync, Release, And Repository Hygiene
 - Gate 15, Verification Registry
@@ -93,16 +97,37 @@ This pass is complete when:
 This pass does not claim DinoBrain OS completion. It only removes one class of
 disqualifier and adds a stronger proof artifact for future completion audits.
 
+## 2026-07-07 Twenty-Agent RAG Audit Update
+
+Twenty subagents independently agreed on the same seven next fixes:
+
+1. real dense hybrid retrieval and rerank evaluation;
+2. fail-closed pre-response proof for real Codex/Claude prompts;
+3. lifecycle and queue cleanup;
+4. source/chunk/claim provenance atomicity;
+5. real behavior evaluation, not only context retrieval lift;
+6. operation-log pollution control;
+7. auto-sync proof and safety.
+
+This pass implemented only the safe first slice: operation-log exclusion from
+default retrieval, recent-task intent budgeting, atomic SQLite shard refresh,
+Codex hook merge/stale-MCP installer fixes, pending-review growth records, and
+Korean correction cue coverage.
+
 ## Remaining High-Priority Work
 
 1. Live prompt proof: start a fresh trusted Codex thread and verify
    `codex_prompt_submitted` and `codex_preflight_completed` before manual MCP
    calls.
-2. Source truth: seed real `30_Sources/chunks` and `.dino/provenance` records for
+2. Retrieval: add real multilingual embeddings, bounded dense top-K, fusion,
+   rerank canaries, and keep `lexical_fallback_v2` honest until this passes.
+3. Source truth: seed real `30_Sources/chunks` and `.dino/provenance` records for
    factual claims that should survive as source-backed knowledge.
-3. Behavior eval: expand `behavior-golden.json` beyond self-referential OS cases
-   and require memory-on improvement on the real vault.
-4. Lifecycle hygiene: reduce broad auto-compounded behavior rules and hold or
+4. Behavior eval: expand `behavior-golden.json` beyond self-referential OS cases
+   and require memory-on answer quality improvement on the real vault.
+5. Lifecycle hygiene: reduce broad auto-compounded behavior rules and hold or
    merge weak rules so they do not dominate Wiki/Source/Project retrieval.
-5. Retrieval scale proof: measure the starter SLOs on a synthetic 50k curated
+6. Retrieval scale proof: measure the starter SLOs on a synthetic 50k curated
    vault and confirm the prompt path remains index-backed.
+7. Release parity: rebuild installer artifacts, regenerate SHA files, publish a
+   release manifest, and prove app/data refs match the install artifact.

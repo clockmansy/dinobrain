@@ -5,6 +5,7 @@ import {
   collectCuratedRecords,
   collectRecentTaskRecords,
   dataPath,
+  isDefaultRetrievalExcludedPath,
   type RankedRecord,
 } from "./context.js";
 import {
@@ -327,6 +328,7 @@ function selectCandidates(index: WikiIndex, query: string, limit: number): Candi
     .slice(0, limit)
     .map(([recordId]) => recordById.get(recordId))
     .filter((record): record is WikiIndexRecord => Boolean(record))
+    .filter((record) => !isDefaultRetrievalExcludedPath(record.path))
     .map(toRankedRecord);
 
   return {
@@ -347,7 +349,10 @@ function mergeDenseVectorCandidates(
   if (densePaths.size === 0) return selected;
   const selectedPaths = new Set(selected.map((record) => record.path));
   const denseRecords = index.records
-    .filter((record) => densePaths.has(record.path) && !selectedPaths.has(record.path))
+    .filter(
+      (record) =>
+        densePaths.has(record.path) && !selectedPaths.has(record.path) && !isDefaultRetrievalExcludedPath(record.path),
+    )
     .slice(0, limit)
     .map(toRankedRecord);
   return [...selected, ...denseRecords];

@@ -307,6 +307,29 @@ async function verifyClosedLoop() {
 
   assert(existsSync(path.join(dataRoot, finish.growth.candidate_path)), `Growth candidate missing: ${finish.growth.candidate_path}`);
   assert(existsSync(path.join(dataRoot, finish.growth.review_path)), `Growth review missing: ${finish.growth.review_path}`);
+  assert(existsSync(path.join(dataRoot, finish.growth.operation_path)), `Growth operation record missing: ${finish.growth.operation_path}`);
+
+  const operationRecord = readJson(path.join(dataRoot, finish.growth.operation_path));
+  assert(
+    operationRecord.status === "pending_review",
+    "Auto-generated operation task summary must not be marked accepted before review.",
+  );
+
+  const unreviewedPack = await withClient(dataRoot, async (client) =>
+    parseTool(
+      await client.callTool({
+        name: "get_context_pack",
+        arguments: {
+          question: "Codex closed-loop generated task memory before explicit review",
+          limit: 10,
+        },
+      }),
+    ),
+  );
+  assert(
+    !unreviewedPack.items.some((item) => item.path === finish.growth.operation_path),
+    "Unreviewed operation task summary leaked into default Context Pack retrieval.",
+  );
 
   const reviewedGrowth = await withClient(dataRoot, async (client) =>
     parseTool(

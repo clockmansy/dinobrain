@@ -53,6 +53,10 @@ function isOperationalNoisePath(returnedPath: string): boolean {
   return returnedPath.startsWith(".dino/tasks/") || returnedPath.startsWith(".dino/context-packs/");
 }
 
+function isForbiddenDefaultRetrievalPath(returnedPath: string): boolean {
+  return returnedPath.startsWith("60_Operations/task-summaries/");
+}
+
 function isAllowedPath(returnedPath: string, allowedPaths: string[], allowedPrefixes: string[]): boolean {
   return allowedPaths.includes(returnedPath) || allowedPrefixes.some((prefix) => returnedPath.startsWith(prefix));
 }
@@ -69,8 +73,9 @@ async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMax
   );
   const operationalNoisePaths = unexpectedPaths.filter(isOperationalNoisePath);
   const noisePaths = unexpectedPaths.filter((returnedPath) => !isOperationalNoisePath(returnedPath));
+  const forbiddenPaths = returnedPaths.filter(isForbiddenDefaultRetrievalPath);
   const recall = expectedPaths.length === 0 ? 1 : (expectedPaths.length - missingPaths.length) / expectedPaths.length;
-  const noiseCount = noisePaths.length;
+  const noiseCount = noisePaths.length + operationalNoisePaths.length + forbiddenPaths.length;
 
   return {
     id: goldenCase.id,
@@ -80,7 +85,7 @@ async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMax
     allowed_prefixes: allowedPrefixes,
     returned_paths: returnedPaths,
     missing_paths: missingPaths,
-    noise_paths: noisePaths,
+    noise_paths: unique([...noisePaths, ...operationalNoisePaths, ...forbiddenPaths]),
     operational_noise_paths: operationalNoisePaths,
     recall,
     noise_count: noiseCount,

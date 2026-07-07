@@ -403,5 +403,26 @@ after the data architecture/performance objection was incorporated.
 | 15 | Skeptical/adversarial | final agree | Latest document accepted |
 | 16 | Integrator/consensus | final agree | Latest document accepted |
 
-Final consensus: 16/16 reviewers agreed. No reviewer has an outstanding
-objection against this completion-conditions document.
+## 2026-07-07 RAG OS Consensus Refresh
+
+Twenty subagents re-audited DinoBrain against the user's desired LLM Wiki OS and
+external RAG methodology. All twenty agreed that the next completion plan must
+center on seven fixes:
+
+1. real dense hybrid retrieval and rerank evaluation;
+2. fail-closed live pre-response proof;
+3. lifecycle and queue cleanup;
+4. atomic source/chunk/claim provenance;
+5. memory-on/off answer-quality evaluation;
+6. operation-log pollution control;
+7. auto-sync proof and safety.
+
+The current local pass improved operation-log exclusion, SQLite shard refresh,
+hook merge reliability, stale MCP cleanup, pending-review growth records, and
+Korean correction cue coverage. It still does not complete DinoBrain OS because
+live Codex Desktop proof, true dense retrieval, behavior answer-quality eval,
+and public/private sync boundaries remain open.
+
+Final historical consensus: 16/16 reviewers agreed to the completion-conditions
+document. Current RAG OS consensus: 20/20 subagents agreed on the seven-fix
+implementation plan above.

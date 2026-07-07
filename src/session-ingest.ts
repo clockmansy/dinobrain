@@ -96,6 +96,13 @@ const CATEGORY_CUES: Record<CandidateCategory, string[]> = {
     "\uc6d0\ud574",
     "\ud574\uc57c",
     "\ud558\uc9c0\ub9c8",
+    "\uc544\ub2c8\uc57c",
+    "\uadf8\uac8c \uc544\ub2c8\ub77c",
+    "\ub0b4\uac00 \uc6d0\ud55c \uac74",
+    "\uc544\uc26c\uc6b4\ub370",
+    "\ub35c\uc5b4\ub0b4\uc790",
+    "\uc911\uc694",
+    "\uae30\uc900",
     "\uacc4\ud68d\uc11c",
   ],
   project_decision: [
