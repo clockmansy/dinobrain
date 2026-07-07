@@ -168,6 +168,8 @@ function nextActionFor(requirementEvidence) {
       return "Inspect the latest reports/live-hooks output and .dino/events entries for the proof prompt, fix the hook completion/reporting path, then rerun npm run verify:goal.";
     case "direct_mcp_parity_not_verified":
       return "Create real Codex and Claude direct MCP proof artifacts under .dino/proofs/client-mcp, or record a valid Claude not_configured proof when Claude Code is absent, then rerun npm run status:mcp-direct and npm run verify:goal.";
+    case "native_instruction_authority_not_healthy":
+      return "Inspect .dino/state/native_instruction_authority.json, repair conflicting AGENTS/Codex/Claude/hook instructions, then rerun npm run status:native-authority and npm run verify:goal.";
     default:
       return "Fix the failed requirement, then rerun npm run verify:goal.";
   }
@@ -240,6 +242,20 @@ function main() {
         "Current data vault must have verified direct Codex MCP proof and verified or explicitly not_configured Claude direct MCP proof.",
       command: node,
       args: ["dist/build-client-mcp-direct-status.js"],
+    }),
+    runCheck({
+      id: "native_authority_regression",
+      description:
+        "Native instruction authority must accept clean AGENTS/Codex/Claude surfaces and reject memory-over-user, trusted-candidate, raw-transcript, broad-sync, and hook-trust-bypass conflicts.",
+      command: node,
+      args: ["scripts/verify-native-instruction-authority.mjs"],
+    }),
+    runCheck({
+      id: "native_authority_current",
+      description:
+        "Current native AGENTS/Codex/Claude/hook instruction surfaces must preserve user-over-memory authority and safe memory policy.",
+      command: node,
+      args: ["dist/build-native-instruction-authority.js"],
     }),
     runCheck({
       id: "review_settlement_regression",
@@ -394,6 +410,20 @@ function main() {
         byId.mcp_direct_current.parsed?.status === "verified"
           ? null
           : "direct_mcp_parity_not_verified",
+    },
+    {
+      requirement: "native_instruction_authority_and_drift_gate",
+      ok:
+        byId.native_authority_regression.ok === true &&
+        byId.native_authority_current.ok === true &&
+        byId.native_authority_current.parsed?.status === "healthy",
+      evidence: "native_authority_regression + native_authority_current.status",
+      blocker:
+        byId.native_authority_regression.ok === true &&
+        byId.native_authority_current.ok === true &&
+        byId.native_authority_current.parsed?.status === "healthy"
+          ? null
+          : "native_instruction_authority_not_healthy",
     },
     {
       requirement: "review_queue_and_semantic_job_settlement",

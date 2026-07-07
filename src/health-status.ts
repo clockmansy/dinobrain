@@ -5,6 +5,7 @@ import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-stat
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
+import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
@@ -72,6 +73,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     artifactPath: CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
     authorityRank: 95,
     healthyStatuses: ["verified"],
+  },
+  {
+    id: "native_instruction_authority",
+    artifactPath: NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
+    authorityRank: 94,
+    healthyStatuses: ["healthy"],
   },
   {
     id: "review_queue_settlement",

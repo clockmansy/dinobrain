@@ -31,6 +31,7 @@ This plan does not mark DinoBrain complete. It defines the remaining work that m
 Implementation progress:
 
 - 2026-07-07: P0-04 direct MCP proof ingestion, `verify:mcp-direct`, `verify:goal` hard-gate wiring, and a current Codex proof plus Claude `not_configured` artifact were added. `verify:goal` now reports `codex_claude_direct_mcp_parity` as passing, while live pre-response and task lifecycle blockers remain.
+- 2026-07-07: P0-05 native instruction authority scanner, `verify:native-authority`, health/status refresh wiring, and Observatory `/api/state` exposure were added. Current scanned native surfaces report `healthy`; completion remains blocked by other gates.
 
 ## Completion Bar
 

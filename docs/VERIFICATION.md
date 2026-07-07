@@ -122,6 +122,10 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run verify:mcp-direct` proves the direct MCP status gate with fixtures. It accepts real-style exact single-name Codex/Claude proof artifacts, accepts explicit Claude `not_configured` evidence, and rejects config-only, hook-only, stale, alias-only, missing-tool, Codex-only, and Claude-only cases.
 
+`npm run status:native-authority` writes `.dino/state/native_instruction_authority.json`. It scans native instruction surfaces such as `AGENTS.md`, repo `.codex` hook files, Codex config/hooks, Claude settings when present, installer hooks, and hook approval/live-proof scripts. It stores file hashes, mtimes, line numbers, rule ids, and findings without storing raw instruction text.
+
+`npm run verify:native-authority` proves the native authority gate with fixtures. It accepts clean user-over-memory instructions and rejects stored-memory-over-user, trusted-candidate, raw-transcript/secret-storage, broad auto-sync, and hook-trust-bypass claims.
+
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 
 `npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data. The fixture explicitly opts in to conditional push with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and `DINOBRAIN_AUTO_SYNC_PUSH=1`; the installed public-safe default keeps both flags at `0`.

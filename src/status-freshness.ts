@@ -6,6 +6,7 @@ import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { HEALTH_STATUS_RELATIVE_PATH } from "./health-status.js";
+import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
@@ -118,6 +119,7 @@ const ARTIFACTS: ArtifactSpec[] = [
     dependencyArtifacts: [
       FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
       CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
+      NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
       TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
@@ -134,6 +136,14 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: [".dino/events", ".dino/tasks", ".dino/traces"],
     required: true,
     authorityRank: 95,
+  },
+  {
+    id: "native_instruction_authority",
+    label: "native instruction authority",
+    artifactPath: NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
+    sourceRoots: ["."],
+    required: true,
+    authorityRank: 94,
   },
   {
     id: "wiki_index",

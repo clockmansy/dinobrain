@@ -5,6 +5,7 @@ import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.j
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
 import { buildAndWriteHealthStatus } from "./health-status.js";
+import { buildAndWriteNativeInstructionAuthorityReport } from "./native-instruction-authority.js";
 import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { buildAndWriteRagProof } from "./rag-proof.js";
@@ -78,6 +79,9 @@ export async function refreshStatusArtifacts(
 
   const clientMcp = await buildAndWriteClientMcpDirectStatus(dataRoot);
   steps.push({ id: "client_mcp_direct_status", status: clientMcp.report.status, path: clientMcp.path });
+
+  const nativeAuthority = await buildAndWriteNativeInstructionAuthorityReport(dataRoot);
+  steps.push({ id: "native_instruction_authority", status: nativeAuthority.report.status, path: nativeAuthority.path });
 
   const health = await buildAndWriteHealthStatus(dataRoot);
   steps.push({ id: "health_status", status: health.report.status, path: health.path });

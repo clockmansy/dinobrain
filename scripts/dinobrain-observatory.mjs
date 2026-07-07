@@ -328,6 +328,37 @@ async function readGraphHealth() {
   };
 }
 
+async function readNativeInstructionAuthority() {
+  const authorityPath = path.join(dataRoot, ".dino", "state", "native_instruction_authority.json");
+  const authority = await readJson(authorityPath);
+  if (authority && typeof authority === "object") {
+    return {
+      ok: true,
+      _path: rel(authorityPath),
+      ...authority,
+    };
+  }
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    generated_at: null,
+    latest_verified_at: null,
+    counts: {
+      surfaces: 0,
+      scanned: 0,
+      required_missing: 0,
+      conflicts: 0,
+      warnings: 0,
+      evidence: 0,
+    },
+    findings: [],
+    warnings: ["native_instruction_authority_missing"],
+    visible_status: "Native instruction authority missing",
+    _path: rel(authorityPath),
+  };
+}
+
 async function readOsV2Status() {
   const [gates, lifecycleReports, behaviorEvals, provenance, sourceChunks] = await Promise.all([
     readJsonDir(".dino/gates", 20),
@@ -712,11 +743,12 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, nativeAuthority, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
+    readNativeInstructionAuthority(),
     readLifecycleQueue(),
     readSyncRisk(),
     readOsV2Status(),
@@ -727,11 +759,13 @@ async function state() {
       ...payload.summary,
       graph_health_status: graphHealth.status,
       graph_health_score: graphHealth.score,
+      native_instruction_authority_status: nativeAuthority.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
       os_v2_status: osV2.status,
     },
     graph_health: graphHealth,
+    native_instruction_authority: nativeAuthority,
     lifecycle,
     sync_risk: syncRisk,
     os_v2: osV2,
