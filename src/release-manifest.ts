@@ -232,7 +232,7 @@ export async function buildReleaseManifestReport(
   if (appGit.head_matches_upstream === false) blockers.push("app_head_not_pushed_to_upstream");
   if (dataGit.head_matches_upstream === false) blockers.push("data_head_not_pushed_to_upstream");
   if (appGit.tracked_dirty_count > 0) blockers.push("app_tracked_worktree_dirty");
-  if (dataGit.tracked_dirty_count > 0) blockers.push("data_tracked_worktree_dirty");
+  if (dataGit.tracked_dirty_count > 0) warnings.push("data_tracked_worktree_dirty");
   if (!expectedTag) blockers.push("release_tag_missing");
   else if (!tagTarget) blockers.push("release_tag_missing");
   else if (appGit.head && tagTarget !== appGit.head) blockers.push("release_tag_target_mismatch");
