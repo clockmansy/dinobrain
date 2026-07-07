@@ -23,6 +23,8 @@ npm run status:freshness
 npm run status:freshness:verify
 npm run review:settle
 npm run review:settle:verify
+npm run review:worklist
+npm run review:worklist:verify
 npm run task:lifecycle
 npm run task:lifecycle:verify
 npm run task:lifecycle:settle
@@ -67,6 +69,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 `npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, remains self-reference safe after writing `monitoring_status.json`, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
 
 `npm run review:settle` writes `.dino/state/wiki-review-queue.json`, `.dino/state/semantic_jobs.json`, and `.dino/state/review_queue_settlement_actions.json`. It does not auto-approve memory. It classifies every candidate/review item as closed, manual semantic review, auto-compounded behavior hold, legacy unreviewed hold, evidence repair, missing review, missing candidate, or unclassified. By default it is a dry-run and fails when deterministic auto-hold candidates remain. With `-- --apply`, it mutates only auto-generated behavior/legacy generated-memory candidates into `held` candidate records and `settled_hold` review records, keeps them out of default retrieval, and leaves manual semantic review/evidence-repair/mapping blockers visible.
+
+`npm run review:worklist` writes `.dino/state/review_worklist.json` plus a public-safe summary under `60_Operations/review-worklists/`. It clusters open manual-review candidates by normalized claim, ranks duplicate/user-preference/project-state groups, and recommends merge, hold, reject, or manual review without approving memory or storing raw conversation archives. The public summary uses relative state paths and redacts local home paths.
 
 `npm run review:settle:verify` proves this classification and safe auto-hold settlement on a temporary vault with behavior-rule, legacy, missing-evidence, missing-review, missing-candidate, and closed-review fixtures.
 

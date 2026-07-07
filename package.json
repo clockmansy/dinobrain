@@ -20,6 +20,8 @@
     "status:freshness:verify": "node scripts/verify-status-freshness.mjs",
     "review:settle": "node dist/build-review-settlement.js",
     "review:settle:verify": "node scripts/verify-review-settlement.mjs",
+    "review:worklist": "node dist/build-review-worklist.js",
+    "review:worklist:verify": "node scripts/verify-review-worklist.mjs",
     "task:lifecycle": "node dist/build-task-lifecycle.js",
     "task:lifecycle:verify": "node scripts/verify-task-lifecycle.mjs",
     "task:lifecycle:settle": "node dist/build-task-lifecycle-settlement.js",
