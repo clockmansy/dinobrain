@@ -5,6 +5,7 @@ param(
   [string]$VaultPath = "",
   [string]$HooksPath = "",
   [string]$ConfigPath = "",
+  [string]$RequirementsPath = "",
   [string]$NodeExe = "",
   [string]$Snippet = "",
   [int]$TimeoutSeconds = 3600,
@@ -24,6 +25,11 @@ function Resolve-DefaultPath {
     return [System.IO.Path]::GetFullPath($expanded)
   }
   return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $expanded))
+}
+
+function Get-DefaultProgramData {
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) { return $env:ProgramData }
+  return "C:\ProgramData"
 }
 
 function Find-PortableNode {
@@ -83,22 +89,32 @@ function Get-CodexThreadCreatedAt {
 }
 
 function Get-CodexThreadFreshness {
-  param([Parameter(Mandatory = $true)][string]$UserHooksPath)
+  param(
+    [Parameter(Mandatory = $true)][string]$UserHooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsConfigPath
+  )
 
   $threadId = [string]$env:CODEX_THREAD_ID
   $threadCreatedAt = Get-CodexThreadCreatedAt -ThreadId $threadId
   $hooksWriteTime = if (Test-Path -LiteralPath $UserHooksPath) { (Get-Item -LiteralPath $UserHooksPath).LastWriteTimeUtc } else { $null }
+  $requirementsWriteTime = if (Test-Path -LiteralPath $RequirementsConfigPath) { (Get-Item -LiteralPath $RequirementsConfigPath).LastWriteTimeUtc } else { $null }
+  $promptHookWriteTime = $hooksWriteTime
+  if ($requirementsWriteTime -and ((-not $promptHookWriteTime) -or $requirementsWriteTime -gt $promptHookWriteTime)) {
+    $promptHookWriteTime = $requirementsWriteTime
+  }
   $stale = [bool](
     -not [string]::IsNullOrWhiteSpace($threadId) -and
     $null -ne $threadCreatedAt -and
-    $null -ne $hooksWriteTime -and
-    $threadCreatedAt -lt $hooksWriteTime
+    $null -ne $promptHookWriteTime -and
+    $threadCreatedAt -lt $promptHookWriteTime
   )
 
   return [ordered]@{
     current_thread_id = if ([string]::IsNullOrWhiteSpace($threadId)) { $null } else { $threadId }
     current_thread_created_at = if ($threadCreatedAt) { $threadCreatedAt.ToString("o") } else { $null }
     hooks_write_time = if ($hooksWriteTime) { $hooksWriteTime.ToString("o") } else { $null }
+    requirements_write_time = if ($requirementsWriteTime) { $requirementsWriteTime.ToString("o") } else { $null }
+    prompt_hook_write_time = if ($promptHookWriteTime) { $promptHookWriteTime.ToString("o") } else { $null }
     current_thread_stale_for_hooks = $stale
   }
 }
@@ -135,6 +151,11 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 } else {
   $ConfigPath = Resolve-DefaultPath $ConfigPath
 }
+if ([string]::IsNullOrWhiteSpace($RequirementsPath)) {
+  $RequirementsPath = Resolve-DefaultPath (Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml")
+} else {
+  $RequirementsPath = Resolve-DefaultPath $RequirementsPath
+}
 
 $node = Find-PortableNode
 if ([string]::IsNullOrWhiteSpace($node)) {
@@ -160,7 +181,7 @@ $Snippet
 This is a DinoBrain live hook proof prompt. Please reply with one short sentence after the pre-response OS context is loaded.
 "@
 $prompt = $prompt.Trim()
-$threadFreshness = Get-CodexThreadFreshness -UserHooksPath $HooksPath
+$threadFreshness = Get-CodexThreadFreshness -UserHooksPath $HooksPath -RequirementsConfigPath $RequirementsPath
 
 if ($Detached -and -not $Json) {
   $childArgs = @(
@@ -178,6 +199,8 @@ if ($Detached -and -not $Json) {
     $HooksPath,
     "-ConfigPath",
     $ConfigPath,
+    "-RequirementsPath",
+    $RequirementsPath,
     "-NodeExe",
     $node,
     "-Snippet",
@@ -210,6 +233,7 @@ if (-not $SkipApproval) {
     -AppPath $AppPath `
     -HooksPath $HooksPath `
     -ConfigPath $ConfigPath `
+    -RequirementsPath $RequirementsPath `
     -RestartStaleCodex `
     -RestartStaleMcp `
     -NoUi
@@ -271,6 +295,7 @@ $report = [ordered]@{
   vault_path = $VaultPath
   hooks_path = $HooksPath
   config_path = $ConfigPath
+  requirements_path = $RequirementsPath
   snippet = $Snippet
   prompt_copied_to_clipboard = $clipboardOk
   since = $since

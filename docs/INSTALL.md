@@ -28,6 +28,8 @@ After install, the installer creates a double-click launcher in both:
 <install-root>\dinobrain\DinoBrain Observatory.cmd
 <install-root>\DinoBrain Codex Live Proof.cmd
 <install-root>\dinobrain\DinoBrain Codex Live Proof.cmd
+<install-root>\DinoBrain Codex Managed Hook Admin.cmd
+<install-root>\dinobrain\DinoBrain Codex Managed Hook Admin.cmd
 ```
 
 Run either `DinoBrain Observatory.cmd` launcher to open the live Observatory at `http://127.0.0.1:3847/`. The page includes a live LLM Wiki graph view backed by the SQLite/JSON Wiki index, plus task, context pack, trace, and memory audit logs.
@@ -147,7 +149,18 @@ auto-committed and hook preflight does not auto-push unless you explicitly opt
 in with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and
 `DINOBRAIN_AUTO_SYNC_PUSH=1`.
 
-10. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
+10. Registers Codex prompt hooks.
+
+The preferred path is a Codex managed hook in:
+
+```text
+C:\ProgramData\OpenAI\Codex\requirements.toml
+C:\ProgramData\OpenAI\Codex\DinoBrainHooks\dinobrain-managed-user-prompt-hook.ps1
+```
+
+Codex treats hooks declared through managed requirements as policy-managed hooks, so this is the trust-free install path. The installer tries to write the managed hook directly. If the current process cannot write ProgramData, it still creates `DinoBrain Codex Managed Hook Admin.cmd`; run that launcher as administrator to install the managed hook later.
+
+The installer also registers a user-level fallback prompt hook at `C:\Users\<you>\.codex\hooks.json`.
 
 This hook calls:
 
@@ -155,7 +168,7 @@ This hook calls:
 C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
 ```
 
-Because this is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The installer also makes sure `[features] hooks = true` is present in `C:\Users\<you>\.codex\config.toml` when hook registration is enabled. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
+Because this fallback is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The installer also makes sure `[features] hooks = true` is present in `C:\Users\<you>\.codex\config.toml` when hook registration is enabled. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
 
 The Codex config writer normalizes line endings to CRLF, rejects bare carriage return bytes after writing, and validates the DinoBrain TOML block before reporting success. This prevents hidden `\r` bytes in `config.toml` from breaking Codex startup.
 
@@ -163,7 +176,11 @@ The Codex config writer normalizes line endings to CRLF, rejects bare carriage r
 
 The installer immediately simulates a `UserPromptSubmit` event through the same PowerShell hook wrapper that Codex will call. This proves the installed hook can start DinoBrain preflight, use the portable Node runtime, reach the data vault, and return `hookSpecificOutput.additionalContext` without requiring a manual first hook run. The handshake is tagged as `dinobrain-installer` and disables session import so it does not create review candidates from the synthetic prompt.
 
-This handshake does not bypass Codex hook trust. After hook registration, the installer creates and launches `DinoBrain Codex Hook Approval.cmd`. That helper restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click still has to be done by the user in Codex.
+This handshake proves the wrapper path but it is not live Codex Desktop proof. After hook registration, the installer creates `DinoBrain Codex Hook Approval.cmd`, `DinoBrain Codex Managed Hook Admin.cmd`, and `DinoBrain Codex Live Proof.cmd`.
+
+Use the managed-hook admin launcher when ProgramData registration was skipped or failed. Use the approval helper only for the user-level fallback hook; it restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click for user hooks still has to be done by the user in Codex.
+
+After a managed hook or user hook changes, fully restart Codex and run the live proof in a newly created Codex Desktop workspace thread. Threads created before the latest `hooks.json` or `requirements.toml` write time are not accepted as proof.
 
 12. Registers DinoBrain in Claude Code. The installer writes a user-level `UserPromptSubmit` hook to `C:\Users\<you>\.claude\settings.json` so Claude Code can receive DinoBrain pre-response context before it processes a prompt. When `claude` is available, it also registers the DinoBrain MCP server:
 

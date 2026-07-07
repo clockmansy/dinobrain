@@ -21,14 +21,16 @@ try {
   $codexDir = Join-Path $temp ".codex"
   $configPath = Join-Path $codexDir "config.toml"
   $hooksPath = Join-Path $codexDir "hooks.json"
+  $requirementsPath = Join-Path $codexDir "requirements.toml"
+  $managedHookDir = Join-Path $temp "managed-hooks"
 
-  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $codexDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $codexDir, $managedHookDir | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $appDir "app.txt"), "app`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $dataDir "data.txt"), "data`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $nodeRoot "node.exe"), "node`n", [System.Text.UTF8Encoding]::new($false))
 
   foreach ($launcherRoot in @($installRoot, $appDir)) {
-    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Uninstall Everything.cmd")) {
+    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Uninstall Everything.cmd")) {
       [System.IO.File]::WriteAllText((Join-Path $launcherRoot $launcherName), "@echo off`r`n", [System.Text.UTF8Encoding]::new($false))
     }
   }
@@ -76,6 +78,28 @@ DINOBRAIN_DATA_DIR = '$dataDir'
   } | ConvertTo-Json -Depth 20
   [System.IO.File]::WriteAllText($hooksPath, $hooks, [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText("$hooksPath.bak-dinobrain-test", "backup`n", [System.Text.UTF8Encoding]::new($false))
+  $requirements = @"
+[features]
+apps = true
+hooks = true
+
+[hooks]
+windows_managed_dir = '$managedHookDir'
+
+# DinoBrain managed UserPromptSubmit begin
+[[hooks.UserPromptSubmit]]
+matcher = ""
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command_windows = 'powershell.exe -File $managedHookDir\dinobrain-managed-user-prompt-hook.ps1'
+timeout = 30
+statusMessage = "Loading DinoBrain context"
+# DinoBrain managed UserPromptSubmit end
+"@
+  [System.IO.File]::WriteAllText($requirementsPath, $requirements, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText("$requirementsPath.bak-dinobrain-test", "backup`n", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText((Join-Path $managedHookDir "dinobrain-managed-user-prompt-hook.ps1"), "# managed wrapper`n", [System.Text.UTF8Encoding]::new($false))
 
   & powershell.exe `
     -NoProfile `
@@ -87,6 +111,8 @@ DINOBRAIN_DATA_DIR = '$dataDir'
     -ToolsDir $toolsDir `
     -CodexConfigPath $configPath `
     -CodexHooksPath $hooksPath `
+    -CodexRequirementsPath $requirementsPath `
+    -CodexManagedHookDir $managedHookDir `
     -ClaudeCommand "definitely-not-a-claude-command" `
     -Purge `
     -Yes
@@ -121,6 +147,19 @@ DINOBRAIN_DATA_DIR = '$dataDir'
   }
   if (Test-Path -LiteralPath "$hooksPath.bak-dinobrain-test") {
     throw "DinoBrain hooks backup was not removed in purge."
+  }
+  $requirementsText = [System.IO.File]::ReadAllText($requirementsPath)
+  if ($requirementsText -match "DinoBrain managed UserPromptSubmit" -or $requirementsText -match "dinobrain-managed-user-prompt-hook") {
+    throw "DinoBrain managed hook block was not removed."
+  }
+  if ($requirementsText -notmatch "(?m)^apps = true\r?$") {
+    throw "Non-DinoBrain requirements content was not preserved."
+  }
+  if (Test-Path -LiteralPath (Join-Path $managedHookDir "dinobrain-managed-user-prompt-hook.ps1")) {
+    throw "DinoBrain managed hook wrapper was not removed."
+  }
+  if (Test-Path -LiteralPath "$requirementsPath.bak-dinobrain-test") {
+    throw "DinoBrain requirements backup was not removed in purge."
   }
 
   Write-Host "uninstall verification ok"

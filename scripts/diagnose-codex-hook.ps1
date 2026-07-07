@@ -5,6 +5,7 @@ param(
   [string]$VaultPath = "",
   [string]$HooksPath = "",
   [string]$ConfigPath = "",
+  [string]$RequirementsPath = "",
   [string]$NodeExe = "",
   [switch]$Json
 )
@@ -15,6 +16,11 @@ $ErrorActionPreference = "Stop"
 function Resolve-DefaultPath {
   param([Parameter(Mandatory = $true)][string]$PathValue)
   return [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($PathValue))
+}
+
+function Get-DefaultProgramData {
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) { return $env:ProgramData }
+  return "C:\ProgramData"
 }
 
 function Add-Check {
@@ -70,6 +76,19 @@ function Get-TomlValue {
   $match = [regex]::Match($Section, "(?m)^\s*$escaped\s*=\s*(?<value>.+?)\s*$")
   if ($match.Success) { return $match.Groups["value"].Value.Trim() }
   return $null
+}
+
+function ConvertFrom-TomlString {
+  param([AllowNull()][string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $trimmed = $Value.Trim()
+  if ($trimmed.Length -ge 2 -and $trimmed[0] -eq "'" -and $trimmed[$trimmed.Length - 1] -eq "'") {
+    return $trimmed.Substring(1, $trimmed.Length - 2)
+  }
+  if ($trimmed.Length -ge 2 -and $trimmed[0] -eq '"' -and $trimmed[$trimmed.Length - 1] -eq '"') {
+    return $trimmed.Substring(1, $trimmed.Length - 2).Replace('\"', '"').Replace("\\", "\")
+  }
+  return $trimmed
 }
 
 function Get-HookCommand {
@@ -216,6 +235,11 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 } else {
   $ConfigPath = Resolve-DefaultPath $ConfigPath
 }
+if ([string]::IsNullOrWhiteSpace($RequirementsPath)) {
+  $RequirementsPath = Resolve-DefaultPath (Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml")
+} else {
+  $RequirementsPath = Resolve-DefaultPath $RequirementsPath
+}
 if ([string]::IsNullOrWhiteSpace($NodeExe) -and $env:LOCALAPPDATA) {
   $NodeExe = Join-Path $env:LOCALAPPDATA "DinoBrain\tools\node-v24.18.0-win-x64\node.exe"
 }
@@ -250,6 +274,31 @@ if (Test-Path -LiteralPath $ConfigPath) {
   Add-Check $checks "codex_config" "warn" "Codex config.toml was not found" @{ config_path = $ConfigPath }
 }
 
+$managedHookPresent = $false
+if (Test-Path -LiteralPath $RequirementsPath) {
+  try {
+    $requirementsText = [System.IO.File]::ReadAllText($RequirementsPath)
+    $requirementsHooksSection = Get-TomlSection -Text $requirementsText -SectionName "hooks"
+    $managedDir = ConvertFrom-TomlString (Get-TomlValue -Section $requirementsHooksSection -KeyName "windows_managed_dir")
+    $managedHookPresent = ($requirementsText -match "dinobrain-managed-user-prompt-hook\.ps1" -or $requirementsText -match "dinobrain-user-prompt-hook\.ps1") -and $requirementsText -match "\[\[hooks\.UserPromptSubmit\]\]"
+    $wrapperPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($managedDir)) {
+      $wrapperPath = Join-Path (Resolve-DefaultPath $managedDir) "dinobrain-managed-user-prompt-hook.ps1"
+    }
+    if ($managedHookPresent -and $wrapperPath -and (Test-Path -LiteralPath $wrapperPath)) {
+      Add-Check $checks "codex_managed_hook" "pass" "DinoBrain managed UserPromptSubmit hook is installed through requirements.toml" @{ requirements_path = $RequirementsPath; managed_dir = $managedDir; wrapper_path = $wrapperPath }
+    } elseif ($managedHookPresent) {
+      Add-Check $checks "codex_managed_hook" "warn" "DinoBrain managed hook is declared, but the managed wrapper was not found" @{ requirements_path = $RequirementsPath; managed_dir = $managedDir; wrapper_path = $wrapperPath }
+    } else {
+      Add-Check $checks "codex_managed_hook" "warn" "No DinoBrain managed hook found in requirements.toml; user hook still needs /hooks trust" @{ requirements_path = $RequirementsPath }
+    }
+  } catch {
+    Add-Check $checks "codex_managed_hook" "warn" "Could not inspect Codex managed requirements" @{ requirements_path = $RequirementsPath; error = $_.Exception.Message }
+  }
+} else {
+  Add-Check $checks "codex_managed_hook" "warn" "Codex managed requirements.toml was not found; user hook still needs /hooks trust" @{ requirements_path = $RequirementsPath }
+}
+
 $hookCommand = ""
 if (Test-Path -LiteralPath $HooksPath) {
   $hookJson = Read-JsonSafe -PathValue $HooksPath
@@ -271,8 +320,10 @@ if (Test-Path -LiteralPath $HooksPath) {
       }
       if ($stateEnabled -eq $false) {
         Add-Check $checks "codex_user_hook_trust" "fail" "DinoBrain UserPromptSubmit hook is disabled by persisted hook state" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled }
-      } elseif ([string]::IsNullOrWhiteSpace([string]$trustedHash)) {
+      } elseif ([string]::IsNullOrWhiteSpace([string]$trustedHash) -and -not $managedHookPresent) {
         Add-Check $checks "codex_user_hook_trust" "warn" "DinoBrain hook is registered, but no visible trusted_hash/state is present in hooks.json; Codex may skip it until /hooks trusts the current command hash" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled; trusted_hash_present = $false }
+      } elseif ([string]::IsNullOrWhiteSpace([string]$trustedHash) -and $managedHookPresent) {
+        Add-Check $checks "codex_user_hook_trust" "pass" "User hook trust metadata is absent, but a managed DinoBrain hook is configured as the trust-free pre-response path" @{ hooks_path = $HooksPath; trusted_hash_present = $false; managed_hook_present = $true }
       } else {
         Add-Check $checks "codex_user_hook_trust" "pass" "DinoBrain hook has visible persisted trust metadata" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled; trusted_hash_present = $true }
       }
@@ -294,14 +345,24 @@ if ($codexCommand) {
 try {
   $runningCodex = @(Get-Process | Where-Object { $_.ProcessName -match "^(codex|OpenAI\.Codex)$" })
   $hooksWriteTime = if (Test-Path -LiteralPath $HooksPath) { (Get-Item -LiteralPath $HooksPath).LastWriteTime } else { $null }
+  $requirementsWriteTime = if (Test-Path -LiteralPath $RequirementsPath) { (Get-Item -LiteralPath $RequirementsPath).LastWriteTime } else { $null }
+  $promptHookWriteTime = $hooksWriteTime
+  if ($requirementsWriteTime -and ((-not $promptHookWriteTime) -or $requirementsWriteTime -gt $promptHookWriteTime)) {
+    $promptHookWriteTime = $requirementsWriteTime
+  }
   $oldProcesses = @()
-  if ($hooksWriteTime) {
+  if ($promptHookWriteTime) {
     $oldProcesses = @($runningCodex | Where-Object {
-      try { $_.StartTime -lt $hooksWriteTime } catch { $false }
+      try { $_.StartTime -lt $promptHookWriteTime } catch { $false }
     })
   }
   if ($oldProcesses.Count -gt 0) {
-    Add-Check $checks "codex_reload" "warn" "Codex was already running before hooks.json changed; restart Codex or start a new trusted session" @{ hooks_write_time = $hooksWriteTime; old_process_count = $oldProcesses.Count }
+    Add-Check $checks "codex_reload" "warn" "Codex was already running before prompt hook config changed; restart Codex before live proof" @{
+      hooks_write_time = if ($hooksWriteTime) { $hooksWriteTime.ToUniversalTime().ToString("o") } else { $null }
+      requirements_write_time = if ($requirementsWriteTime) { $requirementsWriteTime.ToUniversalTime().ToString("o") } else { $null }
+      prompt_hook_write_time = if ($promptHookWriteTime) { $promptHookWriteTime.ToUniversalTime().ToString("o") } else { $null }
+      old_process_count = $oldProcesses.Count
+    }
   } else {
     Add-Check $checks "codex_reload" "pass" "No stale Codex process detected"
   }
@@ -313,25 +374,35 @@ try {
   $currentThreadId = [string]$env:CODEX_THREAD_ID
   $threadCreatedAt = Get-CodexThreadCreatedAt -ThreadId $currentThreadId
   $hooksWriteTimeUtc = if (Test-Path -LiteralPath $HooksPath) { (Get-Item -LiteralPath $HooksPath).LastWriteTimeUtc } else { $null }
+  $requirementsWriteTimeUtc = if (Test-Path -LiteralPath $RequirementsPath) { (Get-Item -LiteralPath $RequirementsPath).LastWriteTimeUtc } else { $null }
+  $promptHookWriteTimeUtc = $hooksWriteTimeUtc
+  if ($requirementsWriteTimeUtc -and ((-not $promptHookWriteTimeUtc) -or $requirementsWriteTimeUtc -gt $promptHookWriteTimeUtc)) {
+    $promptHookWriteTimeUtc = $requirementsWriteTimeUtc
+  }
   if ([string]::IsNullOrWhiteSpace($currentThreadId)) {
     Add-Check $checks "codex_thread_freshness" "pass" "No CODEX_THREAD_ID is present in this shell; thread freshness check skipped"
-  } elseif ($null -eq $threadCreatedAt -or $null -eq $hooksWriteTimeUtc) {
+  } elseif ($null -eq $threadCreatedAt -or $null -eq $promptHookWriteTimeUtc) {
     Add-Check $checks "codex_thread_freshness" "warn" "Could not compare the current Codex thread with hooks.json" @{
       current_thread_id = $currentThreadId
       current_thread_created_at = if ($threadCreatedAt) { $threadCreatedAt.ToString("o") } else { $null }
       hooks_write_time = if ($hooksWriteTimeUtc) { $hooksWriteTimeUtc.ToString("o") } else { $null }
+      requirements_write_time = if ($requirementsWriteTimeUtc) { $requirementsWriteTimeUtc.ToString("o") } else { $null }
     }
-  } elseif ($threadCreatedAt -lt $hooksWriteTimeUtc) {
-    Add-Check $checks "codex_thread_freshness" "warn" "Current Codex thread was created before hooks.json changed; live proof must use a fresh Codex Desktop thread" @{
+  } elseif ($threadCreatedAt -lt $promptHookWriteTimeUtc) {
+    Add-Check $checks "codex_thread_freshness" "warn" "Current Codex thread was created before prompt hook config changed; live proof must use a fresh Codex Desktop thread" @{
       current_thread_id = $currentThreadId
       current_thread_created_at = $threadCreatedAt.ToString("o")
-      hooks_write_time = $hooksWriteTimeUtc.ToString("o")
+      hooks_write_time = if ($hooksWriteTimeUtc) { $hooksWriteTimeUtc.ToString("o") } else { $null }
+      requirements_write_time = if ($requirementsWriteTimeUtc) { $requirementsWriteTimeUtc.ToString("o") } else { $null }
+      prompt_hook_write_time = $promptHookWriteTimeUtc.ToString("o")
     }
   } else {
-    Add-Check $checks "codex_thread_freshness" "pass" "Current Codex thread was created after hooks.json changed" @{
+    Add-Check $checks "codex_thread_freshness" "pass" "Current Codex thread was created after prompt hook config changed" @{
       current_thread_id = $currentThreadId
       current_thread_created_at = $threadCreatedAt.ToString("o")
-      hooks_write_time = $hooksWriteTimeUtc.ToString("o")
+      hooks_write_time = if ($hooksWriteTimeUtc) { $hooksWriteTimeUtc.ToString("o") } else { $null }
+      requirements_write_time = if ($requirementsWriteTimeUtc) { $requirementsWriteTimeUtc.ToString("o") } else { $null }
+      prompt_hook_write_time = $promptHookWriteTimeUtc.ToString("o")
     }
   }
 } catch {
@@ -377,8 +448,11 @@ if ($failCount -eq 0 -and $warnCount -eq 0) {
   if (@($checks | Where-Object { $_.name -eq "codex_user_hook_trust" -and $_.status -eq "warn" }).Count -gt 0) {
     $nextSteps += "Run /hooks in Codex and trust the DinoBrain UserPromptSubmit hook for the current command hash, then use a fresh Codex Desktop workspace thread for live proof."
   }
+  if (@($checks | Where-Object { $_.name -eq "codex_managed_hook" -and $_.status -eq "warn" }).Count -gt 0) {
+    $nextSteps += "For a trust-free supported path, run npm run codex:hooks:managed or DinoBrain Codex Managed Hook Admin.cmd, then restart Codex and rerun live proof."
+  }
   $nextSteps += "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again."
-  $nextSteps += "If codex_thread_freshness is WARN, keep Codex open if needed but run the live proof in a new Codex Desktop thread created after hook approval."
+  $nextSteps += "If codex_thread_freshness is WARN, run the live proof in a new Codex Desktop thread created after the latest hook config reload."
   $nextSteps += "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."
 }
 
@@ -389,6 +463,7 @@ $report = [ordered]@{
   vault_path = $VaultPath
   hooks_path = $HooksPath
   config_path = $ConfigPath
+  requirements_path = $RequirementsPath
   checks = @($checks)
   next_steps = $nextSteps
 }

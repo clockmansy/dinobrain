@@ -14,7 +14,12 @@ const codexConfigPath = path.resolve(
   process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
 );
 const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? path.join(homedir(), ".codex", "hooks.json"));
+const programData = process.env.ProgramData || "C:\\ProgramData";
+const codexRequirementsPath = path.resolve(
+  process.env.DINOBRAIN_CODEX_REQUIREMENTS_PATH ?? path.join(programData, "OpenAI", "Codex", "requirements.toml"),
+);
 const requireCodexUserHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CODEX_USER_HOOK ?? "");
+const requireCodexManagedHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK ?? "");
 const claudeCommand = process.env.DINOBRAIN_CLAUDE_COMMAND ?? "claude";
 const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_CODE ?? "");
 const claudeSettingsPath = path.resolve(process.env.DINOBRAIN_CLAUDE_SETTINGS_PATH ?? path.join(homedir(), ".claude", "settings.json"));
@@ -205,6 +210,37 @@ function parseCodexUserHookConfig() {
     reason: matchedHook ? (hookHasAutoCompound ? "registered" : "dinobrain_hook_missing_auto_compound_env") : "dinobrain_user_prompt_hook_not_registered",
     command: matchedHook?.command ?? null,
     timeout: matchedHook?.timeout ?? null,
+  };
+}
+
+function parseCodexManagedHookConfig() {
+  if (!existsSync(codexRequirementsPath)) {
+    return {
+      ok: !requireCodexManagedHook,
+      required: requireCodexManagedHook,
+      requirements_path: codexRequirementsPath,
+      registered: false,
+      reason: "requirements_config_not_found",
+    };
+  }
+
+  const text = readFileSync(codexRequirementsPath, "utf8");
+  const hooksSection = tomlSection(text, "hooks");
+  const managedDir = tomlString(tomlValue(hooksSection, "windows_managed_dir"));
+  const registered =
+    /\[\[hooks\.UserPromptSubmit\]\]/.test(text) &&
+    /dinobrain-managed-user-prompt-hook\.ps1|dinobrain-user-prompt-hook\.ps1/i.test(text);
+  const wrapperPath = managedDir ? path.join(managedDir, "dinobrain-managed-user-prompt-hook.ps1") : null;
+  const wrapperExists = wrapperPath ? existsSync(wrapperPath) : false;
+  return {
+    ok: (registered && wrapperExists) || !requireCodexManagedHook,
+    required: requireCodexManagedHook,
+    requirements_path: codexRequirementsPath,
+    registered,
+    managed_dir: managedDir || null,
+    wrapper_path: wrapperPath,
+    wrapper_exists: wrapperExists,
+    reason: !registered ? "dinobrain_managed_user_prompt_hook_not_registered" : wrapperExists ? "registered" : "managed_wrapper_missing",
   };
 }
 
@@ -669,6 +705,7 @@ async function main() {
   const codexConfig = parseCodexDinoBrainConfig();
   const codexHookRuntime = parseCodexHookRuntimeConfig();
   const codexUserHook = parseCodexUserHookConfig();
+  const codexManagedHook = parseCodexManagedHookConfig();
   const claudePromptHook = parseClaudePromptHookConfig();
   const [codexMcp, compoundingLoop] = await Promise.all([
     verifyConfiguredCodexMcp(codexConfig),
@@ -677,12 +714,16 @@ async function main() {
   const retrievalEval = verifyGoldenRetrieval();
   const behaviorEval = verifyBehaviorQuality();
   const claudeCodeMcp = verifyClaudeCodeMcp();
+  const codexManagedHookRunnable = codexManagedHook.registered === true && codexManagedHook.wrapper_exists === true;
+  const codexPromptHookOk = requireCodexManagedHook
+    ? codexManagedHook.ok === true
+    : codexUserHook.ok === true || codexManagedHookRunnable;
 
   const report = {
     ok:
       codexMcp.ok === true &&
       codexHookRuntime.ok === true &&
-      codexUserHook.ok === true &&
+      codexPromptHookOk &&
       compoundingLoop.ok === true &&
       retrievalEval.ok === true &&
       behaviorEval.ok === true &&
@@ -693,6 +734,7 @@ async function main() {
       config: codexConfig,
       hook_runtime_config: codexHookRuntime,
       user_prompt_hook: codexUserHook,
+      managed_prompt_hook: codexManagedHook,
       mcp_list_tools: codexMcp,
       note: "If the Codex app was already running before MCP or user hooks were added, run DinoBrain Codex Hook Approval.cmd or open /hooks and trust the DinoBrain UserPromptSubmit hook.",
     },

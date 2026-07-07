@@ -4,7 +4,7 @@ Date: 2026-07-01
 
 DinoBrain can show how it interacts with Codex by combining two pieces:
 
-1. A Codex `UserPromptSubmit` hook that runs before the model turn.
+1. A Codex `UserPromptSubmit` hook that runs before the model turn. The preferred install path is a managed hook under `C:\ProgramData\OpenAI\Codex\requirements.toml`; the user-level `C:\Users\<you>\.codex\hooks.json` hook remains as a fallback.
 2. A local Observatory page that polls DinoBrain event, task, trace, Context Pack, and memory audit files.
 
 ## Flow
@@ -34,14 +34,19 @@ flowchart LR
 
 - `.codex/hooks.json`
 - `C:\Users\<you>\.codex\hooks.json`
+- `C:\ProgramData\OpenAI\Codex\requirements.toml`
+- `C:\ProgramData\OpenAI\Codex\DinoBrainHooks\dinobrain-managed-user-prompt-hook.ps1`
 - `scripts/dinobrain-user-prompt-hook.ps1`
 - `scripts/dinobrain-user-prompt-hook.mjs`
+- `scripts/install-codex-managed-hook.ps1`
 - `scripts/dinobrain-observatory.mjs`
 - `AGENTS.md`
 
-The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace. It also runs an installed-hook handshake by simulating one `UserPromptSubmit` event through the same PowerShell wrapper Codex will call. Then it launches `DinoBrain Codex Hook Approval.cmd`, which can restart stale Codex desktop processes, reopen Codex, copy `/hooks`, and show the trust steps. The repo keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
+The installer writes a managed hook block to `C:\ProgramData\OpenAI\Codex\requirements.toml` when it has permission. Codex managed hooks are trusted by policy, so this avoids the fragile first-run user trust prompt for the required pre-response OS path. If ProgramData is not writable during install, run `DinoBrain Codex Managed Hook Admin.cmd` or `npm run codex:hooks:managed`.
 
-Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake and approval helper prove and guide the hook command path, but they cannot bypass Codex's trust prompt.
+The installer also writes a user-level fallback hook to `C:\Users\<you>\.codex\hooks.json` so DinoBrain can run preflight from any Codex workspace when managed hooks are unavailable. It runs an installed-hook handshake by simulating one `UserPromptSubmit` event through the same PowerShell wrapper Codex will call. The repo keeps `.codex/hooks.json` as a project-level fallback and verification fixture.
+
+User-level Codex hooks still require hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake and approval helper prove and guide the hook command path, but they cannot bypass Codex's trust prompt for user hooks.
 
 Registration and trust are separate states. `codex:hooks:diagnose` and
 `verify:codex-live` report visible hook trust metadata when Codex stores it in
@@ -51,7 +56,7 @@ the safe diagnosis is that `/hooks` approval is still required for the current
 command hash or Codex is storing trust in a location this repository cannot
 inspect directly.
 
-If both the user-level hook and project hook are trusted, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
+If multiple hook paths are active, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
 
 ## Commands
 
@@ -61,6 +66,7 @@ npm run hook:verify
 npm run verify:codex-loop
 npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
+npm run codex:hooks:managed
 npm run codex:live-proof
 npm run observatory
 ```
@@ -74,11 +80,10 @@ npm run codex:live-proof
 ```
 
 The approval helper restarts processes that were already running before
-`hooks.json` or `dist/index.js` changed, reopens Codex, copies `/hooks` to the
+`hooks.json`, `requirements.toml`, or `dist/index.js` changed, reopens Codex, copies `/hooks` to the
 clipboard, and keeps the final trust decision in the user's hands.
 `codex:hooks:diagnose` also warns when the current `CODEX_THREAD_ID` predates
-`hooks.json`; that case needs a fresh Codex Desktop thread even when no running
-Codex process is stale.
+`hooks.json` or `requirements.toml`; that case needs a fresh Codex Desktop thread even when no running Codex process is stale.
 The live-proof helper then opens a separate proof window, copies a unique proof
 prompt, and keeps polling the real live verifier until a `codex_desktop`
 preflight event appears. The `npm run codex:live-proof` command itself returns
@@ -86,7 +91,7 @@ after the proof window starts. By default the proof window waits up to one hour,
 so there is time to approve hooks and create the fresh proof thread.
 
 Use a fresh Codex Desktop thread for the proof. A long-running thread that was
-created before `hooks.json` changed can keep running without dispatching the new
+created before `hooks.json` or `requirements.toml` changed can keep running without dispatching the new
 `UserPromptSubmit` hook, even when the current Codex process is not stale.
 
 Open:
@@ -125,8 +130,9 @@ Environment variables:
 
 ## Current Limits
 
-- Codex must trust project hooks before the hook runs.
-- Codex must trust the user-level hook before global preflight runs.
+- Managed Codex hooks require ProgramData write access at install/update time. They still require a full Codex restart and a fresh thread before live proof.
+- Codex must trust project hooks before the project fallback hook runs.
+- Codex must trust the user-level hook before the user fallback preflight runs.
 - A registered user-level hook is not enough evidence by itself; live proof
   requires either visible trust metadata plus a real event, or at minimum the
   real `codex_prompt_submitted` and `codex_preflight_completed` events for a

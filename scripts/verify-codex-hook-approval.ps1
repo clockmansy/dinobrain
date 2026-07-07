@@ -18,8 +18,10 @@ try {
   New-Item -ItemType Directory -Force -Path $appPath, $codexDir | Out-Null
   $hooksPath = Join-Path $codexDir "hooks.json"
   $configPath = Join-Path $codexDir "config.toml"
+  $requirementsPath = Join-Path $codexDir "requirements.toml"
   [System.IO.File]::WriteAllText($hooksPath, '{"hooks":{"UserPromptSubmit":[]}}', [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText($configPath, "[features]`r`nhooks = true`r`n", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText($requirementsPath, "[features]`r`nhooks = true`r`n", [System.Text.UTF8Encoding]::new($false))
 
   $output = & powershell.exe `
     -NoProfile `
@@ -28,6 +30,7 @@ try {
     -AppPath $appPath `
     -HooksPath $hooksPath `
     -ConfigPath $configPath `
+    -RequirementsPath $requirementsPath `
     -NoRestart `
     -NoOpen `
     -NoUi `

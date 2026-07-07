@@ -27,6 +27,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\diagnose-codex-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\install-codex-managed-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "uninstall.ps1"), "# test`n")
 
   $launchers = @(New-DinoBrainObservatoryLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
@@ -46,7 +47,7 @@ try {
     }
   }
 
-  $diagnoseLaunchers = @(New-DinoBrainHookDiagnoseLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json"))
+  $diagnoseLaunchers = @(New-DinoBrainHookDiagnoseLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -RequirementsPath (Join-Path $temp "requirements.toml"))
   if ($diagnoseLaunchers.Count -ne 2) {
     throw "Expected 2 hook diagnose launchers, got $($diagnoseLaunchers.Count)"
   }
@@ -57,7 +58,7 @@ try {
     }
   }
 
-  $approvalLaunchers = @(New-DinoBrainHookApprovalLauncher -InstallRoot $installRoot -AppPath $appPath -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json"))
+  $approvalLaunchers = @(New-DinoBrainHookApprovalLauncher -InstallRoot $installRoot -AppPath $appPath -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -RequirementsPath (Join-Path $temp "requirements.toml"))
   if ($approvalLaunchers.Count -ne 2) {
     throw "Expected 2 hook approval launchers, got $($approvalLaunchers.Count)"
   }
@@ -68,7 +69,7 @@ try {
     }
   }
 
-  $liveProofLaunchers = @(New-DinoBrainLiveProofLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json"))
+  $liveProofLaunchers = @(New-DinoBrainLiveProofLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -RequirementsPath (Join-Path $temp "requirements.toml"))
   if ($liveProofLaunchers.Count -ne 2) {
     throw "Expected 2 live proof launchers, got $($liveProofLaunchers.Count)"
   }
@@ -82,7 +83,21 @@ try {
     }
   }
 
-  $uninstallLaunchers = @(New-DinoBrainUninstallLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -ToolsDir (Split-Path -Parent $nodeRoot) -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -ClaudeCommand "claude")
+  $managedHookLaunchers = @(New-DinoBrainManagedHookLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -RequirementsPath (Join-Path $temp "requirements.toml") -ManagedDir (Join-Path $temp "managed-hooks"))
+  if ($managedHookLaunchers.Count -ne 2) {
+    throw "Expected 2 managed hook launchers, got $($managedHookLaunchers.Count)"
+  }
+  foreach ($launcher in $managedHookLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "install-codex-managed-hook\.ps1" -or $text -notmatch " -Elevate") {
+      throw "Managed hook launcher does not run the elevated managed hook installer: $launcher"
+    }
+    if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath)) {
+      throw "Managed hook launcher does not contain expected app/data paths: $launcher"
+    }
+  }
+
+  $uninstallLaunchers = @(New-DinoBrainUninstallLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -ToolsDir (Split-Path -Parent $nodeRoot) -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -RequirementsPath (Join-Path $temp "requirements.toml") -ManagedHookDir (Join-Path $temp "managed-hooks") -ClaudeCommand "claude")
   if ($uninstallLaunchers.Count -ne 2) {
     throw "Expected 2 uninstall launchers, got $($uninstallLaunchers.Count)"
   }

@@ -33,6 +33,8 @@ npm run verify:codex-live:recent
 npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:verify:launchers
+npm run installer:verify:managed-hook
+npm run codex:hooks:managed
 npm run installer:win
 npm run release:win -- -Tag v2.2.1 -ReplaceAsset
 ```
@@ -49,6 +51,10 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run installer:verify:launchers` verifies the generated Observatory, hook diagnose, hook approval, Codex live proof, and purge uninstall launchers without touching the real install paths.
 
+`npm run installer:verify:managed-hook` verifies the ProgramData managed-hook writer on temporary files: it preserves existing requirements content, installs DinoBrain exactly once, keeps an existing managed hook directory when present, and writes the wrapper script expected by Codex.
+
+`npm run codex:hooks:managed` installs or repairs the trust-free managed Codex hook path through `C:\ProgramData\OpenAI\Codex\requirements.toml`. It may request administrator permission through UAC. After it runs, fully restart Codex and create a fresh workspace thread before counting live proof.
+
 `npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The goal is not complete unless this command exits successfully.
@@ -57,9 +63,9 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 The same verifier also checks the safety valve for read-only work: `finish_task` with `growth_policy: "trace_only"` must write the task trace but skip auto-growth, compounding, and auto-sync push even when those environment flags are enabled.
 
-`npm run verify:codex-live -- --snippet "<prompt text>" --since "<iso timestamp>"` is stricter in a different way: it checks the real data vault and `reports/live-hooks` for a live Codex `UserPromptSubmit` event/report after the given time. It is expected to fail until a fresh trusted Codex session actually dispatches the installed hook for that prompt.
+`npm run verify:codex-live -- --snippet "<prompt text>" --since "<iso timestamp>"` is stricter in a different way: it checks the real data vault and `reports/live-hooks` for a live Codex `UserPromptSubmit` event/report after the given time. It is expected to fail until a fresh trusted or managed Codex session actually dispatches the installed hook for that prompt.
 
-`npm run verify:codex-live:recent` is the no-snippet live gate. It uses the same real-vault evidence path and fails unless a recent real Codex Desktop prompt produced a `codex_prompt_submitted` event, a matching `codex_preflight_completed` event, and a live hook report with selected memory paths. A green synthetic `hook:verify`, `verify:os`, or `verify:codex-loop` run does not replace this live proof.
+`npm run verify:codex-live:recent` is the no-snippet live gate. It uses the same real-vault evidence path and fails unless a recent real Codex Desktop prompt produced a `codex_prompt_submitted` event, a matching `codex_preflight_completed` event, and a live hook report with selected memory paths. A green synthetic `hook:verify`, `verify:os`, or `verify:codex-loop` run does not replace this live proof. If the report shows `managed_prompt_hook.ok=true` but no submitted event, the managed hook is installed but Codex has not yet produced live evidence; restart Codex, create a new workspace thread after the latest `requirements.toml` write time, paste the live-proof prompt, and rerun the verifier.
 
 `npm run verify:compounding` proves the closed behavior loop: completed task traces are distilled into accepted behavior rules, later memory search and Context Packs retrieve the promoted rule, memory-on behavior beats the memory-off baseline for the golden case, and invalid/duplicate behavior rules are held or merged.
 
@@ -114,6 +120,8 @@ The hook listens for `UserPromptSubmit` and calls the installed DinoBrain PowerS
 During installer verification, `DINOBRAIN_REQUIRE_CODEX_USER_HOOK=1` requires this hook to be present. Manual `npm run verify:os` reports the hook state but does not fail solely because the user-level hook is absent.
 
 The verifier also reports `hook_runtime_config`. This catches `hooks = false` under `[features]` and `allow_managed_hooks_only = true`, either of which can make a registered user hook look installed while Codex skips it at runtime.
+
+The verifier also reports `managed_prompt_hook`. A passing managed hook means `C:\ProgramData\OpenAI\Codex\requirements.toml` contains the DinoBrain `UserPromptSubmit` declaration and the configured managed wrapper exists. This satisfies the registration/trust-path check, but not the live-behavior check; `verify:codex-live` must still find real `codex_desktop` events.
 
 The project hook in `.codex/hooks.json` remains for local verification and fallback. The runtime hook uses a short lock in `.dino/hook-locks` so project-level and user-level hooks do not both create task records for the same prompt.
 

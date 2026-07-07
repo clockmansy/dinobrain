@@ -11,6 +11,10 @@ const codexConfigPath = path.resolve(
   process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
 );
 const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? path.join(homedir(), ".codex", "hooks.json"));
+const programData = process.env.ProgramData || "C:\\ProgramData";
+const codexRequirementsPath = path.resolve(
+  process.env.DINOBRAIN_CODEX_REQUIREMENTS_PATH ?? path.join(programData, "OpenAI", "Codex", "requirements.toml"),
+);
 const serverPath = path.join(root, "dist", "index.js");
 
 function argValue(name, fallback = "") {
@@ -77,6 +81,11 @@ function loadThreadDiagnostics() {
   const currentThreadId = process.env.CODEX_THREAD_ID ?? "";
   const currentThreadCreatedAt = decodeUuidV7Timestamp(currentThreadId);
   const hooksLastWrite = existsSync(codexHooksPath) ? statSync(codexHooksPath).mtime : null;
+  const requirementsLastWrite = existsSync(codexRequirementsPath) ? statSync(codexRequirementsPath).mtime : null;
+  const promptHookLastWrite =
+    hooksLastWrite && requirementsLastWrite
+      ? new Date(Math.max(hooksLastWrite.getTime(), requirementsLastWrite.getTime()))
+      : (hooksLastWrite ?? requirementsLastWrite);
   const sessionIndexPath = path.join(homedir(), ".codex", "session_index.jsonl");
   const globalStatePath = path.join(homedir(), ".codex", ".codex-global-state.json");
   const globalState = existsSync(globalStatePath) ? readJson(globalStatePath) : null;
@@ -100,7 +109,7 @@ function loadThreadDiagnostics() {
           thread_name: record.thread_name ?? null,
           created_at: createdAt?.toISOString() ?? null,
           updated_at: record.updated_at ?? null,
-          created_after_hooks: Boolean(createdAt && hooksLastWrite && createdAt >= hooksLastWrite),
+          created_after_hooks: Boolean(createdAt && promptHookLastWrite && createdAt >= promptHookLastWrite),
           projectless: projectlessThreadIds.has(record.id),
           workspace_root_hint: workspaceRootHints[record.id] ?? null,
         });
@@ -119,7 +128,11 @@ function loadThreadDiagnostics() {
     current_thread_id: currentThreadId || null,
     current_thread_created_at: currentThreadCreatedAt?.toISOString() ?? null,
     hooks_last_write: hooksLastWrite?.toISOString() ?? null,
-    current_thread_stale_for_hooks: Boolean(currentThreadCreatedAt && hooksLastWrite && currentThreadCreatedAt < hooksLastWrite),
+    requirements_last_write: requirementsLastWrite?.toISOString() ?? null,
+    prompt_hook_last_write: promptHookLastWrite?.toISOString() ?? null,
+    current_thread_stale_for_hooks: Boolean(
+      currentThreadCreatedAt && promptHookLastWrite && currentThreadCreatedAt < promptHookLastWrite,
+    ),
     recent_thread_count: recentThreads.length,
     recent_threads_after_hooks_count: recentThreadsAfterHooks.length,
     fresh_projectless_thread_count: freshProjectlessThreads.length,
@@ -150,6 +163,64 @@ function parseTomlFeatureHooks() {
     config_path: codexConfigPath,
     hooks: hooksValue ?? "missing",
     reason: /^true$/i.test(hooksValue ?? "") ? "features_hooks_true" : "features_hooks_not_true",
+  };
+}
+
+function tomlSection(text, sectionName) {
+  const header = `[${sectionName}]`;
+  const headerIndex = text.indexOf(header);
+  if (headerIndex < 0) return "";
+  const bodyStart = text.indexOf("\n", headerIndex);
+  if (bodyStart < 0) return "";
+  const start = bodyStart + 1;
+  const nextSection = text.slice(start).search(/^\[/m);
+  const end = nextSection < 0 ? text.length : start + nextSection;
+  return text.slice(start, end);
+}
+
+function tomlValue(section, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = section.match(new RegExp(`^\\s*${escaped}\\s*=\\s*(.+)$`, "m"));
+  return match?.[1]?.trim() ?? null;
+}
+
+function tomlString(raw) {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function parseManagedHookRegistration() {
+  if (!existsSync(codexRequirementsPath)) {
+    return {
+      ok: false,
+      requirements_path: codexRequirementsPath,
+      reason: "requirements_config_not_found",
+    };
+  }
+  const text = readFileSync(codexRequirementsPath, "utf8");
+  const hooksSection = tomlSection(text, "hooks");
+  const managedDir = tomlString(tomlValue(hooksSection, "windows_managed_dir"));
+  const dinobrainManagedHookRegistered =
+    /\[\[hooks\.UserPromptSubmit\]\]/.test(text) &&
+    /dinobrain-managed-user-prompt-hook\.ps1|dinobrain-user-prompt-hook\.ps1/i.test(text);
+  const managedWrapper = managedDir ? path.join(managedDir, "dinobrain-managed-user-prompt-hook.ps1") : null;
+  const wrapperExists = managedWrapper ? existsSync(managedWrapper) : false;
+  return {
+    ok: Boolean(dinobrainManagedHookRegistered && wrapperExists),
+    requirements_path: codexRequirementsPath,
+    dinobrain_managed_hook_registered: dinobrainManagedHookRegistered,
+    managed_dir: managedDir || null,
+    managed_wrapper: managedWrapper,
+    managed_wrapper_exists: wrapperExists,
+    reason: !dinobrainManagedHookRegistered
+      ? "dinobrain_managed_user_prompt_hook_not_registered"
+      : !wrapperExists
+        ? "dinobrain_managed_wrapper_missing"
+        : "registered",
   };
 }
 
@@ -203,9 +274,19 @@ function loadProcessDiagnostics() {
   const command = String.raw`
 $ErrorActionPreference = "Stop"
 $hooksPath = $env:DINOBRAIN_DIAG_HOOKS_PATH
+$requirementsPath = $env:DINOBRAIN_DIAG_REQUIREMENTS_PATH
 $serverPath = $env:DINOBRAIN_DIAG_SERVER_PATH
 $hooksItem = if (Test-Path -LiteralPath $hooksPath) { Get-Item -LiteralPath $hooksPath } else { $null }
+$requirementsItem = if (Test-Path -LiteralPath $requirementsPath) { Get-Item -LiteralPath $requirementsPath } else { $null }
 $serverItem = if (Test-Path -LiteralPath $serverPath) { Get-Item -LiteralPath $serverPath } else { $null }
+$promptHookWriteTime = $null
+if ($hooksItem -and $requirementsItem) {
+  if ($hooksItem.LastWriteTime -gt $requirementsItem.LastWriteTime) { $promptHookWriteTime = $hooksItem.LastWriteTime } else { $promptHookWriteTime = $requirementsItem.LastWriteTime }
+} elseif ($hooksItem) {
+  $promptHookWriteTime = $hooksItem.LastWriteTime
+} elseif ($requirementsItem) {
+  $promptHookWriteTime = $requirementsItem.LastWriteTime
+}
 $codexProcesses = @(
   Get-Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ProcessName -match "^(Codex|OpenAI\.Codex|codex)$" } |
@@ -216,7 +297,7 @@ $codexProcesses = @(
         name = $_.ProcessName
         id = $_.Id
         start_time = if ($start) { $start.ToUniversalTime().ToString("o") } else { $null }
-        stale_for_hooks = [bool]($hooksItem -and $start -and $start -lt $hooksItem.LastWriteTime)
+        stale_for_hooks = [bool]($promptHookWriteTime -and $start -and $start -lt $promptHookWriteTime)
       }
     }
 )
@@ -250,6 +331,8 @@ $mcpProcesses = @(
   ok = $true
   platform = "win32"
   hooks_last_write = if ($hooksItem) { $hooksItem.LastWriteTimeUtc.ToString("o") } else { $null }
+  requirements_last_write = if ($requirementsItem) { $requirementsItem.LastWriteTimeUtc.ToString("o") } else { $null }
+  prompt_hook_last_write = if ($promptHookWriteTime) { $promptHookWriteTime.ToUniversalTime().ToString("o") } else { $null }
   server_last_write = if ($serverItem) { $serverItem.LastWriteTimeUtc.ToString("o") } else { $null }
   codex_process_count = $codexProcesses.Count
   stale_codex_count = @($codexProcesses | Where-Object { $_.stale_for_hooks }).Count
@@ -268,6 +351,7 @@ $mcpProcesses = @(
       env: {
         ...process.env,
         DINOBRAIN_DIAG_HOOKS_PATH: codexHooksPath,
+        DINOBRAIN_DIAG_REQUIREMENTS_PATH: codexRequirementsPath,
         DINOBRAIN_DIAG_SERVER_PATH: serverPath,
       },
       windowsHide: true,
@@ -320,6 +404,7 @@ function main() {
 
   const hookRuntime = parseTomlFeatureHooks();
   const userHook = parseUserHookRegistration();
+  const managedHook = parseManagedHookRegistration();
   const processDiagnostics = loadProcessDiagnostics();
   const threadDiagnostics = loadThreadDiagnostics();
   const events = loadLiveEvents(since);
@@ -354,15 +439,17 @@ function main() {
       Array.isArray(item.context_paths) &&
       item.context_paths.length > 0,
   );
+  const hookRegistered = Boolean(userHook.ok || managedHook.ok);
 
   const result = {
-    ok: Boolean(hookRuntime.ok && userHook.ok && submitted && completed && report),
+    ok: Boolean(hookRuntime.ok && hookRegistered && submitted && completed && report),
     generated_at: new Date().toISOString(),
     data_root: dataRoot,
     since: since.toISOString(),
     snippet,
     hook_runtime: hookRuntime,
     user_prompt_hook: userHook,
+    managed_prompt_hook: managedHook,
     submitted_event: submitted ?? null,
     completed_event: completed ?? null,
     live_report: report ?? null,
@@ -377,10 +464,12 @@ function main() {
   if (!result.ok) {
     const reason = !hookRuntime.ok
       ? hookRuntime.reason
-      : !userHook.ok
+      : !hookRegistered
         ? userHook.reason
       : !submitted
-        ? userHook.trust_review_likely_required
+        ? managedHook.ok
+          ? `DinoBrain managed hook is registered through requirements.toml, but no live Codex desktop UserPromptSubmit preflight event was found. Restart Codex so it reloads managed requirements, paste the proof prompt into a fresh Codex Desktop workspace thread, then rerun this verifier.`
+          : userHook.trust_review_likely_required
           ? `DinoBrain hook is registered but no persisted trusted_hash/state is visible in hooks.json. Codex skips non-managed command hooks until /hooks records trust for the current command hash; approve the DinoBrain UserPromptSubmit hook in /hooks, then paste the proof prompt into a fresh Codex Desktop workspace thread.`
           : processDiagnostics.stale_codex_count > 0
           ? `no live Codex desktop UserPromptSubmit preflight event found; ${processDiagnostics.stale_codex_count} Codex process(es) started before hooks.json was updated. Run: ${processDiagnostics.approval_command}`

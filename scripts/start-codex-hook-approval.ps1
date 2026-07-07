@@ -4,6 +4,7 @@ param(
   [string]$AppPath = "",
   [string]$HooksPath = "",
   [string]$ConfigPath = "",
+  [string]$RequirementsPath = "",
   [switch]$RestartStaleCodex,
   [switch]$RestartStaleMcp,
   [switch]$NoRestart,
@@ -24,6 +25,11 @@ function Resolve-DefaultPath {
   return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $expanded))
 }
 
+function Get-DefaultProgramData {
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) { return $env:ProgramData }
+  return "C:\ProgramData"
+}
+
 function Get-DinoBrainCodexGuiProcesses {
   try {
     return @(Get-Process -ErrorAction Stop | Where-Object {
@@ -35,16 +41,24 @@ function Get-DinoBrainCodexGuiProcesses {
 }
 
 function Get-DinoBrainStaleCodexProcesses {
-  param([Parameter(Mandatory = $true)][string]$UserHooksPath)
+  param(
+    [Parameter(Mandatory = $true)][string]$UserHooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsConfigPath
+  )
 
   $running = @(Get-DinoBrainCodexGuiProcesses)
-  if (-not (Test-Path -LiteralPath $UserHooksPath)) {
+  if (-not (Test-Path -LiteralPath $UserHooksPath) -and -not (Test-Path -LiteralPath $RequirementsConfigPath)) {
     return @()
   }
 
-  $hooksWriteTime = (Get-Item -LiteralPath $UserHooksPath).LastWriteTime
+  $hooksWriteTime = if (Test-Path -LiteralPath $UserHooksPath) { (Get-Item -LiteralPath $UserHooksPath).LastWriteTime } else { $null }
+  $requirementsWriteTime = if (Test-Path -LiteralPath $RequirementsConfigPath) { (Get-Item -LiteralPath $RequirementsConfigPath).LastWriteTime } else { $null }
+  $promptHookWriteTime = $hooksWriteTime
+  if ($requirementsWriteTime -and ((-not $promptHookWriteTime) -or $requirementsWriteTime -gt $promptHookWriteTime)) {
+    $promptHookWriteTime = $requirementsWriteTime
+  }
   return @($running | Where-Object {
-    try { $_.StartTime -lt $hooksWriteTime } catch { $false }
+    try { $_.StartTime -lt $promptHookWriteTime } catch { $false }
   })
 }
 
@@ -179,9 +193,14 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 } else {
   $ConfigPath = Resolve-DefaultPath $ConfigPath
 }
+if ([string]::IsNullOrWhiteSpace($RequirementsPath)) {
+  $RequirementsPath = Resolve-DefaultPath (Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml")
+} else {
+  $RequirementsPath = Resolve-DefaultPath $RequirementsPath
+}
 
 $runningBefore = @(Get-DinoBrainCodexGuiProcesses)
-$staleProcesses = @(Get-DinoBrainStaleCodexProcesses -UserHooksPath $HooksPath)
+$staleProcesses = @(Get-DinoBrainStaleCodexProcesses -UserHooksPath $HooksPath -RequirementsConfigPath $RequirementsPath)
 $staleMcpProcesses = @(Get-DinoBrainStaleMcpProcesses -DinoBrainAppPath $AppPath)
 $stoppedIds = @()
 $stoppedMcpIds = @()
@@ -226,6 +245,7 @@ $report = [ordered]@{
   app_path = $AppPath
   hooks_path = $HooksPath
   config_path = $ConfigPath
+  requirements_path = $RequirementsPath
   running_codex_before = $runningBefore.Count
   stale_codex_before = $staleProcesses.Count
   stale_mcp_before = $staleMcpProcesses.Count

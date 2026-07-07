@@ -8,8 +8,11 @@ param(
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
   [string]$CodexHooksPath = "",
+  [string]$CodexRequirementsPath = "",
+  [string]$CodexManagedHookDir = "",
   [string]$ClaudeCommand = "claude",
   [switch]$SkipCodexHookConfig,
+  [switch]$SkipCodexManagedHookConfig,
   [switch]$SkipClaudeCodeConfig,
   [switch]$RemoveAppRepo,
   [switch]$RemoveDataRepo,
@@ -39,6 +42,13 @@ function Get-DefaultToolsDir {
   return (Join-Path $HOME "AppData\Local\DinoBrain\tools")
 }
 
+function Get-DefaultProgramData {
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
+    return $env:ProgramData
+  }
+  return "C:\ProgramData"
+}
+
 function Get-FullPath {
   param([Parameter(Mandatory = $true)][string]$PathValue)
   $expanded = [Environment]::ExpandEnvironmentVariables($PathValue)
@@ -56,6 +66,15 @@ function Remove-TomlSection {
   $escaped = [regex]::Escape($SectionName)
   $pattern = "(?ms)^\[$escaped\]\r?\n.*?(?=^\[|\z)"
   return [regex]::Replace($Text, $pattern, "").TrimEnd()
+}
+
+function Remove-DinoBrainManagedHookBlock {
+  param([AllowEmptyString()][string]$Text)
+  return [regex]::Replace(
+    $Text,
+    "(?ms)^\s*# DinoBrain managed UserPromptSubmit begin\r?\n.*?^\s*# DinoBrain managed UserPromptSubmit end\r?\n?",
+    ""
+  ).TrimEnd()
 }
 
 function ConvertTo-Hashtable {
@@ -166,6 +185,38 @@ function Remove-DinoBrainCodexUserHook {
   Write-Host "Codex user hooks backup: $backupPath"
 }
 
+function Remove-DinoBrainCodexManagedHook {
+  param(
+    [Parameter(Mandatory = $true)][string]$RequirementsPath,
+    [Parameter(Mandatory = $true)][string]$ManagedDir
+  )
+
+  if (Test-Path -LiteralPath $RequirementsPath) {
+    $content = [System.IO.File]::ReadAllText($RequirementsPath)
+    $updated = Remove-DinoBrainManagedHookBlock -Text $content
+    if ($updated -ne $content.TrimEnd()) {
+      $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+      $backupPath = "$RequirementsPath.bak-dinobrain-uninstall-$stamp"
+      Copy-Item -LiteralPath $RequirementsPath -Destination $backupPath
+      $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($RequirementsPath, $updated.TrimEnd() + "`r`n", $utf8NoBom)
+      Write-Host "Removed DinoBrain managed Codex hook from requirements.toml."
+      Write-Host "Codex requirements backup: $backupPath"
+    } else {
+      Write-Host "DinoBrain managed hook block was not present: $RequirementsPath"
+    }
+  } else {
+    Write-Host "Codex requirements not found: $RequirementsPath"
+  }
+
+  $wrapper = Join-Path $ManagedDir "dinobrain-managed-user-prompt-hook.ps1"
+  if (Test-Path -LiteralPath $wrapper) {
+    Write-Host "Removing DinoBrain managed hook wrapper: $wrapper"
+    Remove-Item -LiteralPath $wrapper -Force
+  }
+}
+
+
 function Remove-DinoBrainClaudeCodeConfig {
   param([Parameter(Mandatory = $true)][string]$ClaudeCommand)
   $command = Get-Command $ClaudeCommand -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -227,6 +278,7 @@ function Remove-DinoBrainLaunchers {
     "DinoBrain Observatory.cmd",
     "DinoBrain Hook Diagnose.cmd",
     "DinoBrain Codex Hook Approval.cmd",
+    "DinoBrain Codex Managed Hook Admin.cmd",
     "DinoBrain Codex Live Proof.cmd",
     "DinoBrain Uninstall Everything.cmd"
   )
@@ -246,10 +298,11 @@ function Remove-DinoBrainLaunchers {
 function Remove-DinoBrainCodexBackups {
   param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$HooksPath
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath
   )
 
-  foreach ($pathValue in @($ConfigPath, $HooksPath)) {
+  foreach ($pathValue in @($ConfigPath, $HooksPath, $RequirementsPath)) {
     $parent = Split-Path -Parent $pathValue
     $leaf = Split-Path -Leaf $pathValue
     if (-not (Test-Path -LiteralPath $parent)) { continue }
@@ -302,6 +355,8 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInst
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
 if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
+if ([string]::IsNullOrWhiteSpace($CodexRequirementsPath)) { $CodexRequirementsPath = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml" }
+if ([string]::IsNullOrWhiteSpace($CodexManagedHookDir)) { $CodexManagedHookDir = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\DinoBrainHooks" }
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
 
@@ -311,6 +366,8 @@ $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
 $CodexHooksPath = Get-FullPath $CodexHooksPath
+$CodexRequirementsPath = Get-FullPath $CodexRequirementsPath
+$CodexManagedHookDir = Get-FullPath $CodexManagedHookDir
 $nodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
 
 if ($Purge) {
@@ -326,6 +383,9 @@ Remove-DinoBrainCodexConfig -ConfigPath $CodexConfigPath
 if (-not $SkipCodexHookConfig) {
   Remove-DinoBrainCodexUserHook -HooksPath $CodexHooksPath
 }
+if (-not $SkipCodexManagedHookConfig) {
+  Remove-DinoBrainCodexManagedHook -RequirementsPath $CodexRequirementsPath -ManagedDir $CodexManagedHookDir
+}
 if (-not $SkipClaudeCodeConfig) {
   Remove-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand
 }
@@ -339,7 +399,7 @@ if ($Purge) {
 }
 
 if ($RemoveLaunchers) { Remove-DinoBrainLaunchers -InstallRootPath $InstallRoot -AppPath $AppDir }
-if ($RemoveCodexBackups) { Remove-DinoBrainCodexBackups -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath }
+if ($RemoveCodexBackups) { Remove-DinoBrainCodexBackups -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath }
 if ($RemoveAppRepo) { Remove-InstallPath -TargetPath $AppDir -Label "DinoBrain app repo" }
 if ($RemoveDataRepo) { Remove-InstallPath -TargetPath $DataDir -Label "DinoBrain data repo" }
 if ($RemovePortableNode) { Remove-InstallPath -TargetPath $nodeRoot -Label "DinoBrain portable Node" }

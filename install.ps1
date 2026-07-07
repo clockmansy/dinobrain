@@ -13,12 +13,15 @@ param(
   [string]$ToolsDir = "",
   [string]$CodexConfigPath = "",
   [string]$CodexHooksPath = "",
+  [string]$CodexRequirementsPath = "",
+  [string]$CodexManagedHookDir = "",
   [string]$ClaudeSettingsPath = "",
   [string]$ClaudeCommand = "claude",
   [ValidateSet("local", "project", "user")]
   [string]$ClaudeScope = "user",
   [switch]$SkipCodexConfig,
   [switch]$SkipCodexHookConfig,
+  [switch]$SkipCodexManagedHookConfig,
   [switch]$SkipCodexRestartFlow,
   [switch]$SkipClaudeCodeConfig,
   [switch]$SkipVerify,
@@ -41,6 +44,13 @@ function Get-DefaultToolsDir {
     return (Join-Path $env:LOCALAPPDATA "DinoBrain\tools")
   }
   return (Join-Path $HOME "AppData\Local\DinoBrain\tools")
+}
+
+function Get-DefaultProgramData {
+  if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
+    return $env:ProgramData
+  }
+  return "C:\ProgramData"
 }
 
 function Get-FullPath {
@@ -917,7 +927,8 @@ function New-DinoBrainHookDiagnoseLauncher {
     [Parameter(Mandatory = $true)][string]$VaultPath,
     [Parameter(Mandatory = $true)][string]$NodeRoot,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$HooksPath
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath
   )
 
   $diagnoseScript = Join-Path $AppPath "scripts\diagnose-codex-hook.ps1"
@@ -934,7 +945,7 @@ function New-DinoBrainHookDiagnoseLauncher {
   $content = @"
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$diagnoseScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -NodeExe "$nodeExe"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$diagnoseScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RequirementsPath "$RequirementsPath" -NodeExe "$nodeExe"
 pause
 "@
 
@@ -952,7 +963,8 @@ function New-DinoBrainHookApprovalLauncher {
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$HooksPath
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath
   )
 
   $approvalScript = Join-Path $AppPath "scripts\start-codex-hook-approval.ps1"
@@ -968,7 +980,7 @@ function New-DinoBrainHookApprovalLauncher {
   $content = @"
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript" -AppPath "$AppPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RestartStaleCodex -RestartStaleMcp
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript" -AppPath "$AppPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RequirementsPath "$RequirementsPath" -RestartStaleCodex -RestartStaleMcp
 "@
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -987,7 +999,8 @@ function New-DinoBrainLiveProofLauncher {
     [Parameter(Mandatory = $true)][string]$VaultPath,
     [Parameter(Mandatory = $true)][string]$NodeRoot,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$HooksPath
+    [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath
   )
 
   $proofScript = Join-Path $AppPath "scripts\start-codex-live-proof.ps1"
@@ -1004,7 +1017,7 @@ function New-DinoBrainLiveProofLauncher {
   $content = @"
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -NodeExe "$nodeExe"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -RequirementsPath "$RequirementsPath" -NodeExe "$nodeExe"
 "@
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -1012,6 +1025,80 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
     [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
     Write-Host "Codex live proof launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
+function Invoke-DinoBrainCodexManagedHookInstall {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath,
+    [Parameter(Mandatory = $true)][string]$ManagedDir
+  )
+
+  $managedHookScript = Join-Path $AppPath "scripts\install-codex-managed-hook.ps1"
+  if (-not (Test-Path -LiteralPath $managedHookScript)) {
+    Write-Warning "Codex managed hook installer was not found: $managedHookScript"
+    return $false
+  }
+
+  $result = Invoke-NativeCommandResult -FilePath "powershell.exe" -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $managedHookScript,
+    "-AppPath",
+    $AppPath,
+    "-VaultPath",
+    $VaultPath,
+    "-RequirementsPath",
+    $RequirementsPath,
+    "-ManagedDir",
+    $ManagedDir,
+    "-Json"
+  ) -WorkingDirectory $AppPath
+
+  if ($result.ExitCode -ne 0) {
+    Write-Warning "Codex managed hook install was skipped or failed. Run DinoBrain Codex Managed Hook Admin.cmd to install the policy-trusted hook. $($result.Output)"
+    return $false
+  }
+
+  Write-Host "Codex managed hook installed: $RequirementsPath"
+  return $true
+}
+
+function New-DinoBrainManagedHookLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath,
+    [Parameter(Mandatory = $true)][string]$ManagedDir
+  )
+
+  $managedHookScript = Join-Path $AppPath "scripts\install-codex-managed-hook.ps1"
+  if (-not (Test-Path -LiteralPath $managedHookScript)) {
+    Write-Warning "Codex managed hook installer not found: $managedHookScript"
+    return @()
+  }
+
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Codex Managed Hook Admin.cmd"),
+    (Join-Path $AppPath "DinoBrain Codex Managed Hook Admin.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$managedHookScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -RequirementsPath "$RequirementsPath" -ManagedDir "$ManagedDir" -Elevate
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Codex managed hook launcher created: $launcherPath"
   }
   return $launcherPaths
 }
@@ -1040,6 +1127,8 @@ function New-DinoBrainUninstallLauncher {
     [Parameter(Mandatory = $true)][string]$ToolsDir,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath,
+    [Parameter(Mandatory = $true)][string]$ManagedHookDir,
     [Parameter(Mandatory = $true)][string]$ClaudeCommand
   )
 
@@ -1058,7 +1147,7 @@ function New-DinoBrainUninstallLauncher {
 setlocal
 set "TMP_SCRIPT=%TEMP%\DinoBrainUninstall-%RANDOM%-%RANDOM%.ps1"
 copy /Y "$uninstallScript" "%TMP_SCRIPT%" >nul
-start "DinoBrain Uninstall" powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%TMP_SCRIPT%" -InstallRoot "$InstallRoot" -AppDir "$AppPath" -DataDir "$VaultPath" -ToolsDir "$ToolsDir" -CodexConfigPath "$ConfigPath" -CodexHooksPath "$HooksPath" -ClaudeCommand "$ClaudeCommand" -Purge
+start "DinoBrain Uninstall" powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%TMP_SCRIPT%" -InstallRoot "$InstallRoot" -AppDir "$AppPath" -DataDir "$VaultPath" -ToolsDir "$ToolsDir" -CodexConfigPath "$ConfigPath" -CodexHooksPath "$HooksPath" -CodexRequirementsPath "$RequirementsPath" -CodexManagedHookDir "$ManagedHookDir" -ClaudeCommand "$ClaudeCommand" -Purge
 "@
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -1122,10 +1211,12 @@ function Invoke-DinoBrainVerify {
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [Parameter(Mandatory = $true)][string]$HooksPath,
+    [Parameter(Mandatory = $true)][string]$RequirementsPath,
     [Parameter(Mandatory = $true)][string]$VaultPath,
     [Parameter(Mandatory = $true)][string]$ClaudeCommand,
     [Parameter(Mandatory = $true)][string]$ClaudeSettingsPath,
     [switch]$RequireCodexUserHook,
+    [switch]$RequireCodexManagedHook,
     [switch]$RequireClaudeCode,
     [switch]$RequireClaudePromptHook,
     [switch]$AllowNoGit
@@ -1134,7 +1225,9 @@ function Invoke-DinoBrainVerify {
   $npmCmd = Join-Path $NodeRoot "npm.cmd"
   $oldConfig = $env:DINOBRAIN_CODEX_CONFIG_PATH
   $oldHooks = $env:DINOBRAIN_CODEX_HOOKS_PATH
+  $oldRequirements = $env:DINOBRAIN_CODEX_REQUIREMENTS_PATH
   $oldRequireHook = $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK
+  $oldRequireManagedHook = $env:DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK
   $oldData = $env:DINOBRAIN_DATA_DIR
   $oldClaudeCommand = $env:DINOBRAIN_CLAUDE_COMMAND
   $oldClaudeSettings = $env:DINOBRAIN_CLAUDE_SETTINGS_PATH
@@ -1144,7 +1237,9 @@ function Invoke-DinoBrainVerify {
   $oldPath = $env:PATH
   $env:DINOBRAIN_CODEX_CONFIG_PATH = $ConfigPath
   $env:DINOBRAIN_CODEX_HOOKS_PATH = $HooksPath
+  $env:DINOBRAIN_CODEX_REQUIREMENTS_PATH = $RequirementsPath
   if ($RequireCodexUserHook) { $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_USER_HOOK -ErrorAction SilentlyContinue }
+  if ($RequireCodexManagedHook) { $env:DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK = "1" } else { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK -ErrorAction SilentlyContinue }
   $env:DINOBRAIN_DATA_DIR = $VaultPath
   $env:DINOBRAIN_CLAUDE_COMMAND = $ClaudeCommand
   $env:DINOBRAIN_CLAUDE_SETTINGS_PATH = $ClaudeSettingsPath
@@ -1158,7 +1253,9 @@ function Invoke-DinoBrainVerify {
   } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:\DINOBRAIN_CODEX_CONFIG_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_CONFIG_PATH = $oldConfig }
     if ($null -eq $oldHooks) { Remove-Item Env:\DINOBRAIN_CODEX_HOOKS_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_HOOKS_PATH = $oldHooks }
+    if ($null -eq $oldRequirements) { Remove-Item Env:\DINOBRAIN_CODEX_REQUIREMENTS_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_REQUIREMENTS_PATH = $oldRequirements }
     if ($null -eq $oldRequireHook) { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_USER_HOOK -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CODEX_USER_HOOK = $oldRequireHook }
+    if ($null -eq $oldRequireManagedHook) { Remove-Item Env:\DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_CODEX_MANAGED_HOOK = $oldRequireManagedHook }
     if ($null -eq $oldData) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldData }
     if ($null -eq $oldClaudeCommand) { Remove-Item Env:\DINOBRAIN_CLAUDE_COMMAND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CLAUDE_COMMAND = $oldClaudeCommand }
     if ($null -eq $oldClaudeSettings) { Remove-Item Env:\DINOBRAIN_CLAUDE_SETTINGS_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CLAUDE_SETTINGS_PATH = $oldClaudeSettings }
@@ -1173,6 +1270,8 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInst
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
 if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
+if ([string]::IsNullOrWhiteSpace($CodexRequirementsPath)) { $CodexRequirementsPath = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml" }
+if ([string]::IsNullOrWhiteSpace($CodexManagedHookDir)) { $CodexManagedHookDir = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\DinoBrainHooks" }
 if ([string]::IsNullOrWhiteSpace($ClaudeSettingsPath)) { $ClaudeSettingsPath = Join-Path $HOME ".claude\settings.json" }
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
@@ -1183,6 +1282,8 @@ $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
 $CodexHooksPath = Get-FullPath $CodexHooksPath
+$CodexRequirementsPath = Get-FullPath $CodexRequirementsPath
+$CodexManagedHookDir = Get-FullPath $CodexManagedHookDir
 $ClaudeSettingsPath = Get-FullPath $ClaudeSettingsPath
 
 Write-Host "DinoBrain install root: $InstallRoot"
@@ -1232,14 +1333,23 @@ if (-not $SkipCodexHookConfig) {
   Invoke-DinoBrainCodexHookHandshake -AppPath $AppDir -VaultPath $DataDir -NodeExe $nodeExe
 }
 
+$codexManagedHookConfigured = $false
+if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig) {
+  $codexManagedHookConfigured = Invoke-DinoBrainCodexManagedHookInstall -AppPath $AppDir -VaultPath $DataDir -RequirementsPath $CodexRequirementsPath -ManagedDir $CodexManagedHookDir
+}
+
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
-$hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
+$hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 $hookApprovalLaunchers = @()
 if (-not $SkipCodexHookConfig) {
-  $hookApprovalLaunchers = New-DinoBrainHookApprovalLauncher -InstallRoot $InstallRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
+  $hookApprovalLaunchers = New-DinoBrainHookApprovalLauncher -InstallRoot $InstallRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 }
-$liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
-$uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -ClaudeCommand $ClaudeCommand
+$managedHookLaunchers = @()
+if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig -and -not $codexManagedHookConfigured) {
+  $managedHookLaunchers = New-DinoBrainManagedHookLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -RequirementsPath $CodexRequirementsPath -ManagedDir $CodexManagedHookDir
+}
+$liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
+$uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -ManagedHookDir $CodexManagedHookDir -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
 $claudePromptHookConfigured = $false
@@ -1250,7 +1360,7 @@ if (-not $SkipClaudeCodeConfig) {
 }
 
 if (-not $SkipVerify) {
-  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $ClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudeCode:$claudeCodeConfigured -RequireClaudePromptHook:$claudePromptHookConfigured -AllowNoGit:(-not $gitAvailable)
+  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $ClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireCodexManagedHook:$codexManagedHookConfigured -RequireClaudeCode:$claudeCodeConfigured -RequireClaudePromptHook:$claudePromptHookConfigured -AllowNoGit:(-not $gitAvailable)
 }
 
 if (-not $SkipCodexHookConfig -and -not $SkipCodexRestartFlow) {
@@ -1264,6 +1374,8 @@ Write-Host "Data: $DataDir"
 Write-Host "Node: $nodeExe"
 Write-Host "Codex config: $CodexConfigPath"
 Write-Host "Codex user hooks: $CodexHooksPath"
+Write-Host "Codex managed requirements: $CodexRequirementsPath"
+Write-Host "Codex managed hook configured: $codexManagedHookConfigured"
 Write-Host "Claude Code settings: $ClaudeSettingsPath"
 foreach ($launcher in $observatoryLaunchers) {
   Write-Host "Observatory launcher: $launcher"
@@ -1273,6 +1385,9 @@ foreach ($launcher in $hookDiagnoseLaunchers) {
 }
 foreach ($launcher in $hookApprovalLaunchers) {
   Write-Host "Hook approval launcher: $launcher"
+}
+foreach ($launcher in $managedHookLaunchers) {
+  Write-Host "Managed hook admin launcher: $launcher"
 }
 foreach ($launcher in $liveProofLaunchers) {
   Write-Host "Codex live proof launcher: $launcher"
