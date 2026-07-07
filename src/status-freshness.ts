@@ -1,9 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
+import { HEALTH_STATUS_RELATIVE_PATH } from "./health-status.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
@@ -34,6 +36,9 @@ export type FreshnessCheck = {
   generated_at: string | null;
   artifact_report_status: string | null;
   artifact_visible_status: string | null;
+  latest_verified_at: string | null;
+  last_computed_at: string;
+  authority_rank: number;
   artifact_mtime: string | null;
   source_latest_mtime: string | null;
   source_latest_path: string | null;
@@ -79,6 +84,8 @@ type ArtifactSpec = {
   artifactPath: string;
   sourceRoots: string[];
   required: boolean;
+  authorityRank?: number;
+  dependencyArtifacts?: string[];
 };
 
 const ARTIFACTS: ArtifactSpec[] = [
@@ -88,6 +95,45 @@ const ARTIFACTS: ArtifactSpec[] = [
     artifactPath: FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
     sourceRoots: ["."],
     required: true,
+    authorityRank: 100,
+  },
+  {
+    id: "health_status",
+    label: "OS health status",
+    artifactPath: HEALTH_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/events",
+      ".dino/tasks",
+      ".dino/traces",
+      ".dino/context-packs",
+      ".dino/index",
+      "20_Wiki",
+      "30_Sources",
+      "50_Instances/accepted",
+      "50_Instances/candidates",
+      "80_Review_Queue",
+    ],
+    required: true,
+    authorityRank: 98,
+    dependencyArtifacts: [
+      FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
+      CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
+      REVIEW_QUEUE_STATUS_RELATIVE_PATH,
+      SEMANTIC_JOBS_RELATIVE_PATH,
+      TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
+      TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
+      RAG_PROOF_STATUS_RELATIVE_PATH,
+      RAG_EVAL_STATUS_RELATIVE_PATH,
+      GRAPH_HEALTH_RELATIVE_PATH,
+    ],
+  },
+  {
+    id: "client_mcp_direct_status",
+    label: "direct MCP parity status",
+    artifactPath: CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
+    sourceRoots: [".dino/events", ".dino/tasks", ".dino/traces"],
+    required: true,
+    authorityRank: 95,
   },
   {
     id: "wiki_index",
@@ -227,16 +273,24 @@ function toMillis(value: string | null): number | null {
 
 async function readArtifactMetadata(
   filePath: string,
-): Promise<{ generated_at: string | null; status: string | null; visible_status: string | null }> {
+): Promise<{
+  generated_at: string | null;
+  latest_verified_at: string | null;
+  last_computed_at: string | null;
+  status: string | null;
+  visible_status: string | null;
+}> {
   try {
     const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as Record<string, unknown>;
     return {
       generated_at: typeof parsed.generated_at === "string" ? parsed.generated_at : null,
+      latest_verified_at: typeof parsed.latest_verified_at === "string" ? parsed.latest_verified_at : null,
+      last_computed_at: typeof parsed.last_computed_at === "string" ? parsed.last_computed_at : null,
       status: typeof parsed.status === "string" ? parsed.status : null,
       visible_status: typeof parsed.visible_status === "string" ? parsed.visible_status : null,
     };
   } catch {
-    return { generated_at: null, status: null, visible_status: null };
+    return { generated_at: null, latest_verified_at: null, last_computed_at: null, status: null, visible_status: null };
   }
 }
 
@@ -318,6 +372,44 @@ async function latestSource(dataRoot: string, roots: string[], excludedPaths: Se
   };
 }
 
+async function latestDependencyArtifact(dataRoot: string, artifacts: string[] | undefined): Promise<SourceLatest> {
+  const accumulator: { latest: Date | null; path: string | null; count: number } = {
+    latest: null,
+    path: null,
+    count: 0,
+  };
+  for (const artifact of artifacts ?? []) {
+    try {
+      const stat = await fs.stat(dataPath(dataRoot, artifact));
+      if (!stat.isFile()) continue;
+      accumulator.count += 1;
+      if (!accumulator.latest || stat.mtime > accumulator.latest) {
+        accumulator.latest = stat.mtime;
+        accumulator.path = artifact;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return {
+    latest_mtime: accumulator.latest ? accumulator.latest.toISOString() : null,
+    latest_path: accumulator.path,
+    file_count: accumulator.count,
+  };
+}
+
+function combineSourceLatest(primary: SourceLatest, dependency: SourceLatest): SourceLatest {
+  const primaryMs = toMillis(primary.latest_mtime);
+  const dependencyMs = toMillis(dependency.latest_mtime);
+  const useDependency = dependencyMs !== null && (primaryMs === null || dependencyMs > primaryMs);
+  return {
+    latest_mtime: useDependency ? dependency.latest_mtime : primary.latest_mtime,
+    latest_path: useDependency ? dependency.latest_path : primary.latest_path,
+    file_count: primary.file_count + dependency.file_count,
+  };
+}
+
 function checkVisibleStatus(label: string, status: FreshnessCheckStatus): string {
   switch (status) {
     case "fresh":
@@ -344,10 +436,13 @@ function reportVisibleStatus(status: FreshnessStatus): string {
 
 async function buildCheck(dataRoot: string, artifact: ArtifactSpec, staleAfterMs: number): Promise<FreshnessCheck> {
   const artifactStat = await pathStat(dataRoot, artifact.artifactPath);
-  const source = await latestSource(dataRoot, artifact.sourceRoots, new Set([artifact.artifactPath]));
+  const source = combineSourceLatest(
+    await latestSource(dataRoot, artifact.sourceRoots, new Set([artifact.artifactPath])),
+    await latestDependencyArtifact(dataRoot, artifact.dependencyArtifacts),
+  );
   const artifactMetadata = artifactStat.exists
     ? await readArtifactMetadata(dataPath(dataRoot, artifact.artifactPath))
-    : { generated_at: null, status: null, visible_status: null };
+    : { generated_at: null, latest_verified_at: null, last_computed_at: null, status: null, visible_status: null };
   const artifactMs = toMillis(artifactStat.mtime);
   const sourceMs = toMillis(source.latest_mtime);
   const sourceLagMs = artifactMs !== null && sourceMs !== null ? sourceMs - artifactMs : null;
@@ -366,6 +461,9 @@ async function buildCheck(dataRoot: string, artifact: ArtifactSpec, staleAfterMs
     generated_at: artifactMetadata.generated_at,
     artifact_report_status: artifactMetadata.status,
     artifact_visible_status: artifactMetadata.visible_status,
+    latest_verified_at: artifactMetadata.latest_verified_at ?? artifactMetadata.generated_at,
+    last_computed_at: artifactMetadata.last_computed_at ?? artifactMetadata.generated_at ?? artifactStat.mtime ?? "",
+    authority_rank: artifact.authorityRank ?? 50,
     artifact_mtime: artifactStat.mtime,
     source_latest_mtime: source.latest_mtime,
     source_latest_path: source.latest_path,

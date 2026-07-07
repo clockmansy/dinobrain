@@ -51,7 +51,14 @@ summary: Stable memory record
     assert(result.report.status === "baseline_created", `expected baseline_created, got ${result.report.status}`);
     assert(existsSync(path.join(dataRoot, FULL_MEMORY_MANIFEST_RELATIVE_PATH)), "manifest missing");
     assert(existsSync(path.join(dataRoot, FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH)), "status missing");
-    assert(result.manifest.entries.some((entry) => entry.path === "20_Wiki/Stable.md"), "stable wiki path not audited");
+    const stableEntry = result.manifest.entries.find((entry) => entry.path === "20_Wiki/Stable.md");
+    assert(stableEntry, "stable wiki path not audited");
+    assert(stableEntry.encoding_class === "utf8", "stable wiki encoding class missing");
+    assert(Number.isInteger(stableEntry.text_char_count) && stableEntry.text_char_count > 0, "stable wiki char count missing");
+    assert(Number.isInteger(stableEntry.text_line_count) && stableEntry.text_line_count > 0, "stable wiki line count missing");
+    assert(result.report.counts.text_files > 0, "text file count missing");
+    assert(result.report.counts.text_chars > 0, "text char total missing");
+    assert(result.report.counts.text_lines > 0, "text line total missing");
 
     text(path.join(dataRoot, ".dino", "events", "2026-07-07.jsonl"), `${JSON.stringify({ event: "task_started" })}\n`);
     result = await buildAndWriteFullMemoryAudit(dataRoot);
@@ -77,6 +84,10 @@ summary: Stable memory record
     result = await buildAndWriteFullMemoryAudit(dataRoot);
     assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);
     assert(result.report.counts.unclassified_drift > 0, "content drift was not counted as unclassified");
+    assert(
+      result.report.drift.added.concat(result.report.drift.changed).some((entry) => entry.current_parse_status),
+      "drift entries did not include current parse status",
+    );
 
     text(path.join(dataRoot, ".dino", "events", "bad.jsonl"), "{bad json}\n");
     result = await buildAndWriteFullMemoryAudit(dataRoot);

@@ -1,8 +1,10 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
+import { buildAndWriteHealthStatus } from "./health-status.js";
 import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { buildAndWriteRagProof } from "./rag-proof.js";
@@ -73,6 +75,12 @@ export async function refreshStatusArtifacts(
 
   const audit = await buildAndWriteFullMemoryAudit(dataRoot);
   steps.push({ id: "full_memory_audit", status: audit.report.status, path: audit.statusPath });
+
+  const clientMcp = await buildAndWriteClientMcpDirectStatus(dataRoot);
+  steps.push({ id: "client_mcp_direct_status", status: clientMcp.report.status, path: clientMcp.path });
+
+  const health = await buildAndWriteHealthStatus(dataRoot);
+  steps.push({ id: "health_status", status: health.report.status, path: health.path });
 
   const freshness = await buildAndWriteStatusFreshness(dataRoot);
   steps.push({ id: "status_freshness", status: freshness.report.status, path: freshness.path });

@@ -104,6 +104,12 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
+`npm run status:refresh` rebuilds the wiki, operations, SQLite, review, task lifecycle, graph, RAG, full-memory, direct-client MCP, health, and freshness artifacts in one pass. Freshness means the status files are current; it does not mean every OS requirement is green.
+
+`npm run status:health` writes `.dino/state/health_status.json`, a higher-level OS health rollup. It treats full-memory audit, direct Codex/Claude MCP canary status, review/semantic settlement, task lifecycle settlement, RAG proof/eval, and graph health as separate evidence sources with explicit authority ranks. If direct client MCP proof is missing, health remains `needs_attention` even when the freshness monitor is green.
+
+`npm run status:mcp-direct` writes `.dino/state/client_mcp_direct_status.json`. This is intentionally conservative: it only reports verified after exact single-name client proof has recorded the required OS tools for Codex and Claude. A configured MCP block or synthetic server start is not counted as direct client proof.
+
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 
 `npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data. The fixture explicitly opts in to conditional push with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and `DINOBRAIN_AUTO_SYNC_PUSH=1`; the installed public-safe default keeps both flags at `0`.

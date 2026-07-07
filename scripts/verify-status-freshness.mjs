@@ -103,6 +103,15 @@ async function main() {
     assert(status.status === "healthy", `expected healthy freshness, got ${status.status}`);
     assert(status.counts.missing === 0, "fresh vault should not have missing required artifacts");
     assert(status.checks.every((check) => check.visible_status), "visible status labels missing");
+    assert(status.checks.some((check) => check.id === "health_status"), "health status freshness check missing");
+    assert(
+      status.checks.some((check) => check.id === "client_mcp_direct_status"),
+      "client MCP direct status freshness check missing",
+    );
+    assert(
+      status.checks.every((check) => Number.isInteger(check.authority_rank) && check.last_computed_at !== undefined),
+      "freshness authority metadata missing",
+    );
 
     const written = await buildAndWriteStatusFreshness(dataRoot, { staleAfterMs: 0 });
     assert(written.report.status === "healthy", `monitoring write should stay self-reference safe, got ${written.report.status}`);
