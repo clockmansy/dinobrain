@@ -122,15 +122,16 @@ if (-not $SkipApproval) {
     -HooksPath $HooksPath `
     -ConfigPath $ConfigPath `
     -RestartStaleCodex `
-    -RestartStaleMcp
+    -RestartStaleMcp `
+    -NoUi
 }
 
 $clipboardOk = Set-ClipboardSafe -Text $prompt
 $instruction = @"
 DinoBrain live proof is waiting.
 
-1. In Codex, run /hooks and trust the DinoBrain UserPromptSubmit hook if it is pending.
-2. Start a new Codex thread after the restart.
+1. If Codex still shows the DinoBrain UserPromptSubmit hook as untrusted, type /hooks and approve it.
+2. Start a new Codex thread after any restart or approval.
 3. Paste the proof prompt now copied to your clipboard.
 4. This window will keep checking for the real codex_desktop preflight event.
 
