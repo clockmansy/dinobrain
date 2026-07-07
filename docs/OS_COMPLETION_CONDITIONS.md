@@ -131,6 +131,11 @@ DinoBrain must retrieve meaningful information quickly as the data grows:
   expose every vector as a prompt-path candidate.
 - retrieval mode is honest: `hybrid_contextual_v2` only when a usable dense
   vector index/provider participates; otherwise report `lexical_fallback_v2`.
+- deterministic text-hash vectors are allowed as scaffold proof, but cannot
+  satisfy completion-grade semantic retrieval while
+  `semantic_embedding_provider: false`.
+- completion-grade RAG evidence includes generated-answer memory-on/off
+  evaluation, not only deterministic path/term canaries.
 - BM25/sparse, dense, RRF, provenance, root-intent, and lifecycle reasons are
   inspectable.
 - broad operational behavior rules cannot swamp durable Wiki, Source, and
@@ -242,6 +247,9 @@ When the user corrects DinoBrain:
 
 - correction is captured as a reviewed behavior memory or explicit candidate.
 - current user instruction remains higher priority than stored memory.
+- safe-readable native instruction surfaces, including Codex rules/custom
+  instruction files and Claude custom instruction/rules files, are scanned or
+  explicitly classified out with a reason before completion can be claimed.
 - later Context Packs retrieve the correction in relevant cases.
 - behavior evaluation proves the correction changes future behavior.
 - contradicted older memories are held, merged, or demoted.

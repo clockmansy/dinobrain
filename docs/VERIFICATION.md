@@ -88,13 +88,21 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run task:lifecycle:settle:verify` proves that settlement repairs those deterministic finish-gate cases while preserving recent active work.
 
-`npm run rag:proof` writes `.dino/evaluations/rag-golden.json`, `.dino/index/dense-vectors.json`, and `.dino/state/rag_proof_status.json` from the current reviewed behavior golden and Wiki index. The dense vectors are local deterministic text-hash vectors for retrieval proof; they are deliberately marked `semantic_embedding_provider: false` and do not pretend to be an external embedding provider.
+`npm run rag:proof` writes `.dino/evaluations/rag-golden.json`, `.dino/index/dense-vectors.json`, and `.dino/state/rag_proof_status.json` from the current reviewed behavior golden and Wiki index. The current dense vectors are local deterministic text-hash vectors for retrieval-proof scaffolding; they are deliberately marked `semantic_embedding_provider: false` and do not pretend to be an external embedding provider.
 
-`npm run rag:proof:verify` proves that the proof builder creates explicit RAG golden cases, dense vectors, and a current-vault RAG eval path that uses `rag_golden` plus `hybrid_contextual_v2`.
+`npm run rag:proof:verify` proves that the proof builder creates explicit RAG golden cases, dense vectors, and a current-vault RAG eval path that uses `rag_golden` plus `hybrid_contextual_v2`. Passing this verifier means the scaffold is internally consistent; it is not final semantic-RAG completion evidence while `semantic_embedding_provider: false`.
 
 `npm run eval:rag` writes `.dino/state/rag_eval_status.json`. It evaluates the current vault against explicit `.dino/evaluations/rag-golden.json` when present, otherwise falls back to behavior/context golden sets. The report records memory-on versus memory-off proxy scores, expected path recall, required context term recall, provenance coverage, retrieval mode, hybrid ratio, failing cases, and caveats. This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet. A healthy report requires dense-vector hybrid retrieval unless a case explicitly disables that requirement.
 
-`npm run eval:rag:verify` proves that lexical fallback is not treated as healthy full RAG, then proves a dense-vector fixture can pass with memory-on lift and `hybrid_contextual_v2`.
+`npm run eval:rag:verify` proves that lexical fallback is not treated as healthy full RAG, then proves a dense-vector fixture can pass with memory-on lift and `hybrid_contextual_v2`. This still remains scaffold health unless the dense provider is semantic and generated-answer quality metrics are present.
+
+Completion-grade RAG has a stricter bar than scaffold health:
+
+- `dense_vector.semantic_embedding_provider` must be `true`, or the provider must be an explicitly documented local multilingual semantic embedding model.
+- `local_text_hashing_v1` cannot count as final semantic retrieval evidence.
+- generated-answer memory-on/off evaluation must include faithfulness, answer relevance, correctness, grounding/source support, forbidden/quarantined-memory avoidance, latency, and noise metrics.
+- final artifacts must include contribution metrics for BM25/sparse, dense top-K, RRF, reranking, provenance/root/lifecycle boosts or penalties, candidate counts, and latency.
+- `npm run verify:goal` must fail the RAG completion requirement while only deterministic canaries exist, even when `rag:proof` and `eval:rag` are individually healthy.
 
 `npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:refresh` / `rag:proof` / `eval:rag` gates, so final closed-loop readiness cannot bypass P0-01, P0-02, or the real RAG-eval workstream.
 
@@ -122,9 +130,9 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run verify:mcp-direct` proves the direct MCP status gate with fixtures. It accepts real-style exact single-name Codex/Claude proof artifacts, accepts explicit Claude `not_configured` evidence, and rejects config-only, hook-only, stale, alias-only, missing-tool, Codex-only, and Claude-only cases.
 
-`npm run status:native-authority` writes `.dino/state/native_instruction_authority.json`. It scans native instruction surfaces such as `AGENTS.md`, repo `.codex` hook files, Codex config/hooks, Claude settings when present, installer hooks, and hook approval/live-proof scripts. It stores file hashes, mtimes, line numbers, rule ids, and findings without storing raw instruction text.
+`npm run status:native-authority` writes `.dino/state/native_instruction_authority.json`. It scans native instruction surfaces such as `AGENTS.md`, repo `.codex` hook files, Codex config/hooks, Codex native rules/custom instruction files under `C:\Users\<you>\.codex\rules`, `instructions*`, and `custom-instructions*`, Claude settings and safe-readable Claude custom instruction/rules files when present, installer hooks, and hook approval/live-proof scripts. It stores file hashes, mtimes, line numbers, rule ids, and findings without storing raw instruction text.
 
-`npm run verify:native-authority` proves the native authority gate with fixtures. It accepts clean user-over-memory instructions and rejects stored-memory-over-user, trusted-candidate, raw-transcript/secret-storage, broad auto-sync, and hook-trust-bypass claims.
+`npm run verify:native-authority` proves the native authority gate with fixtures. It accepts clean user-over-memory instructions and rejects stored-memory-over-user, Codex native rules drift, Claude custom instruction drift, trusted-candidate, raw-transcript/secret-storage, broad auto-sync, and hook-trust-bypass claims.
 
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 

@@ -102,8 +102,21 @@ type EvidenceRule = {
   patterns: RegExp[];
 };
 
-const TEXT_EXTENSIONS = new Set([".json", ".toml", ".md", ".txt", ".ps1", ".mjs", ".js", ".ts", ".yml", ".yaml"]);
+const TEXT_EXTENSIONS = new Set([
+  ".json",
+  ".toml",
+  ".md",
+  ".txt",
+  ".ps1",
+  ".mjs",
+  ".js",
+  ".ts",
+  ".yml",
+  ".yaml",
+  ".rules",
+]);
 const MAX_REPO_CODEX_SURFACES = 80;
+const MAX_NATIVE_RULE_SURFACES = 80;
 
 const EVIDENCE_RULES: EvidenceRule[] = [
   {
@@ -267,6 +280,74 @@ async function listRepoCodexSurfaces(appRoot: string): Promise<SurfaceSpec[]> {
     .map((filePath, index) => ({ id: `repo_codex_${index + 1}`, path: filePath, required: false }));
 }
 
+async function listTextSurfaces(root: string, idPrefix: string, limit = MAX_NATIVE_RULE_SURFACES): Promise<SurfaceSpec[]> {
+  let entries: Array<import("node:fs").Dirent>;
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true, recursive: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(entry.parentPath ?? root, entry.name))
+    .filter(hasTextExtension)
+    .slice(0, limit)
+    .map((filePath, index) => ({ id: `${idPrefix}_${index + 1}`, path: filePath, required: false }));
+}
+
+async function optionalFileSurface(id: string, filePath: string): Promise<SurfaceSpec[]> {
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.isFile() && hasTextExtension(filePath)) return [{ id, path: filePath, required: false }];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return [];
+}
+
+async function listCodexNativeInstructionSurfaces(home: string): Promise<SurfaceSpec[]> {
+  const codexRoot = path.join(home, ".codex");
+  const surfaces = [
+    ...(await listTextSurfaces(path.join(codexRoot, "rules"), "codex_rules")),
+    ...(await listTextSurfaces(path.join(codexRoot, "instructions"), "codex_instructions")),
+    ...(await listTextSurfaces(path.join(codexRoot, "custom-instructions"), "codex_custom_instructions")),
+    ...(await listTextSurfaces(path.join(codexRoot, "custom_instructions"), "codex_custom_instructions")),
+    ...(await optionalFileSurface("codex_rules_file", path.join(codexRoot, "rules.md"))),
+    ...(await optionalFileSurface("codex_instructions_file", path.join(codexRoot, "instructions.md"))),
+    ...(await optionalFileSurface("codex_custom_instructions_file", path.join(codexRoot, "custom-instructions.md"))),
+    ...(await optionalFileSurface("codex_custom_instructions_file_alt", path.join(codexRoot, "custom_instructions.md"))),
+  ];
+  return dedupeSurfaces(surfaces);
+}
+
+async function listClaudeNativeInstructionSurfaces(home: string): Promise<SurfaceSpec[]> {
+  const claudeRoot = path.join(home, ".claude");
+  const surfaces = [
+    ...(await listTextSurfaces(path.join(claudeRoot, "rules"), "claude_rules")),
+    ...(await listTextSurfaces(path.join(claudeRoot, "instructions"), "claude_instructions")),
+    ...(await listTextSurfaces(path.join(claudeRoot, "custom-instructions"), "claude_custom_instructions")),
+    ...(await listTextSurfaces(path.join(claudeRoot, "custom_instructions"), "claude_custom_instructions")),
+    ...(await optionalFileSurface("claude_home_claude", path.join(claudeRoot, "CLAUDE.md"))),
+    ...(await optionalFileSurface("claude_instructions_file", path.join(claudeRoot, "instructions.md"))),
+    ...(await optionalFileSurface("claude_custom_instructions_file", path.join(claudeRoot, "custom-instructions.md"))),
+    ...(await optionalFileSurface("claude_custom_instructions_file_alt", path.join(claudeRoot, "custom_instructions.md"))),
+  ];
+  return dedupeSurfaces(surfaces);
+}
+
+function dedupeSurfaces(surfaces: SurfaceSpec[]): SurfaceSpec[] {
+  const seen = new Set<string>();
+  const deduped: SurfaceSpec[] = [];
+  for (const surface of surfaces) {
+    const key = path.resolve(surface.path).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(surface);
+  }
+  return deduped;
+}
+
 async function collectSurfaceSpecs(options: Required<Pick<BuildOptions, "appRoot" | "homeDir" | "programData">>): Promise<SurfaceSpec[]> {
   const appRoot = path.resolve(options.appRoot);
   const home = path.resolve(options.homeDir);
@@ -277,7 +358,9 @@ async function collectSurfaceSpecs(options: Required<Pick<BuildOptions, "appRoot
     ...(await listRepoCodexSurfaces(appRoot)),
     { id: "codex_config", path: path.join(home, ".codex", "config.toml"), required: false },
     { id: "codex_hooks", path: path.join(home, ".codex", "hooks.json"), required: false },
+    ...(await listCodexNativeInstructionSurfaces(home)),
     { id: "claude_settings", path: path.join(home, ".claude", "settings.json"), required: false },
+    ...(await listClaudeNativeInstructionSurfaces(home)),
     { id: "installer", path: path.join(appRoot, "install.ps1"), required: true },
     { id: "codex_hook_mjs", path: path.join(appRoot, "scripts", "dinobrain-user-prompt-hook.mjs"), required: false },
     { id: "codex_hook_ps1", path: path.join(appRoot, "scripts", "dinobrain-user-prompt-hook.ps1"), required: false },

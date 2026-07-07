@@ -141,6 +141,40 @@ function hasClosedLoopEvidence(check) {
   );
 }
 
+function hasGeneratedAnswerQualityEvidence(parsed) {
+  const candidates = [parsed?.generated_answer_eval, parsed?.answer_quality, parsed?.ragas_eval].filter(Boolean);
+  return candidates.some((candidate) => {
+    const status = candidate?.status;
+    const metrics = candidate?.metrics ?? candidate;
+    return Boolean(
+      (status === "healthy" || status === "passed" || status === "verified") &&
+        typeof metrics?.faithfulness === "number" &&
+        typeof (metrics?.answer_relevance ?? metrics?.answer_relevancy) === "number" &&
+        typeof (metrics?.correctness ?? metrics?.answer_correctness) === "number" &&
+        typeof (metrics?.grounding ?? metrics?.source_support) === "number",
+    );
+  });
+}
+
+function classifyRagCompletionBlocker(proofCheck, evalCheck) {
+  if (proofCheck.ok !== true || evalCheck.ok !== true) return "real_rag_eval_failed";
+  const proof = proofCheck.parsed;
+  const evalReport = evalCheck.parsed;
+  const denseVector = proof?.dense_vector;
+  if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
+  if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
+  const caveats = Array.isArray(evalReport?.caveats) ? evalReport.caveats.join("\n") : "";
+  if (/deterministic\s+RAG\s+canary|not\s+a\s+full\s+Ragas|not\s+a\s+full.*answer-quality/i.test(caveats)) {
+    return "rag_deterministic_canary_only";
+  }
+  if (!hasGeneratedAnswerQualityEvidence(evalReport)) return "rag_answer_quality_eval_missing";
+  return null;
+}
+
+function hasCompletionGradeRagEvidence(proofCheck, evalCheck) {
+  return classifyRagCompletionBlocker(proofCheck, evalCheck) === null;
+}
+
 function nextActionFor(requirementEvidence) {
   const blocker = requirementEvidence.find((item) => !item.ok)?.blocker;
   switch (blocker) {
@@ -170,6 +204,15 @@ function nextActionFor(requirementEvidence) {
       return "Create real Codex and Claude direct MCP proof artifacts under .dino/proofs/client-mcp, or record a valid Claude not_configured proof when Claude Code is absent, then rerun npm run status:mcp-direct and npm run verify:goal.";
     case "native_instruction_authority_not_healthy":
       return "Inspect .dino/state/native_instruction_authority.json, repair conflicting AGENTS/Codex/Claude/hook instructions, then rerun npm run status:native-authority and npm run verify:goal.";
+    case "task_lifecycle_finish_gate_failed":
+      return "Run npm run task:lifecycle and inspect .dino/state/task_sessions.json plus .dino/state/task_finish_grounding_classifications.jsonl, then repair or settle missing terminal traces before rerunning npm run verify:goal.";
+    case "task_lifecycle_auto_settlement_failed":
+      return "Run npm run task:lifecycle:settle -- --apply only after reviewing deterministic repair candidates, then rerun npm run task:lifecycle and npm run verify:goal.";
+    case "rag_semantic_provider_not_configured":
+    case "rag_text_hashing_scaffold_only":
+    case "rag_deterministic_canary_only":
+    case "rag_answer_quality_eval_missing":
+      return "Configure a completion-grade semantic embedding provider or documented local multilingual model, add generated-answer RAG evaluation, rerun npm run rag:proof and npm run eval:rag, then rerun npm run verify:goal.";
     default:
       return "Fix the failed requirement, then rerun npm run verify:goal.";
   }
@@ -323,7 +366,7 @@ function main() {
     runCheck({
       id: "rag_eval_current",
       description:
-        "Current data vault must pass RAG canaries with memory-on lift, provenance signals, and active dense hybrid retrieval.",
+        "Current data vault must pass RAG canaries; completion still requires semantic dense retrieval and generated-answer quality evidence.",
       command: node,
       args: ["dist/build-rag-eval.js"],
     }),
@@ -351,6 +394,10 @@ function main() {
   const byId = Object.fromEntries(checks.map((check) => [check.id, check]));
   const liveMemoryEvidence = hasLiveMemoryEvidence(byId.codex_live_pre_response);
   const mcpPreflightEvidence = hasMcpPreflightEvidence(byId.codex_mcp_pre_response);
+  const ragCompletionBlocker =
+    byId.rag_proof_regression.ok === true && byId.rag_eval_regression.ok === true
+      ? classifyRagCompletionBlocker(byId.rag_proof_current, byId.rag_eval_current)
+      : "real_rag_eval_failed";
   const requirementEvidence = [
     {
       requirement: "pre_response_os_for_real_codex_desktop_hook",
@@ -459,17 +506,16 @@ function main() {
       requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",
       ok:
         byId.rag_proof_regression.ok === true &&
-        byId.rag_proof_current.ok === true &&
         byId.rag_eval_regression.ok === true &&
-        byId.rag_eval_current.ok === true,
-      evidence: "rag_proof_regression + rag_proof_current + rag_eval_regression + rag_eval_current",
+        hasCompletionGradeRagEvidence(byId.rag_proof_current, byId.rag_eval_current),
+      evidence:
+        "rag_proof_regression + rag_eval_regression + completion-grade rag_proof_current/rag_eval_current semantic and answer-quality evidence",
       blocker:
         byId.rag_proof_regression.ok === true &&
-        byId.rag_proof_current.ok === true &&
         byId.rag_eval_regression.ok === true &&
-        byId.rag_eval_current.ok === true
+        hasCompletionGradeRagEvidence(byId.rag_proof_current, byId.rag_eval_current)
           ? null
-          : "real_rag_eval_failed",
+          : ragCompletionBlocker,
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",
