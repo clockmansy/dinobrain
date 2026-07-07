@@ -9,6 +9,7 @@ import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
+import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
 
@@ -78,6 +79,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     id: "native_instruction_authority",
     artifactPath: NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
     authorityRank: 94,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "source_lineage",
+    artifactPath: SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
+    authorityRank: 93,
     healthyStatuses: ["healthy"],
   },
   {

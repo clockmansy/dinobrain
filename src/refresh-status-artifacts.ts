@@ -10,6 +10,7 @@ import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { buildAndWriteRagProof } from "./rag-proof.js";
 import { settleReviewQueueActions } from "./review-settlement.js";
+import { buildAndWriteSourceLineageReport } from "./source-lineage.js";
 import { buildAndWriteSqliteShards, SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { buildAndWriteStatusFreshness } from "./status-freshness.js";
 import { buildAndWriteTaskLifecycleReport } from "./task-lifecycle.js";
@@ -73,6 +74,9 @@ export async function refreshStatusArtifacts(
 
   const ragEval = await buildAndWriteRagEvalReport(dataRoot);
   steps.push({ id: "rag_eval", status: ragEval.report.status, path: RAG_EVAL_STATUS_RELATIVE_PATH });
+
+  const sourceLineage = await buildAndWriteSourceLineageReport(dataRoot);
+  steps.push({ id: "source_lineage", status: sourceLineage.report.status, path: sourceLineage.path });
 
   const audit = await buildAndWriteFullMemoryAudit(dataRoot);
   steps.push({ id: "full_memory_audit", status: audit.report.status, path: audit.statusPath });

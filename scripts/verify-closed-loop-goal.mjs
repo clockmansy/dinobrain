@@ -204,6 +204,8 @@ function nextActionFor(requirementEvidence) {
       return "Create real Codex and Claude direct MCP proof artifacts under .dino/proofs/client-mcp, or record a valid Claude not_configured proof when Claude Code is absent, then rerun npm run status:mcp-direct and npm run verify:goal.";
     case "native_instruction_authority_not_healthy":
       return "Inspect .dino/state/native_instruction_authority.json, repair conflicting AGENTS/Codex/Claude/hook instructions, then rerun npm run status:native-authority and npm run verify:goal.";
+    case "source_lineage_not_healthy":
+      return "Run npm run status:source-lineage, repair missing source chunks, provenance links, verification_status, or dangling claim_paths, then rerun npm run verify:goal.";
     case "task_lifecycle_finish_gate_failed":
       return "Run npm run task:lifecycle and inspect .dino/state/task_sessions.json plus .dino/state/task_finish_grounding_classifications.jsonl, then repair or settle missing terminal traces before rerunning npm run verify:goal.";
     case "task_lifecycle_auto_settlement_failed":
@@ -299,6 +301,20 @@ function main() {
         "Current native AGENTS/Codex/Claude/hook instruction surfaces must preserve user-over-memory authority and safe memory policy.",
       command: node,
       args: ["dist/build-native-instruction-authority.js"],
+    }),
+    runCheck({
+      id: "source_lineage_regression",
+      description:
+        "Source lineage must accept verified source chunk support and reject anchor-only support, missing provenance, dangling claim paths, missing body, missing URI, and missing verification status.",
+      command: node,
+      args: ["scripts/verify-source-lineage.mjs"],
+    }),
+    runCheck({
+      id: "source_lineage_current",
+      description:
+        "Current data vault must distinguish internal behavior memory from factual claims and require verified source chunk plus provenance support for source-backed claims.",
+      command: node,
+      args: ["dist/build-source-lineage-status.js"],
     }),
     runCheck({
       id: "review_settlement_regression",
@@ -471,6 +487,20 @@ function main() {
         byId.native_authority_current.parsed?.status === "healthy"
           ? null
           : "native_instruction_authority_not_healthy",
+    },
+    {
+      requirement: "source_chunk_claim_provenance_lineage",
+      ok:
+        byId.source_lineage_regression.ok === true &&
+        byId.source_lineage_current.ok === true &&
+        byId.source_lineage_current.parsed?.status === "healthy",
+      evidence: "source_lineage_regression + source_lineage_current.status",
+      blocker:
+        byId.source_lineage_regression.ok === true &&
+        byId.source_lineage_current.ok === true &&
+        byId.source_lineage_current.parsed?.status === "healthy"
+          ? null
+          : "source_lineage_not_healthy",
     },
     {
       requirement: "review_queue_and_semantic_job_settlement",

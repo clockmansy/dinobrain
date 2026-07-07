@@ -15,6 +15,7 @@ import {
   REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
   SEMANTIC_JOBS_RELATIVE_PATH,
 } from "./review-settlement.js";
+import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
@@ -120,6 +121,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
       CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
       NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
+      SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
       TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
@@ -144,6 +146,14 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: ["."],
     required: true,
     authorityRank: 94,
+  },
+  {
+    id: "source_lineage",
+    label: "source/chunk/claim lineage",
+    artifactPath: SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
+    sourceRoots: ["20_Wiki", "30_Sources", ".dino/provenance", "40_Projects", "50_Instances/accepted"],
+    required: true,
+    authorityRank: 93,
   },
   {
     id: "wiki_index",

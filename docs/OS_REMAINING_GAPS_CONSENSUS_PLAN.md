@@ -33,6 +33,7 @@ Implementation progress:
 - 2026-07-07: P0-04 direct MCP proof ingestion, `verify:mcp-direct`, `verify:goal` hard-gate wiring, and a current Codex proof plus Claude `not_configured` artifact were added. `verify:goal` now reports `codex_claude_direct_mcp_parity` as passing, while live pre-response and task lifecycle blockers remain.
 - 2026-07-07: P0-05 native instruction authority scanner, `verify:native-authority`, health/status refresh wiring, and Observatory `/api/state` exposure were added. Current scanned native surfaces report `healthy`; completion remains blocked by other gates.
 - 2026-07-07: Final reviewer objections for native rules coverage and RAG scaffold-vs-completion honesty were integrated. `~/.codex/rules/*.rules` and safe-readable Codex/Claude custom instruction surfaces are now in scope, and `verify:goal` no longer counts text-hash deterministic RAG canaries as completion-grade semantic RAG evidence.
+- 2026-07-07: P0-06 source/chunk/claim lineage was promoted from document-only criteria into `status:source-lineage`, `verify:source-lineage`, health/freshness artifacts, Observatory visibility, and `verify:goal` hard-gate wiring. Anchor-only URL records are visible but cannot satisfy factual claim support.
 - 2026-07-07: Ten independent reviewers returned explicit `AGREE` after revisions. Empty `completed=null` subagent runs were not counted.
 
 ## Completion Bar
@@ -203,6 +204,8 @@ Acceptance tests:
 - `anchor_only_unverified` sources appear as anchors but do not count as support.
 - A verified source chunk linked to a claim passes when provenance, source status, and claim path are all present.
 - Context Pack output distinguishes behavior memory from source citation and verified claim support.
+- `npm run verify:source-lineage` must pass its regression fixtures.
+- `npm run status:source-lineage` must report `healthy` on the real data vault before `verify:goal` can pass the source-lineage requirement.
 
 ### P1-09 Behavior Recall And Feedback Writeback Ledger
 

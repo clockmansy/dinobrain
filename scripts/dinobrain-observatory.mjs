@@ -359,6 +359,43 @@ async function readNativeInstructionAuthority() {
   };
 }
 
+async function readSourceLineageStatus() {
+  const statusPath = path.join(dataRoot, ".dino", "state", "source_lineage_status.json");
+  const status = await readJson(statusPath);
+  if (status && typeof status === "object") {
+    return {
+      ok: true,
+      _path: rel(statusPath),
+      ...status,
+    };
+  }
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    generated_at: null,
+    latest_verified_at: null,
+    counts: {
+      source_chunks: 0,
+      provenance_links: 0,
+      verified_source_chunks: 0,
+      anchor_only_unverified: 0,
+      unverified_source_chunks: 0,
+      claim_records: 0,
+      behavior_memory_records: 0,
+      project_memory_records: 0,
+      verified_claim_support: 0,
+      unsupported_factual_claims: 0,
+      dangling_claim_paths: 0,
+      blockers: 0,
+    },
+    findings: [],
+    warnings: ["source_lineage_status_missing"],
+    visible_status: "Source lineage status missing",
+    _path: rel(statusPath),
+  };
+}
+
 async function readOsV2Status() {
   const [gates, lifecycleReports, behaviorEvals, provenance, sourceChunks] = await Promise.all([
     readJsonDir(".dino/gates", 20),
@@ -743,12 +780,13 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, nativeAuthority, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
     readNativeInstructionAuthority(),
+    readSourceLineageStatus(),
     readLifecycleQueue(),
     readSyncRisk(),
     readOsV2Status(),
@@ -760,12 +798,14 @@ async function state() {
       graph_health_status: graphHealth.status,
       graph_health_score: graphHealth.score,
       native_instruction_authority_status: nativeAuthority.status,
+      source_lineage_status: sourceLineage.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
       os_v2_status: osV2.status,
     },
     graph_health: graphHealth,
     native_instruction_authority: nativeAuthority,
+    source_lineage: sourceLineage,
     lifecycle,
     sync_risk: syncRisk,
     os_v2: osV2,
@@ -1198,6 +1238,7 @@ function html() {
     <div id="chip-mcp" class="chip"><strong>MCP</strong><span>--</span></div>
     <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
     <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
+    <div id="chip-source" class="chip"><strong>Sources</strong><span>--</span></div>
     <div id="chip-graph" class="chip"><strong>Graph Health</strong><span>--</span></div>
     <div id="chip-sync" class="chip"><strong>GitHub Sync</strong><span>--</span></div>
   </nav>
@@ -1252,6 +1293,11 @@ function html() {
         <div id="lifecycle-retry" class="list"></div>
       </div>
       <div class="block">
+        <h2>Source Lineage</h2>
+        <div id="source-lineage" class="kv"></div>
+        <div id="source-lineage-findings" class="list"></div>
+      </div>
+      <div class="block">
         <h2>Sync Risk</h2>
         <div id="sync-risk" class="kv"></div>
       </div>
@@ -1291,6 +1337,8 @@ function html() {
     const readTraceItemsEl = document.getElementById("read-trace-items");
     const nodeLifecycleEl = document.getElementById("node-lifecycle");
     const lifecycleRetryEl = document.getElementById("lifecycle-retry");
+    const sourceLineageEl = document.getElementById("source-lineage");
+    const sourceLineageFindingsEl = document.getElementById("source-lineage-findings");
     const syncRiskEl = document.getElementById("sync-risk");
     const osV2El = document.getElementById("os-v2");
     const chips = {
@@ -1299,6 +1347,7 @@ function html() {
       mcp: document.getElementById("chip-mcp"),
       read: document.getElementById("chip-read"),
       lifecycle: document.getElementById("chip-lifecycle"),
+      source: document.getElementById("chip-source"),
       graph: document.getElementById("chip-graph"),
       sync: document.getElementById("chip-sync"),
     };
@@ -1756,6 +1805,7 @@ function html() {
       document.getElementById("stat-active").textContent = data.summary.active_task_count;
       const graphHealth = data.graph_health || {};
       const lifecycle = data.lifecycle || { counts: {} };
+      const sourceLineage = data.source_lineage || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
       const osV2 = data.os_v2 || { counts: {} };
@@ -1787,6 +1837,13 @@ function html() {
         lifecycle.status || "--",
         "review " + (lifecycle.counts?.promotion_reviews ?? 0) + " / accepted " + (lifecycle.counts?.accepted ?? 0),
         healthTone(lifecycle.status),
+      );
+      renderChip(
+        chips.source,
+        "Sources",
+        sourceLineage.status || "--",
+        "verified " + (sourceLineage.counts?.verified_source_chunks ?? 0) + " / blockers " + (sourceLineage.counts?.blockers ?? 0),
+        healthTone(sourceLineage.status),
       );
       renderChip(
         chips.graph,
@@ -1850,6 +1907,23 @@ function html() {
           <div class="item"><code>\${esc(item._path || item.path || item.candidate_id || item.review_id || "")}</code><div class="muted">\${esc(compact(item.claim || item.title || item.notes || "", 140))}</div></div>
         \`).join("")
         : '<p class="muted">No retry candidates.</p>';
+      kv(sourceLineageEl, [
+        ["status", sourceLineage.status],
+        ["verified chunks", sourceLineage.counts?.verified_source_chunks],
+        ["anchor only", sourceLineage.counts?.anchor_only_unverified],
+        ["unverified chunks", sourceLineage.counts?.unverified_source_chunks],
+        ["claim records", sourceLineage.counts?.claim_records],
+        ["supported claims", sourceLineage.counts?.verified_claim_support],
+        ["unsupported claims", sourceLineage.counts?.unsupported_factual_claims],
+        ["dangling claims", sourceLineage.counts?.dangling_claim_paths],
+        ["blockers", sourceLineage.counts?.blockers],
+        ["path", sourceLineage._path],
+      ]);
+      sourceLineageFindingsEl.innerHTML = Array.isArray(sourceLineage.findings) && sourceLineage.findings.length
+        ? sourceLineage.findings.slice(0, 6).map((finding) => \`
+          <div class="item"><code>\${esc(finding.signal || "")}</code><div class="muted">\${esc(compact((finding.path || "") + " / " + (finding.reason || ""), 160))}</div></div>
+        \`).join("")
+        : '<p class="muted">No source lineage blockers.</p>';
       kv(syncRiskEl, [
         ["status", syncRisk.status],
         ["branch", syncRisk.branch],
