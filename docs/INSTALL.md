@@ -129,9 +129,15 @@ DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
 DINOBRAIN_AUTO_GROWTH = '1'
 DINOBRAIN_AUTO_COMPOUND = '1'
 DINOBRAIN_AUTO_SYNC = '1'
-DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '1'
-DINOBRAIN_AUTO_SYNC_PUSH = '1'
+DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'
+DINOBRAIN_AUTO_SYNC_PUSH = '0'
 ```
+
+`DINOBRAIN_AUTO_SYNC=1` keeps the sync policy evaluator active, but the default
+installed posture is public-safe: prompt-derived conditional artifacts are not
+auto-committed and hook preflight does not auto-push unless you explicitly opt
+in with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and
+`DINOBRAIN_AUTO_SYNC_PUSH=1`.
 
 10. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
 

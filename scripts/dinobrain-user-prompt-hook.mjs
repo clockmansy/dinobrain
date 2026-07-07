@@ -626,8 +626,8 @@ async function main() {
               name: "auto_sync",
               arguments: {
                 include_sensitive_scan: true,
-                allow_conditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
-                push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
+                allow_conditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", false),
+                push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", false),
                 commit_message: `data: auto sync Codex preflight ${stampForFile(new Date(startedAt))}`,
                 allowed_paths: allowedPaths,
               },

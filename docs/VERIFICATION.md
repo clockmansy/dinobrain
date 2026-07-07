@@ -47,7 +47,7 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
-`npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data.
+`npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data. The fixture explicitly opts in to conditional push with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and `DINOBRAIN_AUTO_SYNC_PUSH=1`; the installed public-safe default keeps both flags at `0`.
 
 The same verifier also checks the safety valve for read-only work: `finish_task` with `growth_policy: "trace_only"` must write the task trace but skip auto-growth, compounding, and auto-sync push even when those environment flags are enabled.
 
@@ -257,6 +257,6 @@ It verifies:
 - live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, `session_imported`, and `codex_preflight_completed`.
 - the PowerShell wrapper fails closed with a blocking hook decision when Node cannot be found.
 
-`npm run verify:codex-loop` extends this from hook preflight to the complete Codex loop. It creates a temporary data vault and a temporary bare Git remote, runs the hook, writes a proof artifact, calls `finish_task`, and asserts that both the preflight records and the finish/growth records are pushed to the remote.
+`npm run verify:codex-loop` extends this from hook preflight to the complete Codex loop. It creates a temporary data vault and a temporary bare Git remote, runs the hook, writes a proof artifact, calls `finish_task`, and asserts that both the preflight records and the finish/growth records are pushed to the remote under explicit conditional-push opt-in.
 
 `npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths.

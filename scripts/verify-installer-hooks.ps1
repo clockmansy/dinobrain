@@ -141,9 +141,14 @@ try {
   if ($configText -notmatch "\[mcp_servers\.dinobrain\]") {
     throw "DinoBrain MCP config was not written"
   }
-  foreach ($envName in @("DINOBRAIN_AUTO_GROWTH", "DINOBRAIN_AUTO_COMPOUND", "DINOBRAIN_AUTO_SYNC", "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", "DINOBRAIN_AUTO_SYNC_PUSH")) {
+  foreach ($envName in @("DINOBRAIN_AUTO_GROWTH", "DINOBRAIN_AUTO_COMPOUND", "DINOBRAIN_AUTO_SYNC")) {
     if ($configText -notmatch "(?m)^$envName = `"1`"\r?$") {
       throw "DinoBrain MCP env missing: $envName"
+    }
+  }
+  foreach ($envName in @("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", "DINOBRAIN_AUTO_SYNC_PUSH")) {
+    if ($configText -notmatch "(?m)^$envName = `"0`"\r?$") {
+      throw "DinoBrain MCP safe auto-sync env missing: $envName"
     }
   }
   Assert-DinoBrainNoBareCarriageReturnFile -Path $configPath

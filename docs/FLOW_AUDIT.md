@@ -38,7 +38,7 @@ Expected states:
 | 5. Narrow extra search | `verified` | `wiki_search` and `search_memory` both work for narrow lookup. |
 | 6. Finish task record | `verified` | `finish_task` writes summary/decisions/next steps plus structured `used_memory_paths` and `context_pack_paths`. |
 | 7. Knowledge growth | `verified` | With `DINOBRAIN_AUTO_GROWTH=1` and `DINOBRAIN_AUTO_COMPOUND=1`, `finish_task` creates reusable task memory and runs behavior-rule compounding/cleanup. |
-| 8. Backup/restore | `verified` | Installer config enables auto sync by default, and `auto_sync` can commit/push policy-approved data while blocking local-only or sensitive records. |
+| 8. Backup/restore | `partially_verified` | Installer config enables sync policy checks by default, but public-safe installs keep conditional auto-push disabled unless explicitly opted in. |
 
 ## What Would Make It Fully True
 
@@ -65,4 +65,4 @@ It verifies:
 - the accepted instance is retrieved in a later Context Pack
 - behavior-rule compounding can promote, merge, and hold records
 - installer files and Git remotes are present
-- `git_sync` remains dry-run only for policy inspection; `auto_sync` performs guarded commit/push when enabled
+- `git_sync` remains dry-run only for policy inspection; `auto_sync` performs guarded commit/push only for allowed scopes and explicit push settings

@@ -113,6 +113,9 @@ Still incomplete:
 - Behavior evaluation still checks context lift, not generated answer quality.
 - Public-data safety still reports warnings that should be triaged before
   public release claims.
+- Installed auto-sync is public-safe by default: conditional prompt-derived
+  artifacts and hook preflight records are not auto-pushed unless the operator
+  explicitly opts in.
 
 ## Completion Evidence Required
 

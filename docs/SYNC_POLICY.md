@@ -81,6 +81,13 @@ It must report:
 
 `auto_sync` is the bounded writer. Hook and `finish_task` callers must pass an `allowed_paths` scope so only artifacts created by the current task can be committed. Broad repo policy sync is reserved for explicit manual calls. `auto_sync` may commit and push only policy-approved records after sensitivity scanning and path classification. It must skip blocked local-only records and report skipped paths.
 
+The installed default is public-safe: `DINOBRAIN_AUTO_SYNC=1` may evaluate and
+commit syncable reviewed artifacts, but `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=0`
+and `DINOBRAIN_AUTO_SYNC_PUSH=0` prevent prompt-derived task, trace, context
+pack, gate, candidate, review, and compounding records from being auto-pushed.
+Closed-loop push tests and private/encrypted backup workflows may explicitly set
+both flags to `1`; that opt-in is not the default public data posture.
+
 Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
 
 The data repo also carries Git hooks under `.githooks`. Install/update must set `core.hooksPath = .githooks`. These hooks block local-only paths and auto-generated accepted memories without review lineage at `pre-commit` and `pre-push` time. This is required because a long-lived stale MCP process may not yet know the newest in-process sync policy.

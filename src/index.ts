@@ -1476,8 +1476,8 @@ server.registerTool(
         const compoundingPaths = compoundingSyncPaths(compounding);
         autoSync = await runDataAutoSync({
           includeSensitiveScan: true,
-          allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
-          push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
+          allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", false),
+          push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", false),
           commitMessage: `data: auto sync ${safeSlug(task_id).slice(0, 48)}`,
           allowedPaths: [taskRelativePath, traceRelativePath, ...growthPaths, ...compoundingPaths],
         });
@@ -2300,7 +2300,7 @@ server.registerTool(
     description: "Commit and push policy-approved DinoBrain data changes while excluding blocked local-only records.",
     inputSchema: {
       include_sensitive_scan: z.boolean().default(true),
-      allow_conditional: z.boolean().default(true),
+      allow_conditional: z.boolean().default(false),
       push: z.boolean().default(true),
       commit_message: z.string().default("data: auto sync DinoBrain OS loop"),
       allowed_paths: z.array(z.string()).default([]),

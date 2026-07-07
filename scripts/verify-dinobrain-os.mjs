@@ -20,13 +20,13 @@ const requireClaudeCode = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_C
 const claudeSettingsPath = path.resolve(process.env.DINOBRAIN_CLAUDE_SETTINGS_PATH ?? path.join(homedir(), ".claude", "settings.json"));
 const requireClaudePromptHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_PROMPT_HOOK ?? "");
 const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
-const requiredCodexEnv = [
-  "DINOBRAIN_AUTO_GROWTH",
-  "DINOBRAIN_AUTO_COMPOUND",
-  "DINOBRAIN_AUTO_SYNC",
-  "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL",
-  "DINOBRAIN_AUTO_SYNC_PUSH",
-];
+const requiredCodexEnv = {
+  DINOBRAIN_AUTO_GROWTH: "1",
+  DINOBRAIN_AUTO_COMPOUND: "1",
+  DINOBRAIN_AUTO_SYNC: "1",
+  DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL: "0",
+  DINOBRAIN_AUTO_SYNC_PUSH: "0",
+};
 
 const expectedTools = [
   "auto_sync",
@@ -124,7 +124,9 @@ function parseCodexDinoBrainConfig() {
     command,
     args,
     env,
-    missing_required_env: requiredCodexEnv.filter((name) => env[name] !== "1"),
+    missing_required_env: Object.entries(requiredCodexEnv)
+      .filter(([name, expectedValue]) => env[name] !== expectedValue)
+      .map(([name, expectedValue]) => ({ name, expected: expectedValue, actual: env[name] ?? null })),
     command_exists: command ? existsSync(command) : false,
     server_entry_exists: args.some((arg) => existsSync(arg)),
     data_root_exists: env.DINOBRAIN_DATA_DIR ? existsSync(env.DINOBRAIN_DATA_DIR) : false,
