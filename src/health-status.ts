@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { dataPath } from "./context.js";
@@ -134,6 +135,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
   {
     id: "live_semantic_query",
     artifactPath: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+    authorityRank: 75,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "answer_quality",
+    artifactPath: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
     authorityRank: 75,
     healthyStatuses: ["healthy"],
   },

@@ -208,6 +208,25 @@ tags: [context-pack]
     },
     warnings: ["query_vector_was_precomputed_not_live"],
   });
+  writeJson(".dino/state/answer_quality_status.json", {
+    status: "needs_attention",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    evaluator: "local_paired_answer_quality_judge_v1",
+    evaluator_class: "ragas_like_local",
+    counts: { cases: 1, passed: 0, failed: 1 },
+    metrics: {
+      faithfulness: 0.5,
+      answer_relevance: 0.5,
+      correctness: 0.5,
+      grounding: 0.25,
+      source_support: 0.25,
+      forbidden_memory_avoidance: 1,
+      noise_budget: 1,
+      average_memory_lift: 10,
+      p95_latency_ms: 4,
+    },
+    warnings: ["answer_quality_cases_failed"],
+  });
   writeJson(".dino/state/health_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -216,6 +235,7 @@ tags: [context-pack]
       { id: "client_mcp_direct_status", artifact_path: ".dino/state/client_mcp_direct_status.json", status: "needs_attention" },
       { id: "rag_proof", artifact_path: ".dino/state/rag_proof_status.json", status: "healthy" },
       { id: "live_semantic_query", artifact_path: ".dino/state/live_semantic_query_status.json", status: "needs_attention" },
+      { id: "answer_quality", artifact_path: ".dino/state/answer_quality_status.json", status: "needs_attention" },
     ],
     warnings: [],
   });
@@ -275,8 +295,13 @@ tags: [context-pack]
       readiness.lanes.blockers.some((gate) => gate.id === "live_semantic_query" && gate.blocker_reason === "live_semantic_query_not_healthy"),
       "Readiness did not expose live semantic query blocker",
     );
+    assert(
+      readiness.lanes.blockers.some((gate) => gate.id === "answer_quality" && gate.blocker_reason === "answer_quality_not_healthy"),
+      "Readiness did not expose answer-quality blocker",
+    );
     assert(readiness.live_semantic_query_status?.blocker === "live_semantic_query_not_healthy", "Live semantic query readiness status missing");
-    assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality_eval"), "Answer-quality pending lane missing");
+    assert(readiness.answer_quality_status?.status === "needs_attention", "Answer-quality readiness status missing");
+    assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality"), "Answer-quality pending lane missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");
     assert(readiness.latest_audit?.trust_score === 72, "Readiness did not expose latest audit trust score");
     assert(readiness.latest_audit?.provided_memory_paths?.includes("20_Wiki/Graph-Speed.md"), "Audit provided paths missing");

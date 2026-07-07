@@ -209,6 +209,8 @@ npm run verify:compounding
 npm run eval:rag
 npm run status:live-semantic-query
 npm run verify:live-semantic-query
+npm run status:answer-quality
+npm run verify:answer-quality
 npm run eval:behavior
 npm run graph:health
 npm run safety:public-data:check
@@ -225,8 +227,6 @@ npm run release:win -- -SkipUpload
 Missing named verifiers that must be added or mapped explicitly before final
 completion:
 
-- `verify:answer-quality`
-- `verify:observatory-evidence`
 - `verify:install-equivalence`
 - `verify:release-manifest`
 - `verify:review-backlog`
@@ -344,14 +344,19 @@ Current implementation note:
   a non-golden prompt can compute an on-the-fly semantic query vector, use dense
   top-K in the Context Pack path, and honestly fall back when semantic
   embeddings are disabled.
-- This closes the dynamic live-query proof gap, but does not by itself complete
-  the broader generated-answer quality / memory-on-off evaluation requirement.
+- `verify:answer-quality` and `status:answer-quality` now add a deterministic
+  local paired judge over generated memory-on and memory-off answers with
+  faithfulness, answer relevance, correctness, grounding, source support,
+  forbidden-memory avoidance, noise budget, latency, and memory-lift metrics.
+- These close the named live-query and local answer-quality proof gaps, but do
+  not by themselves complete the broader representative-eval requirement.
 
 Current risk:
 
-- The golden-set RAG proof and live-query proof now report real semantic
-  embeddings, but completion must still not confuse retrieval proof with a full
-  generated-answer quality loop.
+- The golden-set RAG proof, live-query proof, and local paired answer-quality
+  proof now report real semantic and memory-on/off evidence, but completion
+  must still not confuse this small deterministic proof with broad Ragas or
+  LLM-judge calibrated evaluation across representative user cases.
 
 Required work:
 
@@ -362,7 +367,8 @@ Required work:
   completion evidence.
 - Store bounded dense vectors and top-K retrieval evidence for each proof case.
 - Keep `lexical_fallback_v2` when semantic dense retrieval is unavailable.
-- Add generated-answer memory-on/off evaluation with judge/Ragas-like metrics.
+- Expand generated-answer memory-on/off evaluation beyond the local paired
+  judge into Ragas-like or LLM-judge calibrated representative cases.
 - Report contribution metrics for sparse, dense, RRF, rerank, provenance,
   lifecycle penalty, type budgets, latency, and noise.
 - Remove or bound vocabulary-wide `%term%` scans, full vector loads, and whole
@@ -558,12 +564,13 @@ not complete. The next implementation order should be:
 3. Strengthen behavior recall, review backlog, active-task, and compounding
    lifecycle gates so green status cannot hide missing trigger coverage or
    unresolved memory debt.
-4. Extend generated-answer quality evaluation beyond the current local
-   extractive judge into representative memory-on/off, Ragas-like or LLM-judge
-   evidence. Dynamic live-query semantic retrieval is now covered by
-   `verify:live-semantic-query`.
+4. Extend generated-answer quality evaluation beyond the current local paired
+   judge into representative memory-on/off, Ragas-like or LLM-judge evidence.
+   Dynamic live-query semantic retrieval is now covered by
+   `verify:live-semantic-query`, and local paired answer-quality proof is now
+   covered by `verify:answer-quality`.
 5. Align health and Observatory with `verify:goal` blocker semantics.
-6. Add missing final verifiers for Observatory evidence, answer quality,
-   install equivalence, release manifest, review backlog, and compounding
-   lifecycle.
+6. Add missing final verifiers for install equivalence, release manifest,
+   review backlog, and compounding lifecycle, and keep Observatory evidence plus
+   answer quality wired into `verify:goal`.
 7. Re-run the ten-agent consensus protocol against this exact revised document.

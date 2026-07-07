@@ -615,30 +615,32 @@ function statusOk(value, healthyStatuses = ["healthy", "verified", "ready", "cle
   return healthyStatuses.includes(String(value ?? "").toLowerCase());
 }
 
-function hasGeneratedAnswerQualityEvidence(evalReport) {
-  const candidates = [evalReport?.generated_answer_eval, evalReport?.answer_quality, evalReport?.ragas_eval].filter(Boolean);
-  return candidates.some((candidate) => {
-    const status = candidate?.status;
-    const metrics = candidate?.metrics ?? candidate;
-    return Boolean(
-      ["healthy", "passed", "verified"].includes(String(status ?? "").toLowerCase()) &&
-        typeof metrics?.faithfulness === "number" &&
-        typeof (metrics?.answer_relevance ?? metrics?.answer_relevancy) === "number" &&
-        typeof (metrics?.correctness ?? metrics?.answer_correctness) === "number" &&
-        typeof (metrics?.grounding ?? metrics?.source_support) === "number",
-    );
-  });
+function hasGeneratedAnswerQualityEvidence(report) {
+  const metrics = report?.metrics ?? {};
+  return Boolean(
+    report?.status === "healthy" &&
+      report?.evaluator_class === "ragas_like_local" &&
+      Number(report?.counts?.cases ?? 0) > 0 &&
+      typeof metrics.faithfulness === "number" &&
+      typeof (metrics.answer_relevance ?? metrics.answer_relevancy) === "number" &&
+      typeof (metrics.correctness ?? metrics.answer_correctness) === "number" &&
+      typeof (metrics.grounding ?? metrics.source_support) === "number" &&
+      typeof metrics.average_memory_lift === "number",
+  );
 }
 
-function classifyRagCompletionBlocker(proof, evalReport) {
+function classifyRagCompletionBlocker(proof, evalReport, answerQualityReport) {
   const denseVector = proof?.dense_vector;
   if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
   if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
-  const caveats = Array.isArray(evalReport?.caveats) ? evalReport.caveats.join("\n") : "";
-  if (/deterministic\s+RAG\s+canary|not\s+a\s+full\s+Ragas|not\s+a\s+full.*answer-quality/i.test(caveats)) {
-    return "rag_deterministic_canary_only";
-  }
-  if (!hasGeneratedAnswerQualityEvidence(evalReport)) return "rag_answer_quality_eval_missing";
+  if (!hasGeneratedAnswerQualityEvidence(answerQualityReport)) return "rag_answer_quality_eval_missing";
+  return null;
+}
+
+function classifyAnswerQualityBlocker(report) {
+  if (!report) return "answer_quality_status_missing";
+  if (report.status !== "healthy") return "answer_quality_not_healthy";
+  if (!hasGeneratedAnswerQualityEvidence(report)) return "answer_quality_missing_metrics";
   return null;
 }
 
@@ -713,6 +715,7 @@ async function readiness(existingState = null) {
     ragProofArtifact,
     ragEvalArtifact,
     liveSemanticQueryArtifact,
+    answerQualityArtifact,
     graphArtifact,
     audits,
   ] = await Promise.all([
@@ -726,6 +729,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/rag_proof_status.json"),
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
+    readStatusArtifact(".dino/state/answer_quality_status.json"),
     readStatusArtifact(".dino/index/graph-health.json"),
     existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
   ]);
@@ -736,13 +740,19 @@ async function readiness(existingState = null) {
   );
   const clientProofPath = clientAgents.map((agent) => agent.proof_path).filter(Boolean).join(" | ") || null;
   const ragBlocker =
-    ragProofArtifact.artifact_parse_status === "ok" && ragEvalArtifact.artifact_parse_status === "ok"
-      ? classifyRagCompletionBlocker(ragProofArtifact.value, ragEvalArtifact.value)
+    ragProofArtifact.artifact_parse_status === "ok" &&
+    ragEvalArtifact.artifact_parse_status === "ok" &&
+    answerQualityArtifact.artifact_parse_status === "ok"
+      ? classifyRagCompletionBlocker(ragProofArtifact.value, ragEvalArtifact.value, answerQualityArtifact.value)
       : "rag_status_artifact_unavailable";
   const liveSemanticBlocker =
     liveSemanticQueryArtifact.artifact_parse_status === "ok"
       ? classifyLiveSemanticQueryBlocker(liveSemanticQueryArtifact.value)
       : "live_semantic_query_status_artifact_unavailable";
+  const answerQualityBlocker =
+    answerQualityArtifact.artifact_parse_status === "ok"
+      ? classifyAnswerQualityBlocker(answerQualityArtifact.value)
+      : "answer_quality_status_artifact_unavailable";
 
   const hardGates = [
     hardGateFromArtifact({ id: "health_status", label: "Health Rollup", artifact: healthArtifact, expectedStatuses: ["healthy"] }),
@@ -793,6 +803,14 @@ async function readiness(existingState = null) {
       proofPath: liveSemanticQueryArtifact.artifact_path,
       blockerReason: liveSemanticBlocker,
     }),
+    hardGateFromArtifact({
+      id: "answer_quality",
+      label: "Answer Quality",
+      artifact: answerQualityArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: answerQualityArtifact.artifact_path,
+      blockerReason: answerQualityBlocker,
+    }),
     hardGateFromArtifact({ id: "graph_health", label: "Graph Health", artifact: graphArtifact, expectedStatuses: ["healthy"] }),
   ];
 
@@ -816,8 +834,8 @@ async function readiness(existingState = null) {
   if (ragProof?.dense_vector?.semantic_embedding_provider !== true) {
     mainPending.push(laneItem("semantic_embedding_provider", "blocked", "completion-grade dense semantic provider missing", ragProofArtifact.artifact_path));
   }
-  if (!hasGeneratedAnswerQualityEvidence(ragEval)) {
-    verifierPending.push(laneItem("answer_quality_eval", "pending", "generated-answer quality evidence missing", ragEvalArtifact.artifact_path));
+  if (answerQualityBlocker) {
+    verifierPending.push(laneItem("answer_quality", "pending", answerQualityBlocker, answerQualityArtifact.artifact_path));
   }
   if (liveSemanticBlocker) {
     verifierPending.push(
@@ -863,6 +881,16 @@ async function readiness(existingState = null) {
       blocker: liveSemanticBlocker,
       proof: liveSemanticQueryArtifact.value?.proof ?? null,
       retrieval: liveSemanticQueryArtifact.value?.retrieval ?? null,
+    },
+    answer_quality_status: {
+      artifact_path: answerQualityArtifact.artifact_path,
+      artifact_parse_status: answerQualityArtifact.artifact_parse_status,
+      status: answerQualityArtifact.value?.status ?? "missing",
+      blocker: answerQualityBlocker,
+      evaluator: answerQualityArtifact.value?.evaluator ?? null,
+      evaluator_class: answerQualityArtifact.value?.evaluator_class ?? null,
+      counts: answerQualityArtifact.value?.counts ?? null,
+      metrics: answerQualityArtifact.value?.metrics ?? null,
     },
     hard_gates: hardGates,
     lanes: {
@@ -1798,6 +1826,8 @@ function html() {
         ["RAG blocker", readiness.rag_status?.blocker],
         ["live semantic query", readiness.live_semantic_query_status?.status],
         ["live query blocker", readiness.live_semantic_query_status?.blocker],
+        ["answer quality", readiness.answer_quality_status?.status],
+        ["answer quality blocker", readiness.answer_quality_status?.blocker],
       ]);
       readinessBlockersEl.innerHTML = renderLaneItems(readiness.lanes?.blockers);
       readinessPendingEl.innerHTML = [

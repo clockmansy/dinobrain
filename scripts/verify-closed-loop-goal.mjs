@@ -142,33 +142,37 @@ function hasClosedLoopEvidence(check) {
   );
 }
 
-function hasGeneratedAnswerQualityEvidence(parsed) {
-  const candidates = [parsed?.generated_answer_eval, parsed?.answer_quality, parsed?.ragas_eval].filter(Boolean);
-  return candidates.some((candidate) => {
-    const status = candidate?.status;
-    const metrics = candidate?.metrics ?? candidate;
-    return Boolean(
-      (status === "healthy" || status === "passed" || status === "verified") &&
-        typeof metrics?.faithfulness === "number" &&
-        typeof (metrics?.answer_relevance ?? metrics?.answer_relevancy) === "number" &&
-        typeof (metrics?.correctness ?? metrics?.answer_correctness) === "number" &&
-        typeof (metrics?.grounding ?? metrics?.source_support) === "number",
-    );
-  });
-}
-
 function classifyRagCompletionBlocker(proofCheck, evalCheck) {
   if (proofCheck.ok !== true || evalCheck.ok !== true) return "real_rag_eval_failed";
   const proof = proofCheck.parsed;
-  const evalReport = evalCheck.parsed;
   const denseVector = proof?.dense_vector;
   if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
   if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
-  const caveats = Array.isArray(evalReport?.caveats) ? evalReport.caveats.join("\n") : "";
-  if (/deterministic\s+RAG\s+canary|not\s+a\s+full\s+Ragas|not\s+a\s+full.*answer-quality/i.test(caveats)) {
-    return "rag_deterministic_canary_only";
-  }
-  if (!hasGeneratedAnswerQualityEvidence(evalReport)) return "rag_answer_quality_eval_missing";
+  return null;
+}
+
+function hasAnswerQualityEvidence(check) {
+  const parsed = check.parsed;
+  const metrics = parsed?.metrics ?? {};
+  return Boolean(
+    check.ok === true &&
+      parsed?.status === "healthy" &&
+      parsed?.evaluator_class === "ragas_like_local" &&
+      Number(parsed?.counts?.cases ?? 0) > 0 &&
+      typeof metrics.faithfulness === "number" &&
+      typeof (metrics.answer_relevance ?? metrics.answer_relevancy) === "number" &&
+      typeof (metrics.correctness ?? metrics.answer_correctness) === "number" &&
+      typeof (metrics.grounding ?? metrics.source_support) === "number" &&
+      typeof metrics.average_memory_lift === "number",
+  );
+}
+
+function classifyAnswerQualityBlocker(check) {
+  if (check.ok !== true) return "answer_quality_not_verified";
+  const parsed = check.parsed;
+  if (!parsed) return "answer_quality_unparsed_failure";
+  if (parsed.status !== "healthy") return "answer_quality_not_healthy";
+  if (!hasAnswerQualityEvidence(check)) return "answer_quality_missing_metrics";
   return null;
 }
 
@@ -234,8 +238,7 @@ function nextActionFor(requirementEvidence) {
     case "rag_semantic_provider_not_configured":
     case "rag_text_hashing_scaffold_only":
     case "rag_deterministic_canary_only":
-    case "rag_answer_quality_eval_missing":
-      return "Configure a completion-grade semantic embedding provider or documented local multilingual model, add generated-answer RAG evaluation, rerun npm run rag:proof and npm run eval:rag, then rerun npm run verify:goal.";
+      return "Configure a completion-grade semantic embedding provider or documented local multilingual model, rerun npm run rag:proof and npm run eval:rag, then rerun npm run verify:goal.";
     case "live_semantic_query_not_verified":
     case "live_semantic_query_not_healthy":
     case "live_semantic_query_not_on_the_fly":
@@ -244,6 +247,11 @@ function nextActionFor(requirementEvidence) {
     case "live_semantic_query_not_hybrid":
     case "live_semantic_dense_topk_missing":
       return "Run npm run verify:live-semantic-query and npm run status:live-semantic-query, then repair live query embedding so non-golden prompts use dense semantic top-K without persisted query-vector cheats.";
+    case "answer_quality_not_verified":
+    case "answer_quality_unparsed_failure":
+    case "answer_quality_not_healthy":
+    case "answer_quality_missing_metrics":
+      return "Run npm run verify:answer-quality and npm run status:answer-quality, then repair the memory-on/off generated-answer quality evidence before rerunning npm run verify:goal.";
     case "installer_new_pc_equivalence_failed":
       return "Run npm run installer:verify:version, npm run installer:verify:approval, npm run installer:verify:launchers, and npm run installer:verify:semantic-rag; repair installer drift, hook merge, launcher, or semantic RAG prewarm failures before rerunning npm run verify:goal.";
     default:
@@ -484,6 +492,22 @@ function main() {
       timeoutMs: 180000,
     }),
     runCheck({
+      id: "answer_quality_regression",
+      description:
+        "Answer-quality verifier must prove memory-on generated answers beat memory-off answers with faithfulness, relevance, correctness, grounding, and source-support metrics.",
+      command: node,
+      args: ["scripts/verify-answer-quality.mjs"],
+      timeoutMs: 180000,
+    }),
+    runCheck({
+      id: "answer_quality_current",
+      description:
+        "Current data vault must have healthy generated-answer memory-on/off quality evidence before final RAG readiness can pass.",
+      command: node,
+      args: ["dist/build-answer-quality-status.js"],
+      timeoutMs: 180000,
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -667,13 +691,13 @@ function main() {
           : "installer_new_pc_equivalence_failed",
     },
     {
-      requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",
+      requirement: "real_rag_eval_hybrid_retrieval_quality",
       ok:
         byId.rag_proof_regression.ok === true &&
         byId.rag_eval_regression.ok === true &&
         hasCompletionGradeRagEvidence(byId.rag_proof_current, byId.rag_eval_current),
       evidence:
-        "rag_proof_regression + rag_eval_regression + completion-grade rag_proof_current/rag_eval_current semantic and answer-quality evidence",
+        "rag_proof_regression + rag_eval_regression + completion-grade rag_proof_current/rag_eval_current semantic evidence",
       blocker:
         byId.rag_proof_regression.ok === true &&
         byId.rag_eval_regression.ok === true &&
@@ -694,6 +718,17 @@ function main() {
           : hasLiveSemanticQueryEvidence(byId.live_semantic_query_current)
             ? null
             : classifyLiveSemanticQueryBlocker(byId.live_semantic_query_current),
+    },
+    {
+      requirement: "answer_quality_memory_on_off_generated_eval",
+      ok: byId.answer_quality_regression.ok === true && hasAnswerQualityEvidence(byId.answer_quality_current),
+      evidence: "answer_quality_regression + answer_quality_current generated memory-on/off metrics",
+      blocker:
+        byId.answer_quality_regression.ok !== true
+          ? "answer_quality_not_verified"
+          : hasAnswerQualityEvidence(byId.answer_quality_current)
+            ? null
+            : classifyAnswerQualityBlocker(byId.answer_quality_current),
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",

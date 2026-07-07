@@ -1,6 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { ANSWER_QUALITY_STATUS_RELATIVE_PATH, buildAndWriteAnswerQualityReport } from "./answer-quality.js";
 import { buildAndWriteBehaviorRecallReport } from "./behavior-recall.js";
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
@@ -82,6 +83,13 @@ export async function refreshStatusArtifacts(
     id: "live_semantic_query",
     status: liveSemanticQuery.report.status,
     path: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+  });
+
+  const answerQuality = await buildAndWriteAnswerQualityReport(dataRoot);
+  steps.push({
+    id: "answer_quality",
+    status: answerQuality.report.status,
+    path: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
   });
 
   const sourceLineage = await buildAndWriteSourceLineageReport(dataRoot);

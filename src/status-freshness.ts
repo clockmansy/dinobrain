@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH, BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { dataPath, relDataPath } from "./context.js";
@@ -95,7 +96,7 @@ type ArtifactSpec = {
 const ARTIFACTS: ArtifactSpec[] = [
   {
     id: "full_memory_audit",
-    label: "전체 메모리 감사",
+    label: "full memory audit",
     artifactPath: FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
     sourceRoots: ["."],
     required: true,
@@ -132,6 +133,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       RAG_PROOF_STATUS_RELATIVE_PATH,
       RAG_EVAL_STATUS_RELATIVE_PATH,
       LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+      ANSWER_QUALITY_STATUS_RELATIVE_PATH,
       GRAPH_HEALTH_RELATIVE_PATH,
     ],
   },
@@ -176,21 +178,21 @@ const ARTIFACTS: ArtifactSpec[] = [
   },
   {
     id: "wiki_index",
-    label: "Wiki 검색 인덱스",
+    label: "Wiki index",
     artifactPath: WIKI_INDEX_RELATIVE_PATH,
     sourceRoots: ["20_Wiki", "30_Sources", "40_Projects", "50_Instances/accepted", "60_Operations", "70_Error_Book"],
     required: true,
   },
   {
     id: "operations_index",
-    label: "작업/이벤트 인덱스",
+    label: "operations index",
     artifactPath: OPERATIONS_INDEX_RELATIVE_PATH,
     sourceRoots: [".dino/events", ".dino/tasks", ".dino/traces", ".dino/context-packs", ".dino/gates", ".dino/audits"],
     required: true,
   },
   {
     id: "sqlite_manifest",
-    label: "SQLite 샤드 manifest",
+    label: "SQLite shard manifest",
     artifactPath: SQLITE_MANIFEST_RELATIVE_PATH,
     sourceRoots: [
       "20_Wiki",
@@ -208,7 +210,7 @@ const ARTIFACTS: ArtifactSpec[] = [
   },
   {
     id: "graph_health",
-    label: "그래프 health",
+    label: "graph health",
     artifactPath: GRAPH_HEALTH_RELATIVE_PATH,
     sourceRoots: [
       "20_Wiki",
@@ -222,14 +224,14 @@ const ARTIFACTS: ArtifactSpec[] = [
   },
   {
     id: "review_queue_settlement",
-    label: "리뷰 큐 정산",
+    label: "review queue settlement",
     artifactPath: REVIEW_QUEUE_STATUS_RELATIVE_PATH,
     sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
     required: true,
   },
   {
     id: "semantic_jobs",
-    label: "시맨틱 작업 정산",
+    label: "semantic job settlement",
     artifactPath: SEMANTIC_JOBS_RELATIVE_PATH,
     sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
     required: true,
@@ -243,14 +245,14 @@ const ARTIFACTS: ArtifactSpec[] = [
   },
   {
     id: "task_lifecycle",
-    label: "작업 세션 완료 게이트",
+    label: "task lifecycle finish gate",
     artifactPath: TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
     sourceRoots: [".dino/tasks", ".dino/traces", ".dino/context-packs", ".dino/events"],
     required: true,
   },
   {
     id: "task_lifecycle_settlement",
-    label: "작업 세션 자동정리",
+    label: "task lifecycle settlement",
     artifactPath: TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
     sourceRoots: [".dino/tasks", ".dino/traces"],
     required: true,
@@ -273,7 +275,7 @@ const ARTIFACTS: ArtifactSpec[] = [
   },
   {
     id: "rag_eval",
-    label: "RAG 품질 평가",
+    label: "RAG eval",
     artifactPath: RAG_EVAL_STATUS_RELATIVE_PATH,
     sourceRoots: [
       ".dino/evaluations",
@@ -297,6 +299,24 @@ const ARTIFACTS: ArtifactSpec[] = [
       ".dino/index/dense-vectors.json",
       ".dino/index/wiki-index.json",
       ".dino/index/sqlite/manifest.json",
+      "20_Wiki",
+      "30_Sources",
+      "40_Projects",
+      "50_Instances/accepted",
+      "60_Operations",
+      "70_Error_Book",
+    ],
+    required: true,
+  },
+  {
+    id: "answer_quality",
+    label: "answer quality proof",
+    artifactPath: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/evaluations/answer-quality-golden.json",
+      ".dino/evaluations/behavior-golden.json",
+      ".dino/index/dense-vectors.json",
+      ".dino/index/wiki-index.json",
       "20_Wiki",
       "30_Sources",
       "40_Projects",
@@ -469,24 +489,24 @@ function combineSourceLatest(primary: SourceLatest, dependency: SourceLatest): S
 function checkVisibleStatus(label: string, status: FreshnessCheckStatus): string {
   switch (status) {
     case "fresh":
-      return `${label} 최신`;
+      return `${label} fresh`;
     case "stale":
-      return `${label} 갱신 필요`;
+      return `${label} needs refresh`;
     case "missing":
-      return `${label} 없음`;
+      return `${label} missing`;
     case "not_applicable":
-      return `${label} 소스 없음`;
+      return `${label} not applicable`;
   }
 }
 
 function reportVisibleStatus(status: FreshnessStatus): string {
   switch (status) {
     case "healthy":
-      return "상태 신선도 정상";
+      return "status freshness healthy";
     case "needs_refresh":
-      return "상태 신선도 갱신 필요";
+      return "status freshness needs refresh";
     case "degraded":
-      return "상태 신선도 증거 부족";
+      return "status freshness degraded";
   }
 }
 
