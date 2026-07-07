@@ -17,6 +17,8 @@
     "status:freshness:verify": "node scripts/verify-status-freshness.mjs",
     "review:settle": "node dist/build-review-settlement.js",
     "review:settle:verify": "node scripts/verify-review-settlement.mjs",
+    "task:lifecycle": "node dist/build-task-lifecycle.js",
+    "task:lifecycle:verify": "node scripts/verify-task-lifecycle.mjs",
     "eval:context": "node dist/evaluate-context.js",
     "eval:behavior": "node dist/evaluate-behavior.js",
     "graph:health": "node dist/build-graph-health.js",

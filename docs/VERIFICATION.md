@@ -22,6 +22,8 @@ npm run status:freshness
 npm run status:freshness:verify
 npm run review:settle
 npm run review:settle:verify
+npm run task:lifecycle
+npm run task:lifecycle:verify
 npm run sources:rag:seed
 npm run session:verify
 npm run session:promote
@@ -58,6 +60,10 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 `npm run review:settle` writes `.dino/state/wiki-review-queue.json` and `.dino/state/semantic_jobs.json`. It does not auto-approve memory. It classifies every candidate/review item as closed, manual semantic review, auto-compounded behavior hold, legacy unreviewed hold, evidence repair, missing review, missing candidate, or unclassified. The command succeeds when open backlog remains but every residual item has a decision class, reason, evidence path, owner, and next action.
 
 `npm run review:settle:verify` proves this classification on a temporary vault with behavior-rule, legacy, missing-evidence, missing-review, missing-candidate, and closed-review fixtures.
+
+`npm run task:lifecycle` writes `.dino/state/task_sessions.json` and `.dino/state/task_finish_grounding_classifications.jsonl`. It classifies active, stale-active, terminal, missing-trace, orphan-trace, partial-grounded, and ungrounded task finishes. The command fails when stale active tasks, missing terminal traces, orphan traces, task-id mismatches, or ungrounded finishes remain, because those block final readiness.
+
+`npm run task:lifecycle:verify` proves the lifecycle gate on clean and dirty temporary vaults.
 
 `npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:freshness` gates, so final closed-loop readiness cannot bypass P0-01 or P0-02.
 

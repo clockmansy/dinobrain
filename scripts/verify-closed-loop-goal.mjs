@@ -240,6 +240,20 @@ function main() {
       args: ["dist/build-review-settlement.js"],
     }),
     runCheck({
+      id: "task_lifecycle_regression",
+      description:
+        "Task lifecycle verifier must detect stale active tasks, missing terminal traces, orphan traces, and ungrounded finishes.",
+      command: node,
+      args: ["scripts/verify-task-lifecycle.mjs"],
+    }),
+    runCheck({
+      id: "task_lifecycle_current",
+      description:
+        "Current task sessions must have no stale active tasks, orphan traces, missing terminal traces, or ungrounded finishes.",
+      command: node,
+      args: ["dist/build-task-lifecycle.js"],
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -317,6 +331,15 @@ function main() {
         byId.review_settlement_regression.ok === true && byId.review_settlement_current.ok === true
           ? null
           : "review_settlement_failed",
+    },
+    {
+      requirement: "task_session_lifecycle_and_finish_gate_integrity",
+      ok: byId.task_lifecycle_regression.ok === true && byId.task_lifecycle_current.ok === true,
+      evidence: "task_lifecycle_regression + task_lifecycle_current",
+      blocker:
+        byId.task_lifecycle_regression.ok === true && byId.task_lifecycle_current.ok === true
+          ? null
+          : "task_lifecycle_finish_gate_failed",
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",
