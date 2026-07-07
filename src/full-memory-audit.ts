@@ -211,7 +211,9 @@ function classifyDrift(vaultPath: string): DriftClass {
     normalized.startsWith(".dino/index/") ||
     normalized.startsWith(".dino/provenance/") ||
     normalized.startsWith(".dino/quarantine/") ||
-    normalized.startsWith("60_Operations/task-summaries/")
+    normalized.startsWith("10_Conversations/raw/") ||
+    normalized.startsWith("60_Operations/task-summaries/") ||
+    normalized.startsWith("60_Operations/behavior-rules/")
   ) {
     return "live_os_write";
   }
