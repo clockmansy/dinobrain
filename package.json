@@ -28,6 +28,7 @@
     "task:lifecycle:verify": "node scripts/verify-task-lifecycle.mjs",
     "task:lifecycle:settle": "node dist/build-task-lifecycle-settlement.js",
     "task:lifecycle:settle:verify": "node scripts/verify-task-lifecycle-settlement.mjs",
+    "task:finish:stdio": "node scripts/finish-task-stdio.mjs",
     "eval:context": "node dist/evaluate-context.js",
     "eval:behavior": "node dist/evaluate-behavior.js",
     "rag:proof": "node dist/build-rag-proof.js",
