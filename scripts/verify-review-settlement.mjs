@@ -7,7 +7,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const modulePath = pathToFileURL(path.join(root, "dist", "review-settlement.js")).href;
 const {
   buildAndWriteReviewSettlements,
+  settleReviewQueueActions,
   REVIEW_QUEUE_STATUS_RELATIVE_PATH,
+  REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
   SEMANTIC_JOBS_RELATIVE_PATH,
 } = await import(modulePath);
 
@@ -104,6 +106,26 @@ async function main() {
 
     const persisted = JSON.parse(readFileSync(path.join(dataRoot, REVIEW_QUEUE_STATUS_RELATIVE_PATH), "utf8"));
     assert(persisted.visible_status, "review report missing visible status");
+
+    const dryRun = await settleReviewQueueActions(dataRoot);
+    assert(dryRun.actions.status === "needs_attention", "dry-run should require auto-hold apply");
+    assert(dryRun.actions.counts.auto_hold_candidates_before === 2, "dry-run did not find both auto-hold candidates");
+    assert(dryRun.actions.counts.auto_hold_applied === 0, "dry-run should not apply actions");
+    assert(existsSync(path.join(dataRoot, REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH)), "settlement action report missing");
+
+    const applied = await settleReviewQueueActions(dataRoot, { apply: true, now: new Date("2026-07-07T00:00:00.000Z") });
+    assert(applied.actions.status === "healthy", "apply should clear auto-hold candidates");
+    assert(applied.actions.counts.auto_hold_applied === 2, "apply did not hold both deterministic candidates");
+    assert(applied.review.by_decision_class.auto_compounded_behavior_hold === 0, "behavior hold remained open after apply");
+    assert(applied.review.by_decision_class.legacy_unreviewed_hold === 0, "legacy hold remained open after apply");
+    assert(applied.review.by_decision_class.evidence_repair_required === 1, "evidence repair blocker disappeared");
+    assert(applied.review.counts.closed === 3, "closed count did not include held reviews");
+    assert(applied.review.counts.open === 3, "manual repair/mapping items should remain open");
+
+    const heldCandidate = JSON.parse(readFileSync(path.join(dataRoot, "50_Instances", "candidates", "behavior-ready.json"), "utf8"));
+    const heldReview = JSON.parse(readFileSync(path.join(dataRoot, "80_Review_Queue", "promotion", "behavior-ready.json"), "utf8"));
+    assert(heldCandidate.status === "held" && heldCandidate.quarantine === true, "held candidate was not quarantined");
+    assert(heldReview.status === "settled_hold" && heldReview.decision === "hold", "review was not settled as hold");
 
     console.log("review settlement verification ok");
   } finally {

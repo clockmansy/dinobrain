@@ -6,7 +6,11 @@ import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from ".
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
-import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
+import {
+  REVIEW_QUEUE_STATUS_RELATIVE_PATH,
+  REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
+  SEMANTIC_JOBS_RELATIVE_PATH,
+} from "./review-settlement.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
@@ -134,6 +138,13 @@ const ARTIFACTS: ArtifactSpec[] = [
     id: "semantic_jobs",
     label: "시맨틱 작업 정산",
     artifactPath: SEMANTIC_JOBS_RELATIVE_PATH,
+    sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
+    required: true,
+  },
+  {
+    id: "review_queue_settlement_actions",
+    label: "review queue auto-hold settlement",
+    artifactPath: REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
     sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
     required: true,
   },

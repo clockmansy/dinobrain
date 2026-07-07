@@ -228,14 +228,14 @@ function main() {
     runCheck({
       id: "review_settlement_regression",
       description:
-        "Review queue settlement must classify residual promotion items with reason, evidence, owner, and next action.",
+        "Review queue settlement must classify residual promotion items and prove deterministic auto-hold application is safe.",
       command: node,
       args: ["scripts/verify-review-settlement.mjs"],
     }),
     runCheck({
       id: "review_settlement_current",
       description:
-        "Current review queue and semantic jobs must have zero unclassified open items, even when backlog remains.",
+        "Current review queue and semantic jobs must have zero unclassified open items and no remaining deterministic auto-hold candidates.",
       command: node,
       args: ["dist/build-review-settlement.js"],
     }),

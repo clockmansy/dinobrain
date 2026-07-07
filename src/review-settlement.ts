@@ -6,6 +6,7 @@ import { dataPath, relDataPath } from "./context.js";
 export const REVIEW_SETTLEMENT_VERSION = "review_settlement_v1";
 export const REVIEW_QUEUE_STATUS_RELATIVE_PATH = ".dino/state/wiki-review-queue.json";
 export const SEMANTIC_JOBS_RELATIVE_PATH = ".dino/state/semantic_jobs.json";
+export const REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH = ".dino/state/review_queue_settlement_actions.json";
 
 type JsonObject = Record<string, unknown>;
 
@@ -97,6 +98,41 @@ export type SemanticJobSettlementReport = {
   visible_status: string;
 };
 
+export type ReviewSettlementAction = {
+  id: string;
+  action: "hold_candidate_and_review";
+  decision_class: "auto_compounded_behavior_hold" | "legacy_unreviewed_hold";
+  reason_code: string;
+  candidate_path: string;
+  review_path: string;
+  previous_accepted_path: string | null;
+  applied: boolean;
+  applied_paths: string[];
+  skipped_reason: string | null;
+};
+
+export type ReviewSettlementActionReport = {
+  version: typeof REVIEW_SETTLEMENT_VERSION;
+  status: "healthy" | "needs_attention";
+  apply: boolean;
+  generated_at: string;
+  data_root: string;
+  counts: {
+    auto_hold_candidates_before: number;
+    auto_hold_applied: number;
+    auto_hold_candidates_after: number | null;
+    manual_review_required_before: number;
+    manual_review_required_after: number | null;
+    open_before: number;
+    open_after: number | null;
+    closed_before: number;
+    closed_after: number | null;
+  };
+  actions: ReviewSettlementAction[];
+  warnings: string[];
+  visible_status: string;
+};
+
 type BuildOptions = {
   now?: Date;
   staleAfterMs?: number;
@@ -172,9 +208,15 @@ function pathId(vaultPath: string): string {
 }
 
 function isClosedStatus(status: string): boolean {
-  return ["approved", "accepted", "promoted", "rejected", "closed", "settled", "done", "archived"].includes(
+  return ["approved", "accepted", "promoted", "rejected", "closed", "settled", "settled_hold", "held", "done", "archived"].includes(
     status.toLowerCase(),
   );
+}
+
+function isAutoHoldDecisionClass(
+  decisionClass: ReviewDecisionClass,
+): decisionClass is "auto_compounded_behavior_hold" | "legacy_unreviewed_hold" {
+  return decisionClass === "auto_compounded_behavior_hold" || decisionClass === "legacy_unreviewed_hold";
 }
 
 function recordEvidencePaths(candidate: JsonObject | null, review: JsonObject | null): string[] {
@@ -338,6 +380,10 @@ export function getSemanticJobsPath(dataRoot: string): string {
   return dataPath(dataRoot, ...SEMANTIC_JOBS_RELATIVE_PATH.split("/"));
 }
 
+export function getReviewSettlementActionsPath(dataRoot: string): string {
+  return dataPath(dataRoot, ...REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH.split("/"));
+}
+
 export async function buildReviewQueueSettlement(
   dataRoot: string,
   options: BuildOptions = {},
@@ -456,7 +502,7 @@ export async function buildSemanticJobSettlement(
   const open = jobs.filter((job) => job.status === "open");
   const unclassifiedOpen = open.filter((job) => job.decision_class === "unclassified");
   const classifiedHold = jobs.filter((job) => job.status === "classified_hold");
-  const status = unclassifiedOpen.length > 0 ? "needs_classification" : jobs.length > 0 ? "classified_backlog" : "ready";
+  const status = unclassifiedOpen.length > 0 ? "needs_classification" : classifiedHold.length > 0 ? "classified_backlog" : "ready";
   return {
     version: REVIEW_SETTLEMENT_VERSION,
     status,
@@ -475,6 +521,180 @@ export async function buildSemanticJobSettlement(
     warnings: unclassifiedOpen.length > 0 ? ["unclassified_semantic_jobs_present"] : [],
     visible_status: semanticVisibleStatus(status),
   };
+}
+
+async function readVaultJson(dataRoot: string, relativePath: string | null): Promise<JsonObject | null> {
+  if (!relativePath) return null;
+  return readJson<JsonObject>(dataPath(dataRoot, relativePath));
+}
+
+async function writeVaultJson(dataRoot: string, relativePath: string, record: JsonObject): Promise<void> {
+  await writeJson(dataPath(dataRoot, relativePath), record);
+}
+
+function previousAcceptedPath(candidate: JsonObject | null, review: JsonObject | null): string | null {
+  return firstString(review?.previous_accepted_path, review?.accepted_path, candidate?.legacy_accepted_path) || null;
+}
+
+function holdNote(decisionClass: ReviewSettlementAction["decision_class"]): string {
+  if (decisionClass === "legacy_unreviewed_hold") {
+    return "Auto-held legacy unreviewed generated memory so it stays out of hot retrieval until lineage is manually confirmed.";
+  }
+  return "Auto-held generated behavior memory instead of promoting it; manual semantic review is required before acceptance.";
+}
+
+function actionFor(item: ReviewSettlementItem): ReviewSettlementAction | null {
+  if (!isAutoHoldDecisionClass(item.decision_class) || !item.candidate_path || !item.review_path) return null;
+  return {
+    id: item.id,
+    action: "hold_candidate_and_review",
+    decision_class: item.decision_class,
+    reason_code: item.reason_code,
+    candidate_path: item.candidate_path,
+    review_path: item.review_path,
+    previous_accepted_path: null,
+    applied: false,
+    applied_paths: [],
+    skipped_reason: null,
+  };
+}
+
+async function applyHoldAction(
+  dataRoot: string,
+  action: ReviewSettlementAction,
+  reviewer: string,
+  appliedAt: string,
+): Promise<ReviewSettlementAction> {
+  const candidate = await readVaultJson(dataRoot, action.candidate_path);
+  const review = await readVaultJson(dataRoot, action.review_path);
+  if (!candidate || !review) {
+    return {
+      ...action,
+      skipped_reason: !candidate ? "candidate_missing" : "review_missing",
+    };
+  }
+
+  const previousAccepted = previousAcceptedPath(candidate, review);
+  const note = holdNote(action.decision_class);
+  const appliedPaths: string[] = [];
+
+  await writeVaultJson(dataRoot, action.candidate_path, {
+    ...candidate,
+    status: "held",
+    quarantine: true,
+    hold_reason: action.reason_code,
+    review_notes: note,
+    reviewed_by: reviewer,
+    reviewed_at: appliedAt,
+    updated_at: appliedAt,
+  });
+  appliedPaths.push(action.candidate_path);
+
+  await writeVaultJson(dataRoot, action.review_path, {
+    ...review,
+    status: "settled_hold",
+    decision: "hold",
+    reviewer,
+    notes: note,
+    settled_at: appliedAt,
+    reviewed_at: appliedAt,
+    updated_at: appliedAt,
+  });
+  appliedPaths.push(action.review_path);
+
+  const accepted = await readVaultJson(dataRoot, previousAccepted);
+  if (previousAccepted && accepted) {
+    await writeVaultJson(dataRoot, previousAccepted, {
+      ...accepted,
+      status: "held",
+      quarantine: true,
+      hold_reason: "legacy_unreviewed_accepted_requires_lineage_review",
+      held_by: reviewer,
+      held_at: appliedAt,
+      updated_at: appliedAt,
+    });
+    appliedPaths.push(previousAccepted);
+  }
+
+  return {
+    ...action,
+    previous_accepted_path: previousAccepted,
+    applied: true,
+    applied_paths: appliedPaths,
+    skipped_reason: null,
+  };
+}
+
+function countManualReviewRequired(review: ReviewQueueSettlementReport): number {
+  return (
+    review.by_decision_class.manual_semantic_review_required +
+    review.by_decision_class.evidence_repair_required +
+    review.by_decision_class.candidate_review_missing +
+    review.by_decision_class.review_candidate_missing
+  );
+}
+
+function actionVisibleStatus(status: ReviewSettlementActionReport["status"], apply: boolean): string {
+  if (status === "healthy") return "리뷰 큐 자동 보류 정리 완료";
+  return apply ? "리뷰 큐 자동 보류 정리 확인 필요" : "리뷰 큐 자동 보류 정리 적용 필요";
+}
+
+export async function settleReviewQueueActions(
+  dataRoot: string,
+  options: BuildOptions & { apply?: boolean; reviewer?: string } = {},
+): Promise<{
+  review: ReviewQueueSettlementReport;
+  semantic: SemanticJobSettlementReport;
+  actions: ReviewSettlementActionReport;
+  reviewPath: string;
+  semanticPath: string;
+  actionsPath: string;
+}> {
+  const apply = options.apply === true;
+  const reviewer = options.reviewer ?? "review-settlement:auto-hold";
+  const generatedAt = nowIso(options.now ?? new Date());
+  const reviewBefore = await buildReviewQueueSettlement(dataRoot, options);
+  const targetActions = reviewBefore.items
+    .map((item) => actionFor(item))
+    .filter((action): action is ReviewSettlementAction => Boolean(action));
+  const appliedActions: ReviewSettlementAction[] = [];
+
+  for (const action of targetActions) {
+    appliedActions.push(apply ? await applyHoldAction(dataRoot, action, reviewer, generatedAt) : action);
+  }
+
+  const review = apply ? await buildReviewQueueSettlement(dataRoot, options) : reviewBefore;
+  const semantic = await buildSemanticJobSettlement(dataRoot, review, options);
+  const autoHoldAfter = review.items.filter((item) => isAutoHoldDecisionClass(item.decision_class) && item.status === "open").length;
+  const status = review.counts.unclassified_open === 0 && autoHoldAfter === 0 ? "healthy" : "needs_attention";
+  const actionsReport: ReviewSettlementActionReport = {
+    version: REVIEW_SETTLEMENT_VERSION,
+    status,
+    apply,
+    generated_at: generatedAt,
+    data_root: path.resolve(dataRoot),
+    counts: {
+      auto_hold_candidates_before: targetActions.length,
+      auto_hold_applied: appliedActions.filter((action) => action.applied).length,
+      auto_hold_candidates_after: apply ? autoHoldAfter : null,
+      manual_review_required_before: countManualReviewRequired(reviewBefore),
+      manual_review_required_after: apply ? countManualReviewRequired(review) : null,
+      open_before: reviewBefore.counts.open,
+      open_after: apply ? review.counts.open : null,
+      closed_before: reviewBefore.counts.closed,
+      closed_after: apply ? review.counts.closed : null,
+    },
+    actions: appliedActions,
+    warnings: status === "healthy" ? [] : ["review_queue_auto_hold_candidates_remain"],
+    visible_status: actionVisibleStatus(status, apply),
+  };
+  const reviewPath = getReviewQueueStatusPath(dataRoot);
+  const semanticPath = getSemanticJobsPath(dataRoot);
+  const actionsPath = getReviewSettlementActionsPath(dataRoot);
+  await writeJson(reviewPath, review);
+  await writeJson(semanticPath, semantic);
+  await writeJson(actionsPath, actionsReport);
+  return { review, semantic, actions: actionsReport, reviewPath, semanticPath, actionsPath };
 }
 
 export async function buildAndWriteReviewSettlements(

@@ -179,7 +179,7 @@ function evidenceSnippet(value: Record<string, unknown>): string {
 function isQuarantinedRecord(value: Record<string, unknown>, relativePath: string, quarantinedPaths: Set<string>): boolean {
   const status = String(value.status ?? "").toLowerCase();
   const quarantineFlag = value.quarantine === true || String(value.quarantine ?? "").toLowerCase() === "true";
-  return status === "quarantined" || status === "quarantine" || quarantineFlag || quarantinedPaths.has(relativePath);
+  return ["quarantined", "quarantine", "hold", "held"].includes(status) || quarantineFlag || quarantinedPaths.has(relativePath);
 }
 
 export function isDefaultRetrievalExcludedPath(relativePath: string): boolean {
