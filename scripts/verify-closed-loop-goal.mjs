@@ -166,6 +166,8 @@ function nextActionFor(requirementEvidence) {
     case "missing_live_preflight_completion_event":
     case "missing_live_hook_report":
       return "Inspect the latest reports/live-hooks output and .dino/events entries for the proof prompt, fix the hook completion/reporting path, then rerun npm run verify:goal.";
+    case "direct_mcp_parity_not_verified":
+      return "Create real Codex and Claude direct MCP proof artifacts under .dino/proofs/client-mcp, or record a valid Claude not_configured proof when Claude Code is absent, then rerun npm run status:mcp-direct and npm run verify:goal.";
     default:
       return "Fix the failed requirement, then rerun npm run verify:goal.";
   }
@@ -224,6 +226,20 @@ function main() {
         "Current data vault status artifacts must refresh in dependency order and then be fresh against their source roots.",
       command: node,
       args: ["dist/refresh-status-artifacts.js"],
+    }),
+    runCheck({
+      id: "mcp_direct_regression",
+      description:
+        "Direct MCP parity status must reject config, hook, stale, alias-only, partial-tool, and single-client proofs while accepting exact single-name client proof artifacts.",
+      command: node,
+      args: ["scripts/verify-client-mcp-direct-status.mjs"],
+    }),
+    runCheck({
+      id: "mcp_direct_current",
+      description:
+        "Current data vault must have verified direct Codex MCP proof and verified or explicitly not_configured Claude direct MCP proof.",
+      command: node,
+      args: ["dist/build-client-mcp-direct-status.js"],
     }),
     runCheck({
       id: "review_settlement_regression",
@@ -364,6 +380,20 @@ function main() {
         byId.status_freshness_regression.ok === true && byId.status_freshness_current.ok === true
           ? null
           : "status_freshness_failed",
+    },
+    {
+      requirement: "codex_claude_direct_mcp_parity",
+      ok:
+        byId.mcp_direct_regression.ok === true &&
+        byId.mcp_direct_current.ok === true &&
+        byId.mcp_direct_current.parsed?.status === "verified",
+      evidence: "mcp_direct_regression + mcp_direct_current.status",
+      blocker:
+        byId.mcp_direct_regression.ok === true &&
+        byId.mcp_direct_current.ok === true &&
+        byId.mcp_direct_current.parsed?.status === "verified"
+          ? null
+          : "direct_mcp_parity_not_verified",
     },
     {
       requirement: "review_queue_and_semantic_job_settlement",

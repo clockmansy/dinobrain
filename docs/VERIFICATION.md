@@ -120,6 +120,8 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run status:mcp-direct` writes `.dino/state/client_mcp_direct_status.json`. This is intentionally conservative: it only reports verified after exact single-name client proof has recorded the required OS tools for Codex and Claude. A configured MCP block or synthetic server start is not counted as direct client proof.
 
+`npm run verify:mcp-direct` proves the direct MCP status gate with fixtures. It accepts real-style exact single-name Codex/Claude proof artifacts, accepts explicit Claude `not_configured` evidence, and rejects config-only, hook-only, stale, alias-only, missing-tool, Codex-only, and Claude-only cases.
+
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 
 `npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data. The fixture explicitly opts in to conditional push with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and `DINOBRAIN_AUTO_SYNC_PUSH=1`; the installed public-safe default keeps both flags at `0`.

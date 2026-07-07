@@ -16,6 +16,7 @@
     "status:refresh": "node dist/refresh-status-artifacts.js",
     "status:health": "node dist/build-health-status.js",
     "status:mcp-direct": "node dist/build-client-mcp-direct-status.js",
+    "verify:mcp-direct": "node scripts/verify-client-mcp-direct-status.mjs",
     "status:freshness": "node dist/build-status-freshness.js",
     "status:freshness:verify": "node scripts/verify-status-freshness.mjs",
     "review:settle": "node dist/build-review-settlement.js",
