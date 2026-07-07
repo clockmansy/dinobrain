@@ -60,6 +60,19 @@ summary: Stable memory record
     assert(result.report.drift.by_class.live_os_write > 0, "live OS drift class missing");
     assert(result.report.drift.by_class.audit_artifact > 0, "audit artifact drift class missing");
 
+    json(path.join(dataRoot, ".dino", "evaluations", "rag-golden.json"), {
+      version: 1,
+      cases: [],
+    });
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "drift_classified", `expected generated evaluation drift, got ${result.report.status}`);
+    assert(
+      result.report.drift.added.some(
+        (entry) => entry.path === ".dino/evaluations/rag-golden.json" && entry.drift_class === "live_os_write",
+      ),
+      "generated evaluation artifact was not classified as live OS drift",
+    );
+
     text(path.join(dataRoot, "20_Wiki", "New-Decision.md"), "# New Decision\n\nThis is unclassified content drift.\n");
     result = await buildAndWriteFullMemoryAudit(dataRoot);
     assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);

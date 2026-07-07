@@ -18,6 +18,7 @@ npm run check
 npm run smoke
 npm run audit:full-memory
 npm run audit:full-memory:verify
+npm run status:refresh
 npm run status:freshness
 npm run status:freshness:verify
 npm run review:settle
@@ -31,6 +32,8 @@ npm run session:verify
 npm run session:promote
 npm run safety:public-data
 npm run eval:context
+npm run rag:proof
+npm run rag:proof:verify
 npm run eval:rag
 npm run eval:rag:verify
 npm run index:verify:sqlite
@@ -57,9 +60,11 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
 
-`npm run status:freshness` writes `.dino/state/monitoring_status.json`. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
+`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. The order is important: Wiki/operations indexes, SQLite shards, review and semantic settlement, task lifecycle and settlement, RAG proof, graph health, RAG eval, full-memory audit, then freshness. This prevents generated index/status churn from masquerading as unresolved stale proof.
 
-`npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
+`npm run status:freshness` writes `.dino/state/monitoring_status.json` without rebuilding dependencies. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, RAG proof artifacts, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
+
+`npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, remains self-reference safe after writing `monitoring_status.json`, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
 
 `npm run review:settle` writes `.dino/state/wiki-review-queue.json`, `.dino/state/semantic_jobs.json`, and `.dino/state/review_queue_settlement_actions.json`. It does not auto-approve memory. It classifies every candidate/review item as closed, manual semantic review, auto-compounded behavior hold, legacy unreviewed hold, evidence repair, missing review, missing candidate, or unclassified. By default it is a dry-run and fails when deterministic auto-hold candidates remain. With `-- --apply`, it mutates only auto-generated behavior/legacy generated-memory candidates into `held` candidate records and `settled_hold` review records, keeps them out of default retrieval, and leaves manual semantic review/evidence-repair/mapping blockers visible.
 
@@ -73,11 +78,15 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run task:lifecycle:settle:verify` proves that settlement repairs those deterministic finish-gate cases while preserving recent active work.
 
+`npm run rag:proof` writes `.dino/evaluations/rag-golden.json`, `.dino/index/dense-vectors.json`, and `.dino/state/rag_proof_status.json` from the current reviewed behavior golden and Wiki index. The dense vectors are local deterministic text-hash vectors for retrieval proof; they are deliberately marked `semantic_embedding_provider: false` and do not pretend to be an external embedding provider.
+
+`npm run rag:proof:verify` proves that the proof builder creates explicit RAG golden cases, dense vectors, and a current-vault RAG eval path that uses `rag_golden` plus `hybrid_contextual_v2`.
+
 `npm run eval:rag` writes `.dino/state/rag_eval_status.json`. It evaluates the current vault against explicit `.dino/evaluations/rag-golden.json` when present, otherwise falls back to behavior/context golden sets. The report records memory-on versus memory-off proxy scores, expected path recall, required context term recall, provenance coverage, retrieval mode, hybrid ratio, failing cases, and caveats. This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet. A healthy report requires dense-vector hybrid retrieval unless a case explicitly disables that requirement.
 
 `npm run eval:rag:verify` proves that lexical fallback is not treated as healthy full RAG, then proves a dense-vector fixture can pass with memory-on lift and `hybrid_contextual_v2`.
 
-`npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:freshness` / `eval:rag` gates, so final closed-loop readiness cannot bypass P0-01, P0-02, or the real RAG-eval workstream.
+`npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:refresh` / `rag:proof` / `eval:rag` gates, so final closed-loop readiness cannot bypass P0-01, P0-02, or the real RAG-eval workstream.
 
 `npm run installer:win` builds `artifacts\DinoBrainSetup.exe` and verifies that the generated EXE can extract the embedded `install.ps1`.
 

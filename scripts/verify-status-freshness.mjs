@@ -5,21 +5,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAndWriteOperationsIndex }, {
+const [{
   buildAndWriteStatusFreshness,
   buildStatusFreshness,
   MONITORING_STATUS_RELATIVE_PATH,
-}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { settleReviewQueueActions }, { buildAndWriteTaskLifecycleReport }, { settleTaskLifecycle }, { buildAndWriteRagEvalReport }] = await Promise.all([
-  import(pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "graph-health.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "operations-index.js")).href),
+}, { refreshStatusArtifacts }] = await Promise.all([
   import(pathToFileURL(path.join(root, "dist", "status-freshness.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "sqlite-shards.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "wiki-index.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "review-settlement.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "task-lifecycle.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "task-lifecycle-settlement.js")).href),
-  import(pathToFileURL(path.join(root, "dist", "rag-eval.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "refresh-status-artifacts.js")).href),
 ]);
 
 function assert(condition, message) {
@@ -97,15 +89,8 @@ tags: [freshness]
 }
 
 async function refreshAllRequiredArtifacts(dataRoot) {
-  await buildAndWriteWikiIndex(dataRoot);
-  await buildAndWriteOperationsIndex(dataRoot);
-  await buildAndWriteSqliteShards(dataRoot);
-  await buildAndWriteGraphHealth(dataRoot);
-  await settleReviewQueueActions(dataRoot);
-  await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: 24 * 60 * 60 * 1000 });
-  await settleTaskLifecycle(dataRoot, { staleAfterMs: 24 * 60 * 60 * 1000 });
-  await buildAndWriteRagEvalReport(dataRoot);
-  await buildAndWriteFullMemoryAudit(dataRoot);
+  const result = await refreshStatusArtifacts(dataRoot);
+  assert(result.ok, `refresh pipeline did not produce healthy freshness: ${result.status}`);
 }
 
 async function main() {
@@ -120,10 +105,13 @@ async function main() {
     assert(status.checks.every((check) => check.visible_status), "visible status labels missing");
 
     const written = await buildAndWriteStatusFreshness(dataRoot, { staleAfterMs: 0 });
+    assert(written.report.status === "healthy", `monitoring write should stay self-reference safe, got ${written.report.status}`);
     assert(
       written.path.replace(/\\/g, "/").endsWith(MONITORING_STATUS_RELATIVE_PATH),
       "monitoring status path mismatch",
     );
+    status = await buildStatusFreshness(dataRoot, { staleAfterMs: 0 });
+    assert(status.status === "healthy", `monitoring self-write made freshness stale: ${status.status}`);
 
     const future = new Date(Date.now() + 60_000);
     text(path.join(dataRoot, "20_Wiki", "Freshness-Update.md"), "# Freshness Update\n");

@@ -1,0 +1,123 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
+import { buildAndWriteGraphHealth } from "./graph-health.js";
+import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
+import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
+import { buildAndWriteRagProof } from "./rag-proof.js";
+import { settleReviewQueueActions } from "./review-settlement.js";
+import { buildAndWriteSqliteShards, SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
+import { buildAndWriteStatusFreshness } from "./status-freshness.js";
+import { buildAndWriteTaskLifecycleReport } from "./task-lifecycle.js";
+import { settleTaskLifecycle } from "./task-lifecycle-settlement.js";
+import { buildAndWriteWikiIndex, WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
+
+export type RefreshStatusArtifactStep = {
+  id: string;
+  status: string | null;
+  path: string | null;
+};
+
+export type RefreshStatusArtifactsOptions = {
+  taskStaleAfterMs?: number;
+};
+
+export async function refreshStatusArtifacts(
+  dataRoot: string,
+  options: RefreshStatusArtifactsOptions = {},
+): Promise<{
+  ok: boolean;
+  steps: RefreshStatusArtifactStep[];
+  monitoring_status_path: string;
+  status: string;
+  visible_status: string;
+  counts: Record<string, number>;
+  warnings: string[];
+}> {
+  const taskStaleAfterMs = options.taskStaleAfterMs ?? 24 * 60 * 60 * 1000;
+  const steps: RefreshStatusArtifactStep[] = [];
+
+  await buildAndWriteWikiIndex(dataRoot);
+  steps.push({ id: "wiki_index", status: "written", path: WIKI_INDEX_RELATIVE_PATH });
+
+  await buildAndWriteOperationsIndex(dataRoot);
+  steps.push({ id: "operations_index", status: "written", path: OPERATIONS_INDEX_RELATIVE_PATH });
+
+  await buildAndWriteSqliteShards(dataRoot);
+  steps.push({ id: "sqlite_manifest", status: "written", path: SQLITE_MANIFEST_RELATIVE_PATH });
+
+  const review = await settleReviewQueueActions(dataRoot);
+  steps.push({ id: "review_queue_settlement", status: review.review.status, path: review.reviewPath });
+  steps.push({ id: "semantic_jobs", status: review.semantic.status, path: review.semanticPath });
+  steps.push({ id: "review_queue_settlement_actions", status: review.actions.status, path: review.actionsPath });
+
+  const lifecycle = await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: taskStaleAfterMs });
+  steps.push({ id: "task_lifecycle", status: lifecycle.report.status, path: lifecycle.statusPath });
+
+  const lifecycleSettlement = await settleTaskLifecycle(dataRoot, { staleAfterMs: taskStaleAfterMs });
+  steps.push({
+    id: "task_lifecycle_settlement",
+    status: lifecycleSettlement.report.status,
+    path: lifecycleSettlement.statusPath,
+  });
+
+  const ragProof = await buildAndWriteRagProof(dataRoot);
+  steps.push({ id: "rag_proof", status: ragProof.report.status, path: ragProof.statusPath });
+
+  const graph = await buildAndWriteGraphHealth(dataRoot);
+  steps.push({ id: "graph_health", status: graph.health.status, path: graph.path });
+
+  const ragEval = await buildAndWriteRagEvalReport(dataRoot);
+  steps.push({ id: "rag_eval", status: ragEval.report.status, path: RAG_EVAL_STATUS_RELATIVE_PATH });
+
+  const audit = await buildAndWriteFullMemoryAudit(dataRoot);
+  steps.push({ id: "full_memory_audit", status: audit.report.status, path: audit.statusPath });
+
+  const freshness = await buildAndWriteStatusFreshness(dataRoot);
+  steps.push({ id: "status_freshness", status: freshness.report.status, path: freshness.path });
+
+  const auditOk = !["drift_unclassified", "parse_error"].includes(audit.report.status);
+
+  return {
+    ok: freshness.report.status === "healthy" && auditOk,
+    steps,
+    monitoring_status_path: freshness.path,
+    status: freshness.report.status,
+    visible_status: freshness.report.visible_status,
+    counts: freshness.report.counts,
+    warnings: [...freshness.report.warnings, ...(auditOk ? [] : ["full_memory_audit_not_cleanly_classified"])],
+  };
+}
+
+const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(process.cwd(), "..", "dinobrain-data"));
+
+async function main(): Promise<void> {
+  const started = Date.now();
+  const result = await refreshStatusArtifacts(dataRoot);
+  console.log(
+    JSON.stringify(
+      {
+        ok: result.ok,
+        data_root: dataRoot,
+        elapsed_ms: Date.now() - started,
+        monitoring_status_path: result.monitoring_status_path,
+        status: result.status,
+        visible_status: result.visible_status,
+        counts: result.counts,
+        warnings: result.warnings,
+        steps: result.steps,
+      },
+      null,
+      2,
+    ),
+  );
+  if (!result.ok) process.exitCode = 1;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

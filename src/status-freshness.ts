@@ -6,6 +6,7 @@ import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from ".
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
+import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
 import {
   REVIEW_QUEUE_STATUS_RELATIVE_PATH,
   REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
@@ -124,7 +125,14 @@ const ARTIFACTS: ArtifactSpec[] = [
     id: "graph_health",
     label: "그래프 health",
     artifactPath: GRAPH_HEALTH_RELATIVE_PATH,
-    sourceRoots: ["20_Wiki", "30_Sources", "50_Instances/accepted", "50_Instances/candidates", "80_Review_Queue", ".dino/index"],
+    sourceRoots: [
+      "20_Wiki",
+      "30_Sources",
+      "50_Instances/accepted",
+      "50_Instances/candidates",
+      "80_Review_Queue",
+      WIKI_INDEX_RELATIVE_PATH,
+    ],
     required: true,
   },
   {
@@ -160,6 +168,22 @@ const ARTIFACTS: ArtifactSpec[] = [
     label: "작업 세션 자동정리",
     artifactPath: TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
     sourceRoots: [".dino/tasks", ".dino/traces"],
+    required: true,
+  },
+  {
+    id: "rag_proof",
+    label: "RAG proof artifacts",
+    artifactPath: RAG_PROOF_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/evaluations/behavior-golden.json",
+      ".dino/index/wiki-index.json",
+      "20_Wiki",
+      "30_Sources",
+      "40_Projects",
+      "50_Instances/accepted",
+      "60_Operations",
+      "70_Error_Book",
+    ],
     required: true,
   },
   {

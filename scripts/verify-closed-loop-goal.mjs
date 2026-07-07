@@ -221,9 +221,9 @@ function main() {
     runCheck({
       id: "status_freshness_current",
       description:
-        "Current data vault status artifacts must be present and fresh against their source roots.",
+        "Current data vault status artifacts must refresh in dependency order and then be fresh against their source roots.",
       command: node,
-      args: ["dist/build-status-freshness.js"],
+      args: ["dist/refresh-status-artifacts.js"],
     }),
     runCheck({
       id: "review_settlement_regression",
@@ -266,6 +266,20 @@ function main() {
         "Current task lifecycle settlement must have no remaining auto-close candidates.",
       command: node,
       args: ["dist/build-task-lifecycle-settlement.js"],
+    }),
+    runCheck({
+      id: "rag_proof_regression",
+      description:
+        "RAG proof builder must write explicit rag-golden and dense-vector proof artifacts without pretending local hashing is an external embedding provider.",
+      command: node,
+      args: ["scripts/verify-rag-proof.mjs"],
+    }),
+    runCheck({
+      id: "rag_proof_current",
+      description:
+        "Current data vault must have explicit rag-golden and dense-vector proof artifacts before RAG eval runs.",
+      command: node,
+      args: ["dist/build-rag-proof.js"],
     }),
     runCheck({
       id: "rag_eval_regression",
@@ -383,10 +397,17 @@ function main() {
     },
     {
       requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",
-      ok: byId.rag_eval_regression.ok === true && byId.rag_eval_current.ok === true,
-      evidence: "rag_eval_regression + rag_eval_current",
+      ok:
+        byId.rag_proof_regression.ok === true &&
+        byId.rag_proof_current.ok === true &&
+        byId.rag_eval_regression.ok === true &&
+        byId.rag_eval_current.ok === true,
+      evidence: "rag_proof_regression + rag_proof_current + rag_eval_regression + rag_eval_current",
       blocker:
-        byId.rag_eval_regression.ok === true && byId.rag_eval_current.ok === true
+        byId.rag_proof_regression.ok === true &&
+        byId.rag_proof_current.ok === true &&
+        byId.rag_eval_regression.ok === true &&
+        byId.rag_eval_current.ok === true
           ? null
           : "real_rag_eval_failed",
     },
