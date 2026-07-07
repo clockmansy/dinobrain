@@ -78,6 +78,15 @@ function loadThreadDiagnostics() {
   const currentThreadCreatedAt = decodeUuidV7Timestamp(currentThreadId);
   const hooksLastWrite = existsSync(codexHooksPath) ? statSync(codexHooksPath).mtime : null;
   const sessionIndexPath = path.join(homedir(), ".codex", "session_index.jsonl");
+  const globalStatePath = path.join(homedir(), ".codex", ".codex-global-state.json");
+  const globalState = existsSync(globalStatePath) ? readJson(globalStatePath) : null;
+  const projectlessThreadIds = new Set(
+    Array.isArray(globalState?.["projectless-thread-ids"]) ? globalState["projectless-thread-ids"] : [],
+  );
+  const workspaceRootHints =
+    globalState?.["thread-workspace-root-hints"] && typeof globalState["thread-workspace-root-hints"] === "object"
+      ? globalState["thread-workspace-root-hints"]
+      : {};
   const recentThreads = [];
 
   if (existsSync(sessionIndexPath)) {
@@ -92,12 +101,18 @@ function loadThreadDiagnostics() {
           created_at: createdAt?.toISOString() ?? null,
           updated_at: record.updated_at ?? null,
           created_after_hooks: Boolean(createdAt && hooksLastWrite && createdAt >= hooksLastWrite),
+          projectless: projectlessThreadIds.has(record.id),
+          workspace_root_hint: workspaceRootHints[record.id] ?? null,
         });
       } catch {
         // Advisory only: a corrupt local index row should not hide live hook evidence.
       }
     }
   }
+  const recentThreadsAfterHooks = recentThreads.filter((thread) => thread.created_after_hooks);
+  const latestThreadAfterHooks = recentThreadsAfterHooks.at(-1) ?? null;
+  const freshProjectlessThreads = recentThreadsAfterHooks.filter((thread) => thread.projectless);
+  const freshProjectThreads = recentThreadsAfterHooks.filter((thread) => !thread.projectless);
 
   return {
     ok: true,
@@ -106,7 +121,11 @@ function loadThreadDiagnostics() {
     hooks_last_write: hooksLastWrite?.toISOString() ?? null,
     current_thread_stale_for_hooks: Boolean(currentThreadCreatedAt && hooksLastWrite && currentThreadCreatedAt < hooksLastWrite),
     recent_thread_count: recentThreads.length,
-    recent_threads_after_hooks_count: recentThreads.filter((thread) => thread.created_after_hooks).length,
+    recent_threads_after_hooks_count: recentThreadsAfterHooks.length,
+    fresh_projectless_thread_count: freshProjectlessThreads.length,
+    fresh_project_thread_count: freshProjectThreads.length,
+    latest_thread_after_hooks: latestThreadAfterHooks,
+    recent_threads_after_hooks: recentThreadsAfterHooks.slice(-10),
     recent_threads: recentThreads.slice(-10),
   };
 }
@@ -349,6 +368,8 @@ function main() {
       : !submitted
         ? processDiagnostics.stale_codex_count > 0
           ? `no live Codex desktop UserPromptSubmit preflight event found; ${processDiagnostics.stale_codex_count} Codex process(es) started before hooks.json was updated. Run: ${processDiagnostics.approval_command}`
+          : threadDiagnostics.recent_threads_after_hooks_count > 0
+            ? `no live Codex desktop UserPromptSubmit preflight event found; ${threadDiagnostics.recent_threads_after_hooks_count} Codex thread(s) were created after hooks.json was updated, latest=${threadDiagnostics.latest_thread_after_hooks?.id ?? "unknown"} (${threadDiagnostics.latest_thread_after_hooks?.thread_name ?? "untitled"}), but none emitted codex_desktop hook evidence. Do not count delegated/background messages as proof; approve /hooks if prompted and paste the proof prompt manually into a trusted Codex Desktop workspace thread.`
           : threadDiagnostics.current_thread_stale_for_hooks
             ? `no live Codex desktop UserPromptSubmit preflight event found; current thread ${threadDiagnostics.current_thread_id} was created before hooks.json was updated. Start a fresh Codex Desktop thread after approving /hooks, paste the proof prompt, then rerun this verifier.`
             : `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`

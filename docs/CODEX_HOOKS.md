@@ -121,6 +121,7 @@ Environment variables:
 - Codex must trust the user-level hook before global preflight runs.
 - Synthetic verification is not live proof. `verify:codex-live:recent` must pass before claiming the current Codex Desktop session is actually dispatching pre-response DinoBrain preflight.
 - The current already-running session may not retroactively load this hook, although the installer now verifies the wrapper path with a synthetic prompt.
+- A fresh projectless or delegated app thread can still fail to dispatch the user-level hook. `send_message_to_thread` and other app-tool delegation paths are not accepted as live proof; paste the proof prompt manually into a trusted Codex Desktop workspace thread after `/hooks` approval.
 - Automatic import currently sees the submitted user prompt, not the later assistant response.
 - The hook starts the task and injects context. `finish_task` is still an agent protocol step at the end of work, but the injected protocol now includes structured `context_pack_paths`, `used_memory_paths`, `session_archive_paths`, and `candidate_paths` values to preserve.
 - After `finish_task`, `audit_memory_use` can create a short trust log that Observatory displays as the latest memory audit.

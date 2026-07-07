@@ -269,4 +269,6 @@ It verifies:
 
 `npm run verify:codex-live` also reports whether the current `CODEX_THREAD_ID` was created before `hooks.json` was updated. That stale-thread condition means the next proof attempt must happen in a fresh Codex Desktop thread, not the old long-running thread.
 
+If `verify:codex-live` reports fresh threads after `hooks.json` but still has no `codex_prompt_submitted` event, a new Codex thread existed but did not dispatch the user-level `UserPromptSubmit` hook. Do not count `send_message_to_thread`, app-tool delegation, or background thread messages as live proof. The proof prompt must be pasted manually into a trusted Codex Desktop workspace thread after `/hooks` approval.
+
 `npm run codex:live-proof` wraps the live proof into an operator flow. It opens a separate proof window, restarts stale Codex/MCP processes through the approval helper, copies a unique proof prompt to the clipboard, and polls `verify:codex-live` until a fresh Codex Desktop thread emits the real `codex_desktop` preflight evidence. The npm command returns once the proof window has started.
