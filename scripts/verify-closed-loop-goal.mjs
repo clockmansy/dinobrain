@@ -217,6 +217,8 @@ function nextActionFor(requirementEvidence) {
     case "rag_deterministic_canary_only":
     case "rag_answer_quality_eval_missing":
       return "Configure a completion-grade semantic embedding provider or documented local multilingual model, add generated-answer RAG evaluation, rerun npm run rag:proof and npm run eval:rag, then rerun npm run verify:goal.";
+    case "installer_new_pc_equivalence_failed":
+      return "Run npm run installer:verify:version, npm run installer:verify:approval, npm run installer:verify:launchers, and npm run installer:verify:semantic-rag; repair installer drift, hook merge, launcher, or semantic RAG prewarm failures before rerunning npm run verify:goal.";
     default:
       return "Fix the failed requirement, then rerun npm run verify:goal.";
   }
@@ -224,6 +226,7 @@ function nextActionFor(requirementEvidence) {
 
 function main() {
   const node = process.execPath;
+  const powershell = process.env.ComSpec ? "powershell.exe" : "powershell";
   const liveSince = liveProofSinceIso();
   const checks = [
     runCheck({
@@ -380,6 +383,34 @@ function main() {
         "Observatory must expose health/goal blockers, pending lanes, memory-audit paths, and invalid status artifacts through API and UI evidence.",
       command: node,
       args: ["scripts/verify-observatory-live-graph.mjs"],
+    }),
+    runCheck({
+      id: "installer_version_alignment",
+      description:
+        "Installer must detect and repair app/data ref drift before claiming release or new-PC readiness.",
+      command: powershell,
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-version-alignment.ps1"],
+    }),
+    runCheck({
+      id: "installer_hook_merge",
+      description:
+        "Installer must preserve existing Codex/Claude prompt hooks while registering DinoBrain exactly once.",
+      command: powershell,
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-hooks.ps1"],
+    }),
+    runCheck({
+      id: "installer_launchers",
+      description:
+        "Installer must create Observatory, hook diagnose, approval, managed-hook, live-proof, and uninstall launchers.",
+      command: powershell,
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-observatory-launcher.ps1"],
+    }),
+    runCheck({
+      id: "installer_semantic_rag_prewarm",
+      description:
+        "Installer must rebuild semantic RAG proof/eval on a new PC with a real embedding provider and reject silent hashing fallback.",
+      command: powershell,
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-semantic-rag.ps1"],
     }),
     runCheck({
       id: "rag_proof_regression",
@@ -574,6 +605,23 @@ function main() {
       ok: byId.observatory_evidence.ok === true,
       evidence: "observatory_evidence",
       blocker: byId.observatory_evidence.ok === true ? null : "observatory_evidence_failed",
+    },
+    {
+      requirement: "install_new_pc_release_equivalence",
+      ok:
+        byId.installer_version_alignment.ok === true &&
+        byId.installer_hook_merge.ok === true &&
+        byId.installer_launchers.ok === true &&
+        byId.installer_semantic_rag_prewarm.ok === true,
+      evidence:
+        "installer_version_alignment + installer_hook_merge + installer_launchers + installer_semantic_rag_prewarm",
+      blocker:
+        byId.installer_version_alignment.ok === true &&
+        byId.installer_hook_merge.ok === true &&
+        byId.installer_launchers.ok === true &&
+        byId.installer_semantic_rag_prewarm.ok === true
+          ? null
+          : "installer_new_pc_equivalence_failed",
     },
     {
       requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",

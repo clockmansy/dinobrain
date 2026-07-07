@@ -24,6 +24,7 @@ param(
   [switch]$SkipCodexManagedHookConfig,
   [switch]$SkipCodexRestartFlow,
   [switch]$SkipClaudeCodeConfig,
+  [switch]$SkipSemanticRagPrewarm,
   [switch]$SkipVerify,
   [switch]$Force
 )
@@ -1266,6 +1267,60 @@ function Invoke-DinoBrainVerify {
   }
 }
 
+function Invoke-DinoBrainSemanticRagPrewarm {
+  param(
+    [Parameter(Mandatory = $true)][string]$NodeRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath
+  )
+
+  $npmCmd = Join-Path $NodeRoot "npm.cmd"
+  $oldDataRoot = $env:DINOBRAIN_DATA_DIR
+  $oldRequireSemantic = $env:DINOBRAIN_REQUIRE_SEMANTIC_EMBEDDINGS
+  $oldPath = $env:PATH
+  $env:DINOBRAIN_DATA_DIR = $VaultPath
+  $env:DINOBRAIN_REQUIRE_SEMANTIC_EMBEDDINGS = "1"
+  $env:PATH = "$NodeRoot;$oldPath"
+  try {
+    Invoke-WithPortableNode -NodeRoot $NodeRoot -FilePath $npmCmd -ArgumentList @("run", "rag:proof") -WorkingDirectory $AppPath
+    Invoke-WithPortableNode -NodeRoot $NodeRoot -FilePath $npmCmd -ArgumentList @("run", "eval:rag") -WorkingDirectory $AppPath
+
+    $proofPath = Join-Path $VaultPath ".dino\state\rag_proof_status.json"
+    $evalPath = Join-Path $VaultPath ".dino\state\rag_eval_status.json"
+    if (-not (Test-Path -LiteralPath $proofPath)) {
+      throw "Semantic RAG proof status was not created: $proofPath"
+    }
+    if (-not (Test-Path -LiteralPath $evalPath)) {
+      throw "Semantic RAG eval status was not created: $evalPath"
+    }
+    $proof = Get-Content -LiteralPath $proofPath -Raw | ConvertFrom-Json
+    $eval = Get-Content -LiteralPath $evalPath -Raw | ConvertFrom-Json
+    if ($proof.status -ne "healthy") {
+      throw "Semantic RAG proof is not healthy: $($proof.status)"
+    }
+    if ($proof.dense_vector.semantic_embedding_provider -ne $true) {
+      throw "Semantic RAG proof did not use a semantic embedding provider."
+    }
+    if ($proof.dense_vector.provider -eq "local_text_hashing_v1") {
+      throw "Semantic RAG proof fell back to local text hashing."
+    }
+    if ($eval.status -ne "healthy") {
+      throw "Semantic RAG eval is not healthy: $($eval.status)"
+    }
+    if ($eval.counts.lexical_fallback -ne 0) {
+      throw "Semantic RAG eval still used lexical fallback."
+    }
+    if ($eval.generated_answer_eval.status -ne "healthy") {
+      throw "Generated-answer RAG eval is not healthy: $($eval.generated_answer_eval.status)"
+    }
+    Write-Host "Semantic RAG proof/eval ready: provider=$($proof.dense_vector.provider), model=$($proof.dense_vector.model)"
+  } finally {
+    if ($null -eq $oldDataRoot) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldDataRoot }
+    if ($null -eq $oldRequireSemantic) { Remove-Item Env:\DINOBRAIN_REQUIRE_SEMANTIC_EMBEDDINGS -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REQUIRE_SEMANTIC_EMBEDDINGS = $oldRequireSemantic }
+    $env:PATH = $oldPath
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
@@ -1317,6 +1372,9 @@ $oldDataRoot = $env:DINOBRAIN_DATA_DIR
 $env:DINOBRAIN_DATA_DIR = $DataDir
 try {
   Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "index:sqlite") -WorkingDirectory $AppDir
+  if (-not $SkipSemanticRagPrewarm) {
+    Invoke-DinoBrainSemanticRagPrewarm -NodeRoot $nodeRoot -AppPath $AppDir -VaultPath $DataDir
+  }
   if ($gitAvailable) {
     Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "hooks:data:verify") -WorkingDirectory $AppDir
   }
