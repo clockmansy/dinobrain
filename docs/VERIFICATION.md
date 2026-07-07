@@ -25,6 +25,8 @@ npm run review:settle
 npm run review:settle:verify
 npm run review:worklist
 npm run review:worklist:verify
+npm run review:worklist:actions
+npm run review:worklist:actions:verify
 npm run task:lifecycle
 npm run task:lifecycle:verify
 npm run task:lifecycle:settle
@@ -72,7 +74,11 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run review:worklist` writes `.dino/state/review_worklist.json` plus a public-safe summary under `60_Operations/review-worklists/`. It clusters open manual-review candidates by normalized claim, ranks duplicate/user-preference/project-state groups, and recommends merge, hold, reject, or manual review without approving memory or storing raw conversation archives. The public summary uses relative state paths and redacts local home paths.
 
+`npm run review:worklist:actions` writes `.dino/state/review_worklist_actions.json` plus a public-safe summary under `60_Operations/review-worklist-actions/`. By default it is a dry-run: duplicate clusters become planned merge-review actions, low-signal or ephemeral clusters become planned hold actions, and the rest stay manual-only. With `-- --apply-merge-reviews`, it creates merge-review records under `80_Review_Queue/merge/` without approving memory. With `-- --apply-holds`, it sets only low-signal/ephemeral candidate-review pairs to `held` / `settled_hold`. `-- --apply-all` enables both safe mutation classes.
+
 `npm run review:settle:verify` proves this classification and safe auto-hold settlement on a temporary vault with behavior-rule, legacy, missing-evidence, missing-review, missing-candidate, and closed-review fixtures.
+
+`npm run review:worklist:actions:verify` proves dry-run safety, public summary redaction, merge-review creation, and safe hold application on a temporary vault.
 
 `npm run task:lifecycle` writes `.dino/state/task_sessions.json` and `.dino/state/task_finish_grounding_classifications.jsonl`. It classifies active, stale-active, terminal, missing-trace, orphan-trace, partial-grounded, and ungrounded task finishes. The command fails when stale active tasks, missing terminal traces, orphan traces, task-id mismatches, or ungrounded finishes remain, because those block final readiness.
 

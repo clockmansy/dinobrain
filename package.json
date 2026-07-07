@@ -22,6 +22,8 @@
     "review:settle:verify": "node scripts/verify-review-settlement.mjs",
     "review:worklist": "node dist/build-review-worklist.js",
     "review:worklist:verify": "node scripts/verify-review-worklist.mjs",
+    "review:worklist:actions": "node dist/build-review-worklist-actions.js",
+    "review:worklist:actions:verify": "node scripts/verify-review-worklist-actions.mjs",
     "task:lifecycle": "node dist/build-task-lifecycle.js",
     "task:lifecycle:verify": "node scripts/verify-task-lifecycle.mjs",
     "task:lifecycle:settle": "node dist/build-task-lifecycle-settlement.js",
