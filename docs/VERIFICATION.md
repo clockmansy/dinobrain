@@ -53,6 +53,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
 
+`npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:freshness` gates, so final closed-loop readiness cannot bypass P0-01 or P0-02.
+
 `npm run installer:win` builds `artifacts\DinoBrainSetup.exe` and verifies that the generated EXE can extract the embedded `install.ps1`.
 
 `npm run release:win` requires `GITHUB_TOKEN` or `GH_TOKEN`. It rebuilds the installer, creates or reuses the GitHub release, and uploads `DinoBrainSetup.zip` plus `DinoBrainSetup.zip.sha256` as the release assets.

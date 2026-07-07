@@ -7,10 +7,11 @@ const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(proces
 async function main(): Promise<void> {
   const started = Date.now();
   const result = await buildAndWriteFullMemoryAudit(dataRoot);
+  const ok = !["drift_unclassified", "parse_error"].includes(result.report.status);
   console.log(
     JSON.stringify(
       {
-        ok: true,
+        ok,
         data_root: dataRoot,
         elapsed_ms: Date.now() - started,
         manifest_path: result.manifestPath,
@@ -24,6 +25,7 @@ async function main(): Promise<void> {
       2,
     ),
   );
+  if (!ok) process.exitCode = 1;
 }
 
 main().catch((error: unknown) => {

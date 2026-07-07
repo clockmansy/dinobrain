@@ -198,6 +198,34 @@ function main() {
       args: ["scripts/verify-codex-closed-loop.mjs"],
     }),
     runCheck({
+      id: "full_memory_audit_regression",
+      description:
+        "Full-memory audit must baseline the data vault, classify live OS drift, flag unclassified content drift, and catch parse errors.",
+      command: node,
+      args: ["scripts/verify-full-memory-audit.mjs"],
+    }),
+    runCheck({
+      id: "full_memory_audit_current",
+      description:
+        "Current data vault must have a reproducible full-memory audit with no unclassified drift or parse errors.",
+      command: node,
+      args: ["dist/build-full-memory-audit.js"],
+    }),
+    runCheck({
+      id: "status_freshness_regression",
+      description:
+        "Status freshness must detect healthy, stale, and missing proof-artifact states in a temporary vault.",
+      command: node,
+      args: ["scripts/verify-status-freshness.mjs"],
+    }),
+    runCheck({
+      id: "status_freshness_current",
+      description:
+        "Current data vault status artifacts must be present and fresh against their source roots.",
+      command: node,
+      args: ["dist/build-status-freshness.js"],
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -248,6 +276,24 @@ function main() {
       ok: hasClosedLoopEvidence(byId.closed_loop_fixture_push),
       evidence: "closed_loop_fixture_push",
       blocker: hasClosedLoopEvidence(byId.closed_loop_fixture_push) ? null : "closed_loop_fixture_incomplete",
+    },
+    {
+      requirement: "full_memory_audit_reproducible",
+      ok: byId.full_memory_audit_regression.ok === true && byId.full_memory_audit_current.ok === true,
+      evidence: "full_memory_audit_regression + full_memory_audit_current",
+      blocker:
+        byId.full_memory_audit_regression.ok === true && byId.full_memory_audit_current.ok === true
+          ? null
+          : "full_memory_audit_failed",
+    },
+    {
+      requirement: "status_freshness_current_and_regression",
+      ok: byId.status_freshness_regression.ok === true && byId.status_freshness_current.ok === true,
+      evidence: "status_freshness_regression + status_freshness_current",
+      blocker:
+        byId.status_freshness_regression.ok === true && byId.status_freshness_current.ok === true
+          ? null
+          : "status_freshness_failed",
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",
