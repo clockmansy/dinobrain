@@ -203,9 +203,14 @@ npm run codex:live-proof
 To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
 
 ```powershell
+npm run verify:goal
 npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 ```
+
+`verify:goal` is the full closed-loop completion gate. It fails until the real
+Codex Desktop live preflight evidence exists, even if the synthetic hook and
+closed-loop fixture tests pass.
 
 `verify:codex-live:recent` is the no-snippet live proof. It fails when the latest work only passed synthetic hook simulations and no recent real Codex Desktop prompt produced matching hook events plus a live report.
 

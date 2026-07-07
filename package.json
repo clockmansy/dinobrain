@@ -47,6 +47,7 @@
     "verify:codex-live": "node scripts/verify-codex-live-preflight.mjs",
     "verify:codex-live:recent": "node scripts/verify-codex-live-preflight.mjs --require-snippet=false",
     "verify:codex-loop": "node scripts/verify-codex-closed-loop.mjs",
+    "verify:goal": "node scripts/verify-closed-loop-goal.mjs",
     "verify:compounding": "node scripts/verify-compounding-loop.mjs",
     "verify:v2": "node scripts/verify-v2-os.mjs",
     "start": "node dist/index.js",
