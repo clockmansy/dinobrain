@@ -166,13 +166,27 @@ function parseUserHookRegistration() {
   const groups = Array.isArray(config.hooks?.UserPromptSubmit) ? config.hooks.UserPromptSubmit : [];
   const hooks = groups.flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []));
   const matchedHook = hooks.find((hook) => /dinobrain-user-prompt-hook\.ps1/i.test(JSON.stringify(hook)));
+  const hookState = matchedHook?.state && typeof matchedHook.state === "object" ? matchedHook.state : null;
+  const trustedHash = hookState?.trusted_hash ?? matchedHook?.trusted_hash ?? null;
+  const stateEnabled = hookState?.enabled ?? matchedHook?.enabled ?? null;
+  const trustedHashPresent = typeof trustedHash === "string" && trustedHash.trim().length > 0;
+  const disabledByState = stateEnabled === false;
   return {
-    ok: Boolean(matchedHook),
+    ok: Boolean(matchedHook && !disabledByState),
     hooks_path: codexHooksPath,
     user_prompt_submit_group_count: groups.length,
     dinobrain_hook_registered: Boolean(matchedHook),
     command: matchedHook?.command ?? matchedHook?.commandWindows ?? null,
-    reason: matchedHook ? "registered" : "dinobrain_user_prompt_hook_not_registered",
+    state_enabled: stateEnabled,
+    trust_state_present: Boolean(hookState || trustedHashPresent),
+    trusted_hash_present: trustedHashPresent,
+    disabled_by_state: disabledByState,
+    trust_review_likely_required: Boolean(matchedHook && !trustedHashPresent),
+    reason: !matchedHook
+      ? "dinobrain_user_prompt_hook_not_registered"
+      : disabledByState
+        ? "dinobrain_user_prompt_hook_disabled"
+        : "registered",
   };
 }
 
@@ -366,7 +380,9 @@ function main() {
       : !userHook.ok
         ? userHook.reason
       : !submitted
-        ? processDiagnostics.stale_codex_count > 0
+        ? userHook.trust_review_likely_required
+          ? `DinoBrain hook is registered but no persisted trusted_hash/state is visible in hooks.json. Codex skips non-managed command hooks until /hooks records trust for the current command hash; approve the DinoBrain UserPromptSubmit hook in /hooks, then paste the proof prompt into a fresh Codex Desktop workspace thread.`
+          : processDiagnostics.stale_codex_count > 0
           ? `no live Codex desktop UserPromptSubmit preflight event found; ${processDiagnostics.stale_codex_count} Codex process(es) started before hooks.json was updated. Run: ${processDiagnostics.approval_command}`
           : threadDiagnostics.recent_threads_after_hooks_count > 0
             ? `no live Codex desktop UserPromptSubmit preflight event found; ${threadDiagnostics.recent_threads_after_hooks_count} Codex thread(s) were created after hooks.json was updated, latest=${threadDiagnostics.latest_thread_after_hooks?.id ?? "unknown"} (${threadDiagnostics.latest_thread_after_hooks?.thread_name ?? "untitled"}), but none emitted codex_desktop hook evidence. Do not count delegated/background messages as proof; approve /hooks if prompted and paste the proof prompt manually into a trusted Codex Desktop workspace thread.`

@@ -96,6 +96,35 @@ function Get-HookCommand {
   return ""
 }
 
+function Get-DinoBrainHookRecord {
+  param([AllowNull()][object]$HookConfig)
+  if ($null -eq $HookConfig) { return $null }
+  if ($null -eq $HookConfig.PSObject.Properties["hooks"]) { return $null }
+  if ($null -eq $HookConfig.hooks.PSObject.Properties["UserPromptSubmit"]) { return $null }
+  $groups = @($HookConfig.hooks.UserPromptSubmit)
+  foreach ($group in $groups) {
+    if ($null -eq $group -or $null -eq $group.PSObject.Properties["hooks"]) { continue }
+    foreach ($hook in @($group.hooks)) {
+      $text = $hook | ConvertTo-Json -Depth 20 -Compress
+      if ($text -match "dinobrain-user-prompt-hook\.ps1" -or $text -match "Loading DinoBrain context") {
+        return $hook
+      }
+    }
+  }
+  return $null
+}
+
+function Get-ObjectPropertyValue {
+  param(
+    [AllowNull()][object]$ObjectValue,
+    [Parameter(Mandatory = $true)][string]$PropertyName
+  )
+  if ($null -eq $ObjectValue) { return $null }
+  $property = $ObjectValue.PSObject.Properties[$PropertyName]
+  if ($null -eq $property) { return $null }
+  return $property.Value
+}
+
 function Get-CodexThreadCreatedAt {
   param([AllowEmptyString()][string]$ThreadId)
 
@@ -225,11 +254,28 @@ $hookCommand = ""
 if (Test-Path -LiteralPath $HooksPath) {
   $hookJson = Read-JsonSafe -PathValue $HooksPath
   if ($hookJson.Ok) {
+    $hookRecord = Get-DinoBrainHookRecord -HookConfig $hookJson.Value
     $hookCommand = Get-HookCommand -HookConfig $hookJson.Value
     if ([string]::IsNullOrWhiteSpace($hookCommand)) {
       Add-Check $checks "codex_user_hook" "fail" "DinoBrain UserPromptSubmit hook is not registered" @{ hooks_path = $HooksPath }
     } else {
       Add-Check $checks "codex_user_hook" "pass" "DinoBrain UserPromptSubmit hook is registered" @{ hooks_path = $HooksPath; command = $hookCommand }
+      $state = Get-ObjectPropertyValue -ObjectValue $hookRecord -PropertyName "state"
+      $trustedHash = Get-ObjectPropertyValue -ObjectValue $hookRecord -PropertyName "trusted_hash"
+      if ($null -eq $trustedHash -and $null -ne $state) {
+        $trustedHash = Get-ObjectPropertyValue -ObjectValue $state -PropertyName "trusted_hash"
+      }
+      $stateEnabled = Get-ObjectPropertyValue -ObjectValue $hookRecord -PropertyName "enabled"
+      if ($null -eq $stateEnabled -and $null -ne $state) {
+        $stateEnabled = Get-ObjectPropertyValue -ObjectValue $state -PropertyName "enabled"
+      }
+      if ($stateEnabled -eq $false) {
+        Add-Check $checks "codex_user_hook_trust" "fail" "DinoBrain UserPromptSubmit hook is disabled by persisted hook state" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled }
+      } elseif ([string]::IsNullOrWhiteSpace([string]$trustedHash)) {
+        Add-Check $checks "codex_user_hook_trust" "warn" "DinoBrain hook is registered, but no visible trusted_hash/state is present in hooks.json; Codex may skip it until /hooks trusts the current command hash" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled; trusted_hash_present = $false }
+      } else {
+        Add-Check $checks "codex_user_hook_trust" "pass" "DinoBrain hook has visible persisted trust metadata" @{ hooks_path = $HooksPath; state_enabled = $stateEnabled; trusted_hash_present = $true }
+      }
     }
   } else {
     Add-Check $checks "codex_user_hook" "fail" "hooks.json is invalid JSON" @{ hooks_path = $HooksPath; error = $hookJson.Error }
@@ -323,7 +369,14 @@ $nextSteps = @()
 if ($failCount -eq 0 -and $warnCount -eq 0) {
   $nextSteps += "Run DinoBrain Codex Hook Approval.cmd or open Codex, run /hooks, trust the DinoBrain hook if it is pending, then start a new thread and send a prompt."
 } else {
-  $nextSteps += "Fix any FAIL rows first."
+  if ($failCount -gt 0) {
+    $nextSteps += "Fix any FAIL rows first."
+  } else {
+    $nextSteps += "No FAIL rows were found; resolve the WARN rows before counting live Codex prompts as proof."
+  }
+  if (@($checks | Where-Object { $_.name -eq "codex_user_hook_trust" -and $_.status -eq "warn" }).Count -gt 0) {
+    $nextSteps += "Run /hooks in Codex and trust the DinoBrain UserPromptSubmit hook for the current command hash, then use a fresh Codex Desktop workspace thread for live proof."
+  }
   $nextSteps += "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again."
   $nextSteps += "If codex_thread_freshness is WARN, keep Codex open if needed but run the live proof in a new Codex Desktop thread created after hook approval."
   $nextSteps += "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."

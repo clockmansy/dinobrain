@@ -43,6 +43,14 @@ The installer writes a user-level hook to `C:\Users\<you>\.codex\hooks.json` so 
 
 Codex requires hook trust. Review the user-level hook, the project hook, and the hook scripts, then trust DinoBrain when Codex asks. A running Codex session may need a restart or new thread before it loads newly added hooks. The installer handshake and approval helper prove and guide the hook command path, but they cannot bypass Codex's trust prompt.
 
+Registration and trust are separate states. `codex:hooks:diagnose` and
+`verify:codex-live` report visible hook trust metadata when Codex stores it in
+`hooks.json`. If the DinoBrain hook is registered but no `trusted_hash` or
+state metadata is visible and no live `codex_prompt_submitted` event appears,
+the safe diagnosis is that `/hooks` approval is still required for the current
+command hash or Codex is storing trust in a location this repository cannot
+inspect directly.
+
 If both the user-level hook and project hook are trusted, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
 
 ## Commands
@@ -119,6 +127,10 @@ Environment variables:
 
 - Codex must trust project hooks before the hook runs.
 - Codex must trust the user-level hook before global preflight runs.
+- A registered user-level hook is not enough evidence by itself; live proof
+  requires either visible trust metadata plus a real event, or at minimum the
+  real `codex_prompt_submitted` and `codex_preflight_completed` events for a
+  fresh trusted prompt.
 - Synthetic verification is not live proof. `verify:codex-live:recent` must pass before claiming the current Codex Desktop session is actually dispatching pre-response DinoBrain preflight.
 - The current already-running session may not retroactively load this hook, although the installer now verifies the wrapper path with a synthetic prompt.
 - A fresh projectless or delegated app thread can still fail to dispatch the user-level hook. `send_message_to_thread` and other app-tool delegation paths are not accepted as live proof; paste the proof prompt manually into a trusted Codex Desktop workspace thread after `/hooks` approval.

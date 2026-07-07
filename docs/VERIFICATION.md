@@ -267,6 +267,13 @@ It verifies:
 
 `npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths. On Windows it also reports stale Codex and DinoBrain MCP processes whose start time predates `hooks.json` or `dist/index.js`, so a missing live event can be separated from hook registration failures.
 
+The same live verifier reports the user-level hook trust surface. If the
+DinoBrain `UserPromptSubmit` hook is registered but no visible `trusted_hash`
+or hook `state` is present and no live event appears, the failure is classified
+as a likely `/hooks` trust-review blocker instead of a stale-thread-only
+problem. Codex may store trust outside `hooks.json`, so the decisive proof is
+still the real live event pair plus the hook report.
+
 `npm run verify:codex-live` also reports whether the current `CODEX_THREAD_ID` was created before `hooks.json` was updated. That stale-thread condition means the next proof attempt must happen in a fresh Codex Desktop thread, not the old long-running thread.
 
 If `verify:codex-live` reports fresh threads after `hooks.json` but still has no `codex_prompt_submitted` event, a new Codex thread existed but did not dispatch the user-level `UserPromptSubmit` hook. Do not count `send_message_to_thread`, app-tool delegation, or background thread messages as live proof. The proof prompt must be pasted manually into a trusted Codex Desktop workspace thread after `/hooks` approval.
