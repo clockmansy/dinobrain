@@ -158,8 +158,22 @@ try {
   const parityPromotion = finish.compounding.promotions.find((promotion) =>
     String(promotion.behavior_rule).includes("verify release parity"),
   );
-  assert(parityPromotion?.path, "release parity behavior rule was not promoted");
-  assert(existsSync(path.join(dataRoot, parityPromotion.path)), "promoted behavior rule file missing");
+  assert(parityPromotion?.path, "release parity behavior rule candidate was not created");
+  assert(existsSync(path.join(dataRoot, parityPromotion.path)), "behavior rule candidate file missing");
+  assert(parityPromotion.review_path && existsSync(path.join(dataRoot, parityPromotion.review_path)), "behavior rule review file missing");
+
+  const reviewedParity = parseTool(
+    await client.callTool({
+      name: "review_candidate",
+      arguments: {
+        candidate_id: path.basename(parityPromotion.path, ".json"),
+        decision: "approve",
+        reviewer: "verify-compounding-loop",
+        notes: "Verifier approves the auto-compounded behavior rule after evidence checks.",
+      },
+    }),
+  );
+  assert(reviewedParity.accepted_path, "release parity behavior rule was not promoted after explicit review");
 
   const search = parseTool(
     await client.callTool({
@@ -171,8 +185,8 @@ try {
     }),
   );
   assert(
-    search.results.some((result) => result.path === parityPromotion.path),
-    "search_memory did not retrieve the promoted behavior rule",
+    search.results.some((result) => result.path === reviewedParity.accepted_path),
+    "search_memory did not retrieve the reviewed behavior rule",
   );
 
   const laterPack = parseTool(
@@ -185,8 +199,8 @@ try {
     }),
   );
   assert(
-    laterPack.items.some((item) => item.path === parityPromotion.path),
-    "later Context Pack did not retrieve the promoted behavior rule",
+    laterPack.items.some((item) => item.path === reviewedParity.accepted_path),
+    "later Context Pack did not retrieve the reviewed behavior rule",
   );
 
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
@@ -197,7 +211,7 @@ try {
       {
         id: "release-parity-rule",
         request: "Before completion on GitHub release work verify release parity",
-        expected_memory_paths: [parityPromotion.path],
+        expected_memory_paths: [reviewedParity.accepted_path],
         expected_behavior_terms: ["verify", "release", "parity"],
       },
     ],
@@ -252,7 +266,8 @@ try {
         knowledge_compounding_proven: true,
         data_root: dataRoot,
         task_id: begin.task_id,
-        promoted_behavior_rule_path: parityPromotion.path,
+        behavior_rule_candidate_path: parityPromotion.path,
+        promoted_behavior_rule_path: reviewedParity.accepted_path,
         compounding_cycle_path: finish.compounding.cycle_path,
         behavior_eval_path: behavior.evaluation_path,
         average_memory_lift: behavior.average_memory_lift,

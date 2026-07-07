@@ -123,8 +123,25 @@ function firstString(...values: unknown[]): string {
   return "";
 }
 
-function sourcePath(record: JsonObject): string {
-  return firstString(record.source_candidate_path, record.source_path, record.evidence_source);
+function stringsFrom(value: unknown): string[] {
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (Array.isArray(value)) return value.flatMap(stringsFrom);
+  return [];
+}
+
+function sourcePaths(record: JsonObject): string[] {
+  const evidence = record.evidence && typeof record.evidence === "object" ? (record.evidence as JsonObject) : {};
+  const source = record.source && typeof record.source === "object" ? (record.source as JsonObject) : {};
+  return unique([
+    firstString(record.source_candidate_path),
+    firstString(record.source_path),
+    firstString(record.evidence_source),
+    ...stringsFrom(record.source_paths),
+    firstString(evidence.source),
+    firstString(source.trace_path),
+    firstString(source.task_path),
+    firstString(record.source_operation_path),
+  ]);
 }
 
 async function lifecycleHealth(dataRoot: string): Promise<{
@@ -143,13 +160,14 @@ async function lifecycleHealth(dataRoot: string): Promise<{
     readJsonDir(dataRoot, ".dino/quarantine"),
   ]);
 
-  const acceptedWithoutSource = accepted.filter((entry) => !sourcePath(entry.record));
+  const acceptedWithoutSource = accepted.filter((entry) => sourcePaths(entry.record).length === 0);
   const acceptedWithMissingSource = (
     await Promise.all(
       accepted.map(async (entry) => {
-        const source = sourcePath(entry.record);
-        if (!source) return null;
-        return (await pathExists(dataRoot, source)) ? null : entry.path;
+        const sources = sourcePaths(entry.record);
+        if (sources.length === 0) return null;
+        const existence = await Promise.all(sources.map((source) => pathExists(dataRoot, source)));
+        return existence.some(Boolean) ? null : entry.path;
       }),
     )
   ).filter((entry): entry is string => Boolean(entry));

@@ -26,6 +26,7 @@ npm run index:verify:operations
 npm run index:verify
 npm run hook:verify
 npm run verify:os
+npm run verify:codex-loop
 npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:win
@@ -41,6 +42,12 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
 
 `npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
+
+`npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data.
+
+The same verifier also checks the safety valve for read-only work: `finish_task` with `growth_policy: "trace_only"` must write the task trace but skip auto-growth, compounding, and auto-sync push even when those environment flags are enabled.
+
+`npm run verify:codex-live -- --snippet "<prompt text>" --since "<iso timestamp>"` is stricter in a different way: it checks the real data vault and `reports/live-hooks` for a live Codex `UserPromptSubmit` event/report after the given time. It is expected to fail until a fresh trusted Codex session actually dispatches the installed hook for that prompt.
 
 `npm run verify:compounding` proves the closed behavior loop: completed task traces are distilled into accepted behavior rules, later memory search and Context Packs retrieve the promoted rule, memory-on behavior beats the memory-off baseline for the golden case, and invalid/duplicate behavior rules are held or merged.
 
@@ -222,7 +229,11 @@ The index verifiers use synthetic vaults:
 
 A green `verify:os` run is stronger than the smoke test because it validates the full feedback loop, not only individual tool behavior.
 
-It does not prove that every future Codex or Claude Code answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, the user-level Codex hook is registered when required, Claude Code is registered when the installer configured it, and that an MCP client can retrieve reviewed memories through that server.
+It does not prove that every future Codex answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, the user-level Codex hook is registered when required, and that an MCP client can retrieve reviewed memories through that server.
+
+The current `eval:behavior` gate is a context-level behavior check: it proves reviewed memories are retrieved and contain required action criteria that a memory-off prompt does not contain. It is not yet a Ragas-style answer-quality grader, so answer relevance/correctness/faithfulness still require a later evaluator.
+
+`verify:codex-loop` proves the hook/growth/sync loop can complete and push when invoked. `verify:codex-live` is the evidence gate for an actual Codex app session: it fails unless the real hook emitted live preflight events and a live hook report for the target prompt.
 
 ## Codex Hook Verification
 
@@ -238,3 +249,8 @@ It verifies:
 - the hook returns `hookSpecificOutput.additionalContext`.
 - obvious secret-shaped prompt text is redacted before it reaches hook stdout or task records.
 - live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, `session_imported`, and `codex_preflight_completed`.
+- the PowerShell wrapper fails closed with a blocking hook decision when Node cannot be found.
+
+`npm run verify:codex-loop` extends this from hook preflight to the complete Codex loop. It creates a temporary data vault and a temporary bare Git remote, runs the hook, writes a proof artifact, calls `finish_task`, and asserts that both the preflight records and the finish/growth records are pushed to the remote.
+
+`npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths.

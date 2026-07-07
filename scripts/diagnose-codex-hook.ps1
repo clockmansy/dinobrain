@@ -123,12 +123,14 @@ function Invoke-HookProbe {
   $oldNode = $env:DINOBRAIN_NODE_EXE
   $oldImport = $env:DINOBRAIN_HOOK_IMPORT_SESSION
   $oldProject = $env:DINOBRAIN_HOOK_PROJECT
+  $oldLaunchKind = $env:DINOBRAIN_HOOK_LAUNCH_KIND
   $env:DINOBRAIN_DATA_DIR = $Vault
   if (-not [string]::IsNullOrWhiteSpace($Node)) {
     $env:DINOBRAIN_NODE_EXE = $Node
   }
   $env:DINOBRAIN_HOOK_IMPORT_SESSION = "0"
   $env:DINOBRAIN_HOOK_PROJECT = "dinobrain-hook-diagnose"
+  $env:DINOBRAIN_HOOK_LAUNCH_KIND = "diagnostic_probe"
   try {
     $process = [System.Diagnostics.Process]::Start($processInfo)
     $process.StandardInput.Write($payload)
@@ -141,6 +143,7 @@ function Invoke-HookProbe {
     if ($null -eq $oldNode) { Remove-Item Env:\DINOBRAIN_NODE_EXE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_NODE_EXE = $oldNode }
     if ($null -eq $oldImport) { Remove-Item Env:\DINOBRAIN_HOOK_IMPORT_SESSION -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_IMPORT_SESSION = $oldImport }
     if ($null -eq $oldProject) { Remove-Item Env:\DINOBRAIN_HOOK_PROJECT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_PROJECT = $oldProject }
+    if ($null -eq $oldLaunchKind) { Remove-Item Env:\DINOBRAIN_HOOK_LAUNCH_KIND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_LAUNCH_KIND = $oldLaunchKind }
   }
 
   return [pscustomobject]@{

@@ -358,8 +358,25 @@ async function readOsV2Status() {
   };
 }
 
-function sourcePath(record) {
-  return String(record?.source_candidate_path ?? record?.source_path ?? record?.evidence_source ?? "").trim();
+function sourcePaths(record) {
+  const values = [
+    record?.source_candidate_path,
+    record?.source_path,
+    record?.evidence_source,
+    record?.source_paths,
+    record?.evidence?.source,
+    record?.source?.trace_path,
+    record?.source?.task_path,
+    record?.source_operation_path,
+  ];
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) => (Array.isArray(value) ? value : [value]))
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 async function readLifecycleQueue() {
@@ -371,11 +388,16 @@ async function readLifecycleQueue() {
   ]);
   const reviewIds = new Set(reviews.map((entry) => path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
   const candidateWithoutReview = candidates.filter((entry) => !reviewIds.has(path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
-  const acceptedWithoutSource = accepted.filter((entry) => !sourcePath(entry));
+  const acceptedWithoutSource = accepted.filter((entry) => sourcePaths(entry).length === 0);
   const acceptedMissingSource = [];
   for (const entry of accepted) {
-    const source = sourcePath(entry);
-    if (source && !(await pathExists(path.join(dataRoot, source.replace(/\//g, path.sep))))) acceptedMissingSource.push(entry);
+    const sources = sourcePaths(entry);
+    if (sources.length > 0) {
+      const existence = await Promise.all(
+        sources.map((source) => pathExists(path.join(dataRoot, source.replace(/\//g, path.sep)))),
+      );
+      if (!existence.some(Boolean)) acceptedMissingSource.push(entry);
+    }
   }
   const retryCandidates = [...candidateWithoutReview, ...acceptedWithoutSource, ...acceptedMissingSource].slice(0, 10);
   const status = retryCandidates.length > 0 || reviews.length > 0 ? "warning" : "ready";

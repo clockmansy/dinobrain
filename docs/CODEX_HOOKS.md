@@ -50,6 +50,8 @@ If both the user-level hook and project hook are trusted, the hook runtime uses 
 ```powershell
 npm run build
 npm run hook:verify
+npm run verify:codex-loop
+npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 npm run observatory
 ```
 

@@ -735,11 +735,13 @@ function Invoke-DinoBrainCodexHookHandshake {
   $oldProject = $env:DINOBRAIN_HOOK_PROJECT
   $oldImport = $env:DINOBRAIN_HOOK_IMPORT_SESSION
   $oldLimit = $env:DINOBRAIN_HOOK_CONTEXT_LIMIT
+  $oldLaunchKind = $env:DINOBRAIN_HOOK_LAUNCH_KIND
   $env:DINOBRAIN_DATA_DIR = $VaultPath
   $env:DINOBRAIN_NODE_EXE = $NodeExe
   $env:DINOBRAIN_HOOK_PROJECT = "dinobrain-installer"
   $env:DINOBRAIN_HOOK_IMPORT_SESSION = "0"
   $env:DINOBRAIN_HOOK_CONTEXT_LIMIT = "3"
+  $env:DINOBRAIN_HOOK_LAUNCH_KIND = "installer_handshake"
   try {
     $process = [System.Diagnostics.Process]::Start($processInfo)
     $process.StandardInput.Write($payload)
@@ -753,6 +755,7 @@ function Invoke-DinoBrainCodexHookHandshake {
     if ($null -eq $oldProject) { Remove-Item Env:\DINOBRAIN_HOOK_PROJECT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_PROJECT = $oldProject }
     if ($null -eq $oldImport) { Remove-Item Env:\DINOBRAIN_HOOK_IMPORT_SESSION -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_IMPORT_SESSION = $oldImport }
     if ($null -eq $oldLimit) { Remove-Item Env:\DINOBRAIN_HOOK_CONTEXT_LIMIT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_CONTEXT_LIMIT = $oldLimit }
+    if ($null -eq $oldLaunchKind) { Remove-Item Env:\DINOBRAIN_HOOK_LAUNCH_KIND -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_LAUNCH_KIND = $oldLaunchKind }
   }
 
   if ($process.ExitCode -ne 0) {
@@ -1021,6 +1024,7 @@ function Invoke-DinoBrainVerify {
   $env:PATH = "$NodeRoot;$oldPath"
   try {
     Invoke-NativeCommand -FilePath $npmCmd -ArgumentList @("run", "verify:os") -WorkingDirectory $AppPath
+    Invoke-NativeCommand -FilePath $npmCmd -ArgumentList @("run", "verify:codex-loop") -WorkingDirectory $AppPath
   } finally {
     if ($null -eq $oldConfig) { Remove-Item Env:\DINOBRAIN_CODEX_CONFIG_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_CONFIG_PATH = $oldConfig }
     if ($null -eq $oldHooks) { Remove-Item Env:\DINOBRAIN_CODEX_HOOKS_PATH -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_CODEX_HOOKS_PATH = $oldHooks }

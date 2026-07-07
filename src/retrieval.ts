@@ -38,7 +38,7 @@ export async function getContextPackItems(
     (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
   const records = [...sqlite.records, ...recentTasks];
   const denseVectorIndex = loadDenseVectorIndex(dataRoot);
-  const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex });
+  const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
 
   return {
     records,

@@ -231,20 +231,37 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       const jsonRecord = parsed as Record<string, unknown>;
       if (isQuarantinedRecord(jsonRecord, relativePath, quarantinedPaths)) continue;
       const claim = firstString(jsonRecord.claim);
+      const reusableRule = firstString(jsonRecord.reusable_rule, jsonRecord.rule, jsonRecord.decision);
       const evidence = evidenceSnippet(jsonRecord);
       const summary = firstString(jsonRecord.summary, claim, evidence);
+      const reviewLineage = [
+        typeof jsonRecord.source_candidate_path === "string" ? `source_candidate_path=${jsonRecord.source_candidate_path}` : "",
+        typeof jsonRecord.reviewed_by === "string" ? `reviewed_by=${jsonRecord.reviewed_by}` : "",
+        typeof jsonRecord.reviewed_at === "string" ? `reviewed_at=${jsonRecord.reviewed_at}` : "",
+        typeof jsonRecord.accepted_at === "string" ? `accepted_at=${jsonRecord.accepted_at}` : "",
+        String(jsonRecord.review_status ?? "").toLowerCase() === "accepted_by_agent_review"
+          ? "review_status=accepted_by_agent_review"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       records.push({
         path: relativePath,
         kind: "curated_record",
         title: firstString(jsonRecord.title, claim, path.basename(file, extension)),
-        summary: [summary, evidence && evidence !== summary ? `Evidence: ${evidence}` : ""]
+        summary: [
+          summary,
+          reusableRule && reusableRule !== summary ? `Rule: ${reusableRule}` : "",
+          evidence && evidence !== summary ? `Evidence: ${evidence}` : "",
+          reviewLineage ? `Review: ${reviewLineage}` : "",
+        ]
           .filter(Boolean)
           .join(" | ")
-          .slice(0, 420),
+          .slice(0, 1000),
         tags: stringArray(jsonRecord.tags),
         score: 0,
         reasons: [],
-        excerpt: raw.replace(/\s+/g, " ").trim().slice(0, 600),
+        excerpt: raw.replace(/\s+/g, " ").trim().slice(0, 900),
       });
       continue;
     }
@@ -381,5 +398,5 @@ export async function getStandardPackItems(
   limit: number,
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[] }> {
   const records = await collectContextRecords(dataRoot);
-  return { records, ranked: rankRecordsHybridV2(records, question, { limit }) };
+  return { records, ranked: rankRecordsHybridV2(records, question, { limit, contextPackBudget: true }) };
 }

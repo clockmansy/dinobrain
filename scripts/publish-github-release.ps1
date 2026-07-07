@@ -42,6 +42,58 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 }
 
+function Assert-DinoBrainInstallerClosedLoop {
+  param([Parameter(Mandatory = $true)][string]$InstallerPath)
+  $InstallerPath = [System.IO.Path]::GetFullPath($InstallerPath)
+  if (-not (Test-Path -LiteralPath $InstallerPath)) {
+    throw "Installer EXE not found: $InstallerPath"
+  }
+  $probePath = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-release-probe-" + [guid]::NewGuid().ToString("N") + ".ps1")
+  try {
+    $process = Start-Process `
+      -FilePath $InstallerPath `
+      -ArgumentList @("--extract-install-script", $probePath) `
+      -WindowStyle Hidden `
+      -Wait `
+      -PassThru
+    if ($process.ExitCode -ne 0) {
+      throw "Installer closed-loop self-test failed with exit code $($process.ExitCode)"
+    }
+    if (-not (Test-Path -LiteralPath $probePath)) {
+      throw "Installer closed-loop self-test did not extract install.ps1"
+    }
+    $probeText = [System.IO.File]::ReadAllText($probePath)
+    if ($probeText -notmatch "verify:codex-loop") {
+      throw "Installer install.ps1 does not include verify:codex-loop"
+    }
+  } finally {
+    Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-DinoBrainReleaseAssetClosedLoop {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $Path = [System.IO.Path]::GetFullPath($Path)
+  $extension = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+  if ($extension -eq ".exe") {
+    Assert-DinoBrainInstallerClosedLoop -InstallerPath $Path
+    return
+  }
+  if ($extension -ne ".zip") { return }
+
+  $probeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-release-asset-" + [guid]::NewGuid().ToString("N"))
+  try {
+    Expand-Archive -LiteralPath $Path -DestinationPath $probeDir -Force
+    $installer = Get-ChildItem -LiteralPath $probeDir -Recurse -Filter "DinoBrainSetup.exe" | Select-Object -First 1
+    if ($null -eq $installer) {
+      throw "Release ZIP does not contain DinoBrainSetup.exe: $Path"
+    }
+    Assert-DinoBrainInstallerClosedLoop -InstallerPath $installer.FullName
+  } finally {
+    Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function New-DinoBrainReleasePackage {
   param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
@@ -113,6 +165,7 @@ foreach ($assetPath in $assetPaths) {
   if (-not (Test-Path -LiteralPath $assetPath)) {
     throw "Release asset not found: $assetPath"
   }
+  Assert-DinoBrainReleaseAssetClosedLoop -Path $assetPath
 }
 
 if ($SkipUpload) {

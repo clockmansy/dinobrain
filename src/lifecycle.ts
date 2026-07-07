@@ -101,7 +101,15 @@ function firstString(...values: unknown[]): string {
 }
 
 function uniqueStrings(values: unknown[]): string[] {
-  return Array.from(new Set(values.flatMap((value) => (Array.isArray(value) ? value : [value])).map(String).filter(Boolean)));
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) => (Array.isArray(value) ? value : [value]))
+        .filter((value): value is string | number | boolean => ["string", "number", "boolean"].includes(typeof value))
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 function claimKey(record: JsonObject): string {
@@ -111,8 +119,19 @@ function claimKey(record: JsonObject): string {
     .trim();
 }
 
-function sourcePath(record: JsonObject): string {
-  return firstString(record.source_candidate_path, record.source_path, record.evidence_source, (record.evidence as { source?: unknown } | undefined)?.source);
+function sourcePaths(record: JsonObject): string[] {
+  const evidence = record.evidence && typeof record.evidence === "object" ? (record.evidence as JsonObject) : {};
+  const source = record.source && typeof record.source === "object" ? (record.source as JsonObject) : {};
+  return uniqueStrings([
+    record.source_candidate_path,
+    record.source_path,
+    record.evidence_source,
+    record.source_paths,
+    evidence.source,
+    source.trace_path,
+    source.task_path,
+    record.source_operation_path,
+  ]);
 }
 
 async function pathExists(dataRoot: string, vaultPath: string): Promise<boolean> {
@@ -327,8 +346,8 @@ export async function applyNodeLifecycle(
   }
 
   for (const entry of accepted) {
-    const source = sourcePath(entry.record);
-    if (!source) {
+    const sources = sourcePaths(entry.record);
+    if (sources.length === 0) {
       actions.push({
         type: "provenance_repair",
         target_path: entry.path,
@@ -336,11 +355,11 @@ export async function applyNodeLifecycle(
         reason: "accepted node has no durable source/provenance mapping",
         applied: false,
       });
-    } else if (!(await pathExists(dataRoot, source))) {
+    } else if (!(await Promise.all(sources.map((source) => pathExists(dataRoot, source)))).some(Boolean)) {
       actions.push({
         type: "provenance_repair",
         target_path: entry.path,
-        related_paths: [source],
+        related_paths: sources,
         reason: "accepted node points to a missing source path",
         applied: false,
       });

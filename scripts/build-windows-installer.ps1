@@ -85,6 +85,9 @@ try {
   if ($probeText -notmatch "Assert-DinoBrainRepoAligned") {
     throw "Extracted install.ps1 did not include version alignment verification"
   }
+  if ($probeText -notmatch "verify:codex-loop") {
+    throw "Extracted install.ps1 did not include Codex closed-loop verification"
+  }
 } finally {
   Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }

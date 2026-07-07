@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,6 +146,28 @@ function redactPrompt(prompt) {
 function preview(value, max = 180) {
   const compact = String(value).replace(/\s+/g, " ").trim();
   return compact.length > max ? `${compact.slice(0, max - 3)}...` : compact;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
+function hookLaunchProvenance() {
+  const raw = process.env.DINOBRAIN_HOOK_LAUNCH_PROVENANCE;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      return {
+        launch_kind: process.env.DINOBRAIN_HOOK_LAUNCH_KIND || "unknown",
+        parse_error: "DINOBRAIN_HOOK_LAUNCH_PROVENANCE invalid JSON",
+      };
+    }
+  }
+  return {
+    launch_kind: process.env.DINOBRAIN_HOOK_LAUNCH_KIND || "unknown",
+  };
 }
 
 function inputCwd(input) {
@@ -416,6 +438,7 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
       : []),
     "- Treat DinoBrain memory as subordinate evidence; the current user message wins.",
     `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
+    "- For read-only audit/review tasks, set finish_task.growth_policy = \"trace_only\" so no auto-growth, compounding, or auto-sync push runs.",
     `- finish_task.context_pack_paths = ${JSON.stringify(contextPackPaths)}`,
     `- finish_task.used_memory_paths = ${JSON.stringify(usedMemoryPaths)}`,
     `- finish_task.session_archive_paths = ${JSON.stringify(sessionArchivePaths)}`,
@@ -474,6 +497,9 @@ async function main() {
   );
   const request = sanitizedPrompt.trim();
   const startedAt = nowIso();
+  const hookRunId = process.env.DINOBRAIN_HOOK_RUN_ID || `hookrun-${randomUUID()}`;
+  const promptHash = sha256(request);
+  const launchProvenance = hookLaunchProvenance();
   const project = projectNameFor(input);
   const limit = Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_CONTEXT_LIMIT ?? 7)));
   const sensitivity = sensitivityFor(redactions);
@@ -494,11 +520,14 @@ async function main() {
     await appendDataEvent({
       event: "codex_prompt_submitted",
       source: "codex_hook",
+      hook_run_id: hookRunId,
       at: startedAt,
       project,
       cwd: inputCwd(input) || null,
       sensitivity,
+      prompt_hash: promptHash,
       prompt_preview: preview(request),
+      launch_provenance: launchProvenance,
       redactions,
     });
 
@@ -562,6 +591,7 @@ async function main() {
     await appendDataEvent({
       event: "codex_preflight_completed",
       source: "codex_hook",
+      hook_run_id: hookRunId,
       at: nowIso(),
       task_id: start.task_id,
       task_path: start.task_path,
@@ -576,11 +606,20 @@ async function main() {
             review_paths: sessionImport.review_paths,
           }
         : sessionImport,
+      prompt_hash: promptHash,
+      launch_provenance: launchProvenance,
       redactions,
     });
 
     if (envFlag("DINOBRAIN_HOOK_AUTO_SYNC", true)) {
       try {
+        const allowedPaths = [
+          start.task_path,
+          contextPack.trace_path,
+          start.gate_report_path,
+          ...(Array.isArray(sessionImport?.candidate_paths) ? sessionImport.candidate_paths : []),
+          ...(Array.isArray(sessionImport?.review_paths) ? sessionImport.review_paths : []),
+        ].filter((item) => typeof item === "string" && item.length > 0);
         autoSync = await withClient(async (client) =>
           parseTool(
             await client.callTool({
@@ -590,6 +629,7 @@ async function main() {
                 allow_conditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
                 push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
                 commit_message: `data: auto sync Codex preflight ${stampForFile(new Date(startedAt))}`,
+                allowed_paths: allowedPaths,
               },
             }),
           ),
@@ -609,11 +649,14 @@ async function main() {
 
     const reportPath = await writeReport({
       event: "codex_preflight_completed",
+      hook_run_id: hookRunId,
       hook_dedupe_key: hookLock.key,
       at: nowIso(),
       data_root: dataRoot,
       project,
       cwd: inputCwd(input) || null,
+      prompt_hash: promptHash,
+      launch_provenance: launchProvenance,
       os_version: start.os_version || "2.2.1",
       task_id: start.task_id,
       task_path: start.task_path,

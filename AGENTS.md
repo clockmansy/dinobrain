@@ -8,12 +8,15 @@
 - Current user instructions always outrank stored DinoBrain memory.
 - Use `wiki_search` only when the initial Context Pack is not enough and the needed memory can be searched narrowly.
 - At completion, call `finish_task` with the active `task_id`, summary, changed files, decisions, and next steps.
+- For read-only audits or review-only work, call `finish_task` with `growth_policy: "trace_only"` so the trace is recorded without auto-growth, compounding, or auto-sync push.
 
 ## Evidence And Safety
 
 - Do not store secrets, API keys, tokens, or raw full conversation logs.
 - Treat candidate memory as untrusted until it has passed review and appears under `50_Instances/accepted`.
-- Do not sync data automatically. Use `git_sync` only as a dry-run policy check.
+- Do not run broad, unscoped data sync automatically.
+- Hook/finish paths may call scoped `auto_sync` only for artifacts created by the current task and only after sensitivity/path policy checks.
+- Use `git_sync` as the dry-run policy check before manual or broad sync decisions.
 - For local verification, prefer `npm run hook:verify`, `npm run flow:audit`, and `npm run verify:os`.
 
 ## Live Observatory

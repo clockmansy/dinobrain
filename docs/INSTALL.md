@@ -44,7 +44,7 @@ The EXE embeds default refs at build time. By default `npm run installer:win` se
 
 After cloning or updating, the installer fetches GitHub again and verifies that each git checkout matches the requested remote ref. If local `dinobrain` or `dinobrain-data` differs from `origin/<ref>`, installation stops instead of leaving Codex connected to a stale app/data pair. Explicit tag or commit refs are still allowed for rollback/recovery, but they are reported as pinned and will not track `origin/main`.
 
-Git is recommended because it enables normal repo updates and `git_sync` backup workflows. If Git is not installed, the installer can perform a fresh install by downloading GitHub ZIP archives. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
+Git is required for the full closed loop: repo updates, `git_sync`, scoped `auto_sync`, and GitHub push recovery. If Git is not installed, the installer can perform a degraded fresh install by downloading GitHub ZIP archives, but Git-backed update/sync/push verification will not be equivalent until Git is installed and the folders are converted to normal checkouts. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
 
 Running the installer over the same install root is supported when the existing `dinobrain` and `dinobrain-data` folders are Git repositories created by DinoBrain. The installer fetches the requested refs, rebuilds the app, refreshes indexes, rewrites the DinoBrain Codex/Claude registrations, and recreates launchers. It does not delete the data vault during reinstall. If an existing target folder is not a Git checkout, or points at a different origin URL without `-Force`, installation stops instead of overwriting it.
 
@@ -161,18 +161,25 @@ claude mcp add `
 ```
 
 11. Runs `npm run verify:os`.
-12. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
-13. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
-14. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
-15. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
+12. Runs `npm run verify:codex-loop` against a temporary data vault and bare Git remote to prove the Codex hook, Context Pack, finish_task, auto-growth, and auto-sync push path can close end to end.
+13. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
+14. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
+15. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
+16. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
-`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks Claude Code registration when the installer configured it, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
+`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 
 The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
 
 Codex requires you to review and trust hooks before they run in a live session. The installer can restart/reopen Codex and put `/hooks` on the clipboard, but it cannot and should not click the trust approval for you. Once trusted, you should not need to manually force a first DinoBrain hook run; the installer already exercised the wrapper path.
 
 If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd` from the install folder. If the probe passes but live Codex prompts are silent, open `/hooks` in Codex, trust the DinoBrain `UserPromptSubmit` hook, then start a new thread.
+
+To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
+
+```powershell
+npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
+```
 
 ## Custom Paths
 
@@ -227,6 +234,7 @@ This uses the same idempotent flow as install:
 - Codex user-level hook refresh
 - Claude Code MCP registration when `claude` is available
 - `npm run verify:os`
+- `npm run verify:codex-loop`
 
 ## Reinstall
 
@@ -274,7 +282,9 @@ After install, run:
 
 ```powershell
 npm run verify:os
+npm run verify:codex-loop
 npm run hook:verify
+npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 npm run observatory
 ```
 
@@ -284,4 +294,5 @@ When testing with a non-default Codex config path:
 $env:DINOBRAIN_CODEX_CONFIG_PATH = "C:\temp\codex\config.toml"
 $env:DINOBRAIN_DATA_DIR = "C:\temp\dinobrain-data"
 npm run verify:os
+npm run verify:codex-loop
 ```

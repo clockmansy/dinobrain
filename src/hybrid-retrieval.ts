@@ -294,29 +294,113 @@ function provenanceBonus(record: RankedRecord): number {
   const text = contextualText(record).toLowerCase();
   let bonus = 0;
   const hasProvenanceMetadata = /(source_uri|source_status|evidence|last_verified|confidence|provenance)/.test(text);
+  const reviewed = hasReviewLineage(record);
   if (record.path.startsWith("30_Sources/chunks/")) bonus += 2.5;
   else if (record.path.startsWith("30_Sources/") && hasProvenanceMetadata) bonus += 1.2;
   if (record.path.startsWith("50_Instances/accepted/") && hasProvenanceMetadata) bonus += 1.5;
   if (hasProvenanceMetadata) bonus += 1.2;
+  if (record.path.startsWith("50_Instances/accepted/") && /"auto_generated"\s*:\s*true/.test(text) && !reviewed) bonus -= 4;
+  if (record.path.startsWith("50_Instances/accepted/behavior-rule-") && /"support_count"\s*:\s*1/.test(text) && !reviewed) {
+    bonus -= 3;
+  }
+  if (record.path.startsWith("60_Operations/task-summaries/")) bonus -= 3;
   if (/(pending_review|candidate|quarantine)/.test(text)) bonus -= 2;
   return bonus;
 }
 
+function isCodexSessionKnowledge(record: RankedRecord): boolean {
+  return record.path.startsWith("50_Instances/accepted/codex-session-knowledge-");
+}
+
+function isAcceptedTaskMemory(record: RankedRecord): boolean {
+  return record.path.startsWith("50_Instances/accepted/task-memory-");
+}
+
+function sessionKnowledgeIntentBonus(record: RankedRecord, query: string, queryTerms: string[]): number {
+  if (!isCodexSessionKnowledge(record)) return 0;
+  const lower = query.toLowerCase();
+  const asksForReusableBehavior =
+    /\b(criteria|criterion|standard|standards|preference|priority|rule|rules|goal|risk|state|proof|verification|equivalence|direction|quality|required|requirement|policy|lesson)\b/.test(
+      lower,
+    ) || lower.includes("dinobrain");
+  if (!asksForReusableBehavior) return 0;
+
+  const slug = path.basename(record.path, path.extname(record.path)).replace(/^codex-session-knowledge-/, "");
+  const slugTerms = tokenizeHybrid(slug);
+  const matchedSlugTerms = slugTerms.filter((term) => queryTerms.includes(term)).length;
+  const titleTerms = tokenizeHybrid(record.title);
+  const matchedTitleTerms = titleTerms.filter((term) => queryTerms.includes(term)).length;
+  return 5 + Math.min(8, matchedSlugTerms * 2 + matchedTitleTerms * 1.5);
+}
+
+function taskMemorySpecificityPenalty(record: RankedRecord, query: string): number {
+  if (!isAcceptedTaskMemory(record)) return 0;
+  const lower = query.toLowerCase();
+  if (/\b(task|trace|audit|reviewer|evidence|completion|recent)\b/.test(lower)) return 0;
+  return -4.5;
+}
+
 function rootIntentBonus(record: RankedRecord, query: string): number {
+  const lower = query.toLowerCase();
+  const matched = rootIntentsForQuery(lower);
+  if (matched.length === 0) return 0;
+  if (matched.some((prefix) => record.path.startsWith(prefix))) return 4.5;
+  if (record.path.endsWith("/README.md")) return -8;
+  return -3;
+}
+
+export function rootIntentsForQuery(query: string): string[] {
   const lower = query.toLowerCase();
   const intents: Array<[string, RegExp]> = [
     ["20_Wiki/", /\b(wiki|knowledge|curated|reusable)\b/],
-    ["30_Sources/", /\b(source|sources|verification|checked|provenance|evidence)\b/],
-    ["40_Projects/", /\b(project|projects|handoff|implementation|constraints|state)\b/],
-    ["50_Instances/accepted/", /\b(instance|instances|accepted|confidence)\b/],
+    ["30_Sources/", /\b(source|sources|provenance|evidence|citation|citations)\b/],
+    ["40_Projects/", /\b(project|projects|handoff|implementation|constraints|state|installer|release|version|new pc|roadmap)\b/],
+    [
+      "50_Instances/accepted/",
+      /\b(instance|instances|accepted|confidence|memory|preference|rule|lesson|goal|behavior|session knowledge|criteria|criterion|standard|equivalence|quality|direction|compounding|observability|release drift|risk)\b/,
+    ],
     ["60_Operations/", /\b(operation|operations|runbook|runbooks|policy|policies|maintenance|sync|vault)\b/],
     ["70_Error_Book/", /\b(error|mistake|mistakes|correction|corrections|prevention)\b/],
   ];
-  const matched = intents.filter(([, pattern]) => pattern.test(lower));
-  if (matched.length === 0) return 0;
-  if (matched.some(([prefix]) => record.path.startsWith(prefix))) return 4.5;
-  if (record.path.endsWith("/README.md")) return -12;
-  return -4;
+  return intents.filter(([, pattern]) => pattern.test(lower)).map(([prefix]) => prefix);
+}
+
+function takeWithRecentTaskBudget(records: RankedRecord[], limit: number): RankedRecord[] {
+  const selected: RankedRecord[] = [];
+  let recentTaskCount = 0;
+  const maxRecentTasks = Math.min(2, limit);
+  for (const record of records) {
+    if (record.kind === "recent_task" || record.path.startsWith(".dino/tasks/")) {
+      if (recentTaskCount >= maxRecentTasks) continue;
+      recentTaskCount += 1;
+    }
+    selected.push(record);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+function applyContextPackIntentBudget(records: RankedRecord[], query: string, limit?: number): RankedRecord[] {
+  const targetLimit = typeof limit === "number" ? limit : records.length;
+  if (targetLimit <= 0) return [];
+  const intents = rootIntentsForQuery(query);
+  if (intents.length === 0) return takeWithRecentTaskBudget(records, targetLimit);
+
+  const primary = records.filter((record) => intents.some((prefix) => record.path.startsWith(prefix)));
+  const secondary = records.filter((record) => !intents.some((prefix) => record.path.startsWith(prefix)));
+  const maxSecondary = Math.min(2, Math.max(0, targetLimit - primary.length));
+  return takeWithRecentTaskBudget([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit);
+}
+
+function hasReviewLineage(record: RankedRecord): boolean {
+  const text = contextualText(record).toLowerCase();
+  return /source_candidate_path|reviewed_by|reviewed_at|accepted_at|accepted_by_agent_review/.test(text);
+}
+
+function isUnreviewedAutoGeneratedAccepted(record: RankedRecord): boolean {
+  if (!record.path.startsWith("50_Instances/accepted/")) return false;
+  const text = contextualText(record).toLowerCase();
+  return /"auto_generated"\s*:\s*true/.test(text) && !hasReviewLineage(record);
 }
 
 function fieldBonus(record: RankedRecord, queryTerms: string[]): { score: number; reasons: string[] } {
@@ -448,15 +532,16 @@ function rrf(lists: ScoredRecord[][]): Map<string, { record: RankedRecord; score
 export function rankRecordsHybridV2(
   records: RankedRecord[],
   query: string,
-  options: { limit?: number; denseVectorIndex?: DenseVectorIndex | null } = {},
+  options: { limit?: number; denseVectorIndex?: DenseVectorIndex | null; contextPackBudget?: boolean } = {},
 ): RankedRecord[] {
-  const queryTerms = filterQueryTermsByCorpus(records, unique(tokenizeHybrid(query)));
-  const sparse = sparseFieldRank(records, queryTerms);
-  const bm25 = bm25Rank(records, queryTerms);
-  const dense = denseVectorRank(records, query, options.denseVectorIndex) ?? denseLexicalRank(records, query);
+  const eligibleRecords = records.filter((record) => !isUnreviewedAutoGeneratedAccepted(record));
+  const queryTerms = filterQueryTermsByCorpus(eligibleRecords, unique(tokenizeHybrid(query)));
+  const sparse = sparseFieldRank(eligibleRecords, queryTerms);
+  const bm25 = bm25Rank(eligibleRecords, queryTerms);
+  const dense = denseVectorRank(eligibleRecords, query, options.denseVectorIndex) ?? denseLexicalRank(eligibleRecords, query);
   const fused = rrf([sparse, bm25, dense]);
 
-  for (const record of records) {
+  for (const record of eligibleRecords) {
     if (fused.has(record.path)) continue;
     const score = phraseBonus(record, query) + provenanceBonus(record);
     if (score > 0) fused.set(record.path, { record, score: score / 100, reasons: ["rerank_prior"] });
@@ -467,7 +552,9 @@ export function rankRecordsHybridV2(
       const phrase = phraseBonus(entry.record, query);
       const provenance = provenanceBonus(entry.record);
       const rootIntent = rootIntentBonus(entry.record, query);
-      const finalScore = entry.score * 100 + phrase + provenance + rootIntent;
+      const sessionKnowledge = sessionKnowledgeIntentBonus(entry.record, query, queryTerms);
+      const taskSpecificity = taskMemorySpecificityPenalty(entry.record, query);
+      const finalScore = entry.score * 100 + phrase + provenance + rootIntent + sessionKnowledge + taskSpecificity;
       const reasons = unique([
         ...entry.reasons,
         "rank_fusion:rrf",
@@ -476,6 +563,8 @@ export function rankRecordsHybridV2(
         provenance < 0 ? "rerank_lifecycle_penalty" : "",
         rootIntent > 0 ? "rerank_root_intent_boost" : "",
         rootIntent < 0 ? "rerank_root_intent_penalty" : "",
+        sessionKnowledge > 0 ? "rerank_session_knowledge_boost" : "",
+        taskSpecificity < 0 ? "rerank_task_memory_specificity_penalty" : "",
       ]);
       return {
         ...entry.record,
@@ -486,6 +575,7 @@ export function rankRecordsHybridV2(
     .filter((record) => record.score > 0)
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
 
+  if (options.contextPackBudget) return applyContextPackIntentBudget(ranked, query, options.limit);
   return typeof options.limit === "number" ? ranked.slice(0, options.limit) : ranked;
 }
 

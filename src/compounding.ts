@@ -16,6 +16,7 @@ type BehaviorSignal = {
 type PromotionResult = {
   behavior_rule_id: string;
   path: string;
+  review_path?: string;
   action: "created" | "updated" | "unchanged" | "planned";
   behavior_rule: string;
 };
@@ -240,9 +241,13 @@ async function promoteSignal(
   options: Required<Pick<CompoundingCycleOptions, "apply" | "reviewer">> & { at: string; lastVerified: string },
 ): Promise<PromotionResult> {
   const id = behaviorRuleId(signal.behavior_rule);
+  const candidatePath = dataPath(dataRoot, "50_Instances", "candidates", `${id}.json`);
+  const reviewPath = dataPath(dataRoot, "80_Review_Queue", "promotion", `${id}.json`);
   const acceptedPath = dataPath(dataRoot, "50_Instances", "accepted", `${id}.json`);
-  const relativePath = relDataPath(dataRoot, acceptedPath);
-  const existing = await readJson<JsonObject>(acceptedPath);
+  const relativePath = relDataPath(dataRoot, candidatePath);
+  const existingCandidate = await readJson<JsonObject>(candidatePath);
+  const existingAccepted = await readJson<JsonObject>(acceptedPath);
+  const existing = existingCandidate ?? existingAccepted;
   const newSource = evidenceSource(signal);
   const existingSources = uniqueEvidenceSources(Array.isArray(existing?.evidence_sources) ? existing.evidence_sources : []);
   const sources = uniqueEvidenceSources([...existingSources, newSource]);
@@ -256,6 +261,7 @@ async function promoteSignal(
     return {
       behavior_rule_id: id,
       path: relativePath,
+      review_path: relDataPath(dataRoot, reviewPath),
       action: "planned",
       behavior_rule: signal.behavior_rule,
     };
@@ -264,9 +270,10 @@ async function promoteSignal(
   if (action !== "unchanged") {
     const record = {
       ...(existing ?? {}),
+      candidate_id: id,
       behavior_rule_id: id,
       type: "behavior_rule",
-      status: "accepted",
+      status: "pending_review",
       claim: `Behavior rule: ${signal.behavior_rule}`,
       behavior_rule: signal.behavior_rule,
       category: "agent_behavior",
@@ -288,17 +295,32 @@ async function promoteSignal(
         ]),
       ),
       auto_generated: true,
+      auto_promote: false,
+      promotion_blockers: ["manual_review_required", "auto_compounded_behavior_rule"],
       reviewer: options.reviewer,
       created_at: firstString(existing?.created_at, options.at),
       updated_at: options.at,
       last_seen_at: options.at,
     };
-    await writeJson(acceptedPath, record);
+    await writeJson(candidatePath, record);
+    await writeJson(reviewPath, {
+      review_id: id,
+      type: "promotion",
+      status: "pending",
+      candidate_path: relDataPath(dataRoot, candidatePath),
+      accepted_path: existingAccepted ? relDataPath(dataRoot, acceptedPath) : null,
+      required_checks: ["evidence_snippet", "confidence", "last_verified", "support_count", "scope"],
+      promotion_blockers: ["manual_review_required", "auto_compounded_behavior_rule"],
+      reviewer: options.reviewer,
+      created_at: firstString(existingCandidate?.created_at, options.at),
+      updated_at: options.at,
+    });
   }
 
   return {
     behavior_rule_id: id,
     path: relativePath,
+    review_path: relDataPath(dataRoot, reviewPath),
     action,
     behavior_rule: signal.behavior_rule,
   };

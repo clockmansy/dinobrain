@@ -474,7 +474,7 @@ export async function getIndexedPackItems(
   const denseVectorIndex = loadDenseVectorIndex(dataRoot);
   const selectedRecords = mergeDenseVectorCandidates(index, candidates.records, question, denseVectorIndex, candidateLimit);
   const records = [...selectedRecords, ...recentTasks];
-  const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex });
+  const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
   return {
     records,
     ranked,

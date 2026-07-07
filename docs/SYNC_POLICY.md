@@ -41,12 +41,11 @@ These paths may be synced only when the records are curated and non-sensitive:
 
 - `50_Instances/candidates`
 - `80_Review_Queue`
-- `.dino/index`
 - `.dino/evaluations`
 - `.dino/tasks`
-- `.dino/events`
 - `.dino/traces`
 - `.dino/context-packs`
+- `.dino/compounding`
 - `.dino/audits`
 - `.dino/quarantine`
 
@@ -63,6 +62,8 @@ These data types are local-only unless the plan is explicitly changed:
 - API keys and access tokens
 - `.dino/secrets.json`
 - `.dino/local.json`
+- `.dino/index`
+- `.dino/events`
 - `10_Conversations/raw`
 
 ## `git_sync` And `auto_sync` Behavior
@@ -78,7 +79,9 @@ It must report:
 - per-file recommended action
 - whether manual approval is required
 
-`auto_sync` is the bounded writer. It may commit and push only policy-approved records after sensitivity scanning and path classification. It must skip blocked local-only records and report skipped paths.
+`auto_sync` is the bounded writer. Hook and `finish_task` callers must pass an `allowed_paths` scope so only artifacts created by the current task can be committed. Broad repo policy sync is reserved for explicit manual calls. `auto_sync` may commit and push only policy-approved records after sensitivity scanning and path classification. It must skip blocked local-only records and report skipped paths.
+
+Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
 
 Required dry-run fields:
 

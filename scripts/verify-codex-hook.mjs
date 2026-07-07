@@ -94,6 +94,7 @@ function runHook(input, dataRoot, reportRoot) {
     DINOBRAIN_HOOK_SESSION_MAX_CANDIDATES: "8",
     DINOBRAIN_HOOK_PROJECT: "dinobrain-hook-verify",
     DINOBRAIN_NODE_EXE: process.execPath,
+    DINOBRAIN_HOOK_LAUNCH_KIND: "verification_fixture",
   };
 
   if (process.platform === "win32" && existsSync(psHookPath)) {
@@ -117,6 +118,40 @@ function runHook(input, dataRoot, reportRoot) {
     encoding: "utf8",
     windowsHide: true,
   });
+}
+
+function powershellCommand() {
+  const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+  const candidate = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return existsSync(candidate) ? candidate : "powershell.exe";
+}
+
+function runPowerShellHookWithoutNode(input, dataRoot, reportRoot) {
+  assert(process.platform === "win32", "PowerShell wrapper no-node verification is Windows-only.");
+  const fakeLocalAppData = mkdtempSync(path.join(tmpdir(), "dinobrain-no-node-localappdata-"));
+  const env = {
+    ...process.env,
+    DINOBRAIN_DATA_DIR: dataRoot,
+    DINOBRAIN_HOOK_REPORT_DIR: reportRoot,
+    DINOBRAIN_HOOK_CONTEXT_LIMIT: "5",
+    DINOBRAIN_HOOK_PROJECT: "dinobrain-hook-verify-no-node",
+    DINOBRAIN_NODE_EXE: path.join(fakeLocalAppData, "missing-node.exe"),
+    LOCALAPPDATA: fakeLocalAppData,
+    Path: "",
+    PATH: "",
+  };
+
+  return spawnSync(
+    powershellCommand(),
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psHookPath],
+    {
+      cwd: root,
+      env,
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
 }
 
 function hookDedupeKey(input, request) {
@@ -213,6 +248,13 @@ async function verifyHook() {
   );
 
   const hookReport = readJson(path.join(tempReportRoot, reportFiles[0]));
+  assert(hookReport.hook_run_id, "Hook report did not record hook_run_id.");
+  assert(hookReport.prompt_hash, "Hook report did not record prompt_hash.");
+  assert(hookReport.launch_provenance, "Hook report did not record launch provenance.");
+  assert(
+    hookReport.launch_provenance.launch_kind !== "codex_desktop",
+    "Synthetic hook verification was incorrectly labeled as codex_desktop.",
+  );
   assert(hookReport.session_import?.archive_path, "Hook report did not record session archive path.");
   assert(hookReport.session_import?.candidate_count === candidateFiles.length, "Hook report candidate count mismatch.");
 
@@ -228,6 +270,11 @@ async function verifyHook() {
   ]) {
     assert(events.some((event) => event.event === eventName), `Missing event ${eventName}.`);
   }
+  const submittedEvent = events.find((event) => event.event === "codex_prompt_submitted");
+  const completedEvent = events.find((event) => event.event === "codex_preflight_completed");
+  assert(submittedEvent?.hook_run_id && submittedEvent.hook_run_id === completedEvent?.hook_run_id, "Hook events did not share hook_run_id.");
+  assert(submittedEvent?.prompt_hash && submittedEvent.prompt_hash === completedEvent?.prompt_hash, "Hook events did not share prompt_hash.");
+  assert(completedEvent.hook_run_id === hookReport.hook_run_id, "Hook report did not match event hook_run_id.");
 
   for (const filePath of filesUnder(tempDataRoot)) {
     const text = readFileSync(filePath, "utf8");
@@ -257,6 +304,27 @@ async function verifyHook() {
   const duplicateContext = duplicateOutput.hookSpecificOutput?.additionalContext ?? "";
   assert(duplicateContext.includes("FAIL-CLOSED"), "Duplicate hook lock did not fail closed without sibling report.");
   assert(!duplicateContext.includes("Use the other injected DinoBrain context"), "Duplicate hook still used the unsafe skip message.");
+
+  if (process.platform === "win32" && existsSync(psHookPath)) {
+    const noNodeDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-no-node-"));
+    const noNodeReportRoot = path.join(noNodeDataRoot, "hook-reports");
+    seedVault(noNodeDataRoot);
+    const noNodeRun = runPowerShellHookWithoutNode(
+      JSON.stringify({
+        hookEventName: "UserPromptSubmit",
+        prompt: "This hook run must fail closed when the PowerShell wrapper cannot locate Node.",
+        cwd: root,
+      }),
+      noNodeDataRoot,
+      noNodeReportRoot,
+    );
+    assert(noNodeRun.status === 0, `No-node wrapper exited with ${noNodeRun.status}: ${noNodeRun.stderr}`);
+    const noNodeOutput = parseHookOutput(noNodeRun.stdout);
+    const noNodeContext = noNodeOutput.hookSpecificOutput?.additionalContext ?? "";
+    assert(noNodeOutput.decision === "block", "No-node PowerShell wrapper did not emit a blocking hook decision.");
+    assert(noNodeContext.includes("FAIL-CLOSED"), "No-node PowerShell wrapper did not fail closed.");
+    assert(!/Continue with the current user request/i.test(noNodeContext), "No-node wrapper still allowed fail-open continuation.");
+  }
 
   return {
     ok: true,

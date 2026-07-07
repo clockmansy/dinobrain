@@ -34,7 +34,13 @@ function pathExists(relativePath) {
 
 function readText(relativePath) {
   const fullPath = path.join(dataRoot, relativePath);
-  const size = statSync(fullPath).size;
+  let size = 0;
+  try {
+    size = statSync(fullPath).size;
+  } catch (error) {
+    if (error.code === "ENOENT") return { text: "", size: 0, truncated: false, missing: true };
+    throw error;
+  }
   const buffer = readFileSync(fullPath);
   const truncated = size > maxScanBytes;
   return {
@@ -115,6 +121,8 @@ const blockedPathRules = [
   { id: "private_attachment_path", pattern: /^attachments\/private\// },
   { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
   { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp)\// },
+  { id: "generated_index_path", pattern: /^\.dino\/index\// },
+  { id: "operation_event_path", pattern: /^\.dino\/events\// },
   { id: "environment_file", pattern: /(^|\/)\.env(?:\.|$)/ },
   { id: "private_key_file", pattern: /\.(?:pem|key|p12|pfx)$/i },
 ];
@@ -122,14 +130,12 @@ const blockedPathRules = [
 const conditionalPathRules = [
   { id: "candidate_instance_path", pattern: /^50_Instances\/candidates\// },
   { id: "review_queue_path", pattern: /^80_Review_Queue\// },
-  { id: "operation_event_path", pattern: /^\.dino\/events\// },
   { id: "operation_task_path", pattern: /^\.dino\/tasks\// },
   { id: "operation_trace_path", pattern: /^\.dino\/traces\// },
   { id: "operation_context_pack_path", pattern: /^\.dino\/context-packs\// },
   { id: "operation_gate_path", pattern: /^\.dino\/gates\// },
   { id: "operation_audit_path", pattern: /^\.dino\/audits\// },
   { id: "operation_evaluation_path", pattern: /^\.dino\/evaluations\// },
-  { id: "operation_index_path", pattern: /^\.dino\/index\// },
   { id: "operation_quarantine_path", pattern: /^\.dino\/quarantine\// },
   { id: "operation_compounding_path", pattern: /^\.dino\/compounding\// },
 ];
@@ -177,6 +183,16 @@ const machineLocalPatterns = [
   { id: "posix_user_path", pattern: /(?:^|[\s"'])\/(?:Users|home)\/[^"'\s]+/g },
 ];
 
+function hasReviewLineage(record) {
+  return Boolean(
+    record.source_candidate_path ||
+      record.reviewed_by ||
+      record.reviewed_at ||
+      record.accepted_at ||
+      String(record.review_status || "").toLowerCase().includes("accepted"),
+  );
+}
+
 function classifyPath(relativePath) {
   for (const rule of blockedPathRules) {
     if (rule.pattern.test(relativePath)) return { classification: "blocked", policy: rule.id };
@@ -218,7 +234,8 @@ function scanFile(relativePath, tracked) {
     addFinding("warning", "unclassified_tracked_path", relativePath, { policy: policy.policy });
   }
 
-  const { text, size, truncated } = readText(relativePath);
+  const { text, size, truncated, missing } = readText(relativePath);
+  if (missing) return policy;
   if (truncated) {
     addFinding("warning", "large_file_partially_scanned", relativePath, { size_bytes: size, scanned_bytes: maxScanBytes });
   }
@@ -250,6 +267,17 @@ function scanFile(relativePath, tracked) {
         pattern: id,
         line: lineFor(text, match.index || 0),
       });
+    }
+  }
+
+  if (/^50_Instances\/accepted\/.+\.json$/.test(relativePath)) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && parsed.auto_generated === true && !hasReviewLineage(parsed)) {
+        addFinding("blocker", "auto_generated_accepted_without_review_lineage", relativePath);
+      }
+    } catch (error) {
+      addFinding("blocker", "accepted_json_unreadable", relativePath, { error: error.message });
     }
   }
 
@@ -290,6 +318,17 @@ function checkIndexExclusions() {
       const recordPath = String(record.path || "");
       if (excludedRoots.some((pattern) => pattern.test(recordPath))) {
         addFinding("blocker", "unreviewed_or_raw_record_indexed", indexPath, { record_path: recordPath });
+      }
+      if (/^50_Instances\/accepted\/.+\.json$/.test(recordPath)) {
+        const fullRecordPath = path.join(dataRoot, recordPath);
+        try {
+          const parsed = JSON.parse(readFileSync(fullRecordPath, "utf8"));
+          if (parsed.auto_generated === true && !hasReviewLineage(parsed)) {
+            addFinding("blocker", "unreviewed_generated_accepted_indexed", indexPath, { record_path: recordPath });
+          }
+        } catch (error) {
+          addFinding("blocker", "indexed_accepted_record_unreadable", indexPath, { record_path: recordPath, error: error.message });
+        }
       }
     }
     return { checked: true, record_count: records.length };

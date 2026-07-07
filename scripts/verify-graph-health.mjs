@@ -30,8 +30,18 @@ async function main() {
 
     const candidatePath = path.join(dataRoot, "50_Instances", "candidates", "candidate-good.json");
     const acceptedGoodPath = path.join(dataRoot, "50_Instances", "accepted", "candidate-good.json");
+    const acceptedEvidenceSourcePath = path.join(dataRoot, "50_Instances", "accepted", "evidence-source.json");
+    const acceptedSourcePathsPath = path.join(dataRoot, "50_Instances", "accepted", "source-paths.json");
+    const acceptedTraceSourcePath = path.join(dataRoot, "50_Instances", "accepted", "trace-source.json");
     const acceptedMissingSourcePath = path.join(dataRoot, "50_Instances", "accepted", "missing-source.json");
     const candidateOrphanPath = path.join(dataRoot, "50_Instances", "candidates", "candidate-orphan.json");
+    markdown(path.join(dataRoot, "20_Wiki", "Evidence Source.md"), "# Evidence Source\n");
+    markdown(path.join(dataRoot, "30_Sources", "source-paths.md"), "# Source Paths\n");
+    json(path.join(dataRoot, ".dino", "traces", "trace-source.json"), {
+      task_id: "trace-source",
+      summary: "Trace source fixture",
+      outcome: "completed",
+    });
     json(candidatePath, {
       candidate_id: "candidate-good",
       claim: "Graph health should preserve source lineage.",
@@ -51,6 +61,56 @@ async function main() {
       confidence: "high",
       last_verified: "2026-07-03",
     });
+    json(acceptedEvidenceSourcePath, {
+      candidate_id: "evidence-source",
+      claim: "Graph health should accept evidence.source as durable lineage.",
+      status: "accepted",
+      tags: ["graph-health"],
+      evidence: {
+        source: "20_Wiki/Evidence Source.md",
+        snippet: "Accepted instance points to evidence.source.",
+      },
+      confidence: "high",
+      last_verified: "2026-07-03",
+    });
+    json(acceptedSourcePathsPath, {
+      candidate_id: "source-paths",
+      claim: "Graph health should accept source_paths as durable lineage.",
+      status: "accepted",
+      tags: ["graph-health"],
+      source_paths: ["30_Sources/source-paths.md"],
+      evidence: { snippet: "Accepted instance points to source_paths." },
+      confidence: "high",
+      last_verified: "2026-07-03",
+    });
+    json(acceptedTraceSourcePath, {
+      candidate_id: "trace-source",
+      claim: "Graph health should accept source.trace_path as durable lineage.",
+      status: "accepted",
+      tags: ["graph-health"],
+      source: {
+        trace_path: ".dino/traces/trace-source.json",
+      },
+      evidence: { snippet: "Accepted instance points to source.trace_path." },
+      confidence: "high",
+      last_verified: "2026-07-03",
+    });
+    health = await buildGraphHealth(dataRoot, {
+      referencedPaths: [
+        "50_Instances/accepted/candidate-good.json",
+        "50_Instances/accepted/evidence-source.json",
+        "50_Instances/accepted/source-paths.json",
+        "50_Instances/accepted/trace-source.json",
+      ],
+    });
+    assert(health.accepted_instance_count === 4, "accepted source fixture count mismatch");
+    assert(health.accepted_without_source_count === 0, "accepted source fixtures were falsely flagged as source-less");
+    assert(health.source_mapping_missing_count === 0, "accepted source fixtures were falsely flagged as missing lineage");
+    assert(
+      !health.warnings.includes("accepted_instance_source_mapping_missing"),
+      "source mapping warning appeared for accepted source fixtures",
+    );
+
     json(acceptedMissingSourcePath, {
       candidate_id: "missing-source",
       claim: "This accepted instance has no durable source mapping.",
@@ -91,7 +151,7 @@ This note links to [[Missing Health Node]].
     health = await buildGraphHealth(dataRoot, {
       referencedPaths: ["50_Instances/accepted/candidate-good.json", "20_Wiki/Missing-Referenced.md"],
     });
-    assert(health.accepted_instance_count === 2, "accepted instance count mismatch");
+    assert(health.accepted_instance_count === 5, "accepted instance count mismatch");
     assert(health.accepted_without_source_count === 1, "accepted without source was not flagged");
     assert(health.candidate_without_review_count === 1, "candidate without review was not flagged");
     assert(health.referenced_paths_missing_on_disk.includes("20_Wiki/Missing-Referenced.md"), "missing referenced path not flagged");
@@ -103,7 +163,7 @@ This note links to [[Missing Health Node]].
     });
     const persisted = JSON.parse(readFileSync(written.path, "utf8"));
     assert(persisted.version === "graph_health_v1", "persisted graph health version mismatch");
-    assert(persisted.accepted_instance_count === 2, "persisted graph health count mismatch");
+    assert(persisted.accepted_instance_count === 5, "persisted graph health count mismatch");
 
     console.log("graph health verification ok");
   } finally {

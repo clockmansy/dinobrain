@@ -567,6 +567,34 @@ function verifyGoldenRetrieval() {
   };
 }
 
+function verifyBehaviorQuality() {
+  const result = spawnSync(process.execPath, [path.join(root, "dist", "evaluate-behavior.js")], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DINOBRAIN_DATA_DIR: realDataRoot,
+    },
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  }
+  const report = JSON.parse(result.stdout);
+  return {
+    ok: report.ok === true,
+    cases: report.cases,
+    target_memory_lift: report.target_memory_lift,
+    average_memory_lift: report.average_memory_lift,
+    minimum_cases: report.minimum_cases,
+    failing_cases: report.failing_cases,
+  };
+}
+
 function commandExists(command) {
   if (existsSync(command)) return true;
   if (process.platform === "win32") {
@@ -645,6 +673,7 @@ async function main() {
     verifyCompoundingLoop(),
   ]);
   const retrievalEval = verifyGoldenRetrieval();
+  const behaviorEval = verifyBehaviorQuality();
   const claudeCodeMcp = verifyClaudeCodeMcp();
 
   const report = {
@@ -654,6 +683,7 @@ async function main() {
       codexUserHook.ok === true &&
       compoundingLoop.ok === true &&
       retrievalEval.ok === true &&
+      behaviorEval.ok === true &&
       claudeCodeMcp.ok === true &&
       claudePromptHook.ok === true,
     verification_version: "dinobrain-os-2026-07-01",
@@ -671,6 +701,7 @@ async function main() {
     },
     compounding_loop: compoundingLoop,
     retrieval_quality: retrievalEval,
+    behavior_quality: behaviorEval,
   };
 
   console.log(JSON.stringify(report, null, 2));

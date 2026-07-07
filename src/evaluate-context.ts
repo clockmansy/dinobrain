@@ -7,6 +7,8 @@ type GoldenCase = {
   id: string;
   question: string;
   expected_paths: string[];
+  allowed_paths?: string[];
+  allowed_prefixes?: string[];
   notes?: string;
 };
 
@@ -23,6 +25,8 @@ type CaseResult = {
   id: string;
   question: string;
   expected_paths: string[];
+  allowed_paths: string[];
+  allowed_prefixes: string[];
   returned_paths: string[];
   missing_paths: string[];
   noise_paths: string[];
@@ -49,12 +53,20 @@ function isOperationalNoisePath(returnedPath: string): boolean {
   return returnedPath.startsWith(".dino/tasks/") || returnedPath.startsWith(".dino/context-packs/");
 }
 
+function isAllowedPath(returnedPath: string, allowedPaths: string[], allowedPrefixes: string[]): boolean {
+  return allowedPaths.includes(returnedPath) || allowedPrefixes.some((prefix) => returnedPath.startsWith(prefix));
+}
+
 async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMaxNoise: number): Promise<CaseResult> {
   const { ranked } = await getContextPackItems(dataRoot, goldenCase.question, packLimit);
   const returnedPaths = unique(ranked.map((record) => record.path));
   const expectedPaths = unique(goldenCase.expected_paths);
+  const allowedPaths = unique(goldenCase.allowed_paths ?? []);
+  const allowedPrefixes = unique(goldenCase.allowed_prefixes ?? []);
   const missingPaths = expectedPaths.filter((expectedPath) => !returnedPaths.includes(expectedPath));
-  const unexpectedPaths = returnedPaths.filter((returnedPath) => !expectedPaths.includes(returnedPath));
+  const unexpectedPaths = returnedPaths.filter(
+    (returnedPath) => !expectedPaths.includes(returnedPath) && !isAllowedPath(returnedPath, allowedPaths, allowedPrefixes),
+  );
   const operationalNoisePaths = unexpectedPaths.filter(isOperationalNoisePath);
   const noisePaths = unexpectedPaths.filter((returnedPath) => !isOperationalNoisePath(returnedPath));
   const recall = expectedPaths.length === 0 ? 1 : (expectedPaths.length - missingPaths.length) / expectedPaths.length;
@@ -64,6 +76,8 @@ async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMax
     id: goldenCase.id,
     question: goldenCase.question,
     expected_paths: expectedPaths,
+    allowed_paths: allowedPaths,
+    allowed_prefixes: allowedPrefixes,
     returned_paths: returnedPaths,
     missing_paths: missingPaths,
     noise_paths: noisePaths,
@@ -93,7 +107,10 @@ async function main(): Promise<void> {
     ? results.reduce((sum, result) => sum + result.noise_count, 0) / results.length
     : 0;
   const failingCases = results.filter((result) => !result.pass);
-  const pass = recall >= goldenSet.target_recall && maxNoise <= goldenSet.target_max_noise;
+  const pass =
+    recall >= goldenSet.target_recall &&
+    maxNoise <= goldenSet.target_max_noise &&
+    failingCases.length === 0;
 
   const report = {
     ok: pass,

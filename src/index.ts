@@ -123,6 +123,12 @@ function normalizeTextList(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function envString(name: string, defaultValue: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === "") return defaultValue;
+  return value.trim();
+}
+
 async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
@@ -283,6 +289,26 @@ type SyncPlan = {
   };
 };
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function compoundingSyncPaths(value: Record<string, unknown> | null): string[] {
+  if (!value) return [];
+  const paths = stringList([value.cycle_path, value.behavior_rule_index_path, value.event_log]);
+  for (const promotion of Array.isArray(value.promotions) ? value.promotions : []) {
+    if (typeof promotion !== "object" || promotion === null) continue;
+    const record = promotion as Record<string, unknown>;
+    paths.push(...stringList([record.path, record.review_path, record.accepted_path]));
+  }
+  for (const action of Array.isArray(value.cleanup_actions) ? value.cleanup_actions : []) {
+    if (typeof action !== "object" || action === null) continue;
+    const record = action as Record<string, unknown>;
+    paths.push(...stringList([record.target_path, record.kept_path, record.archive_path]));
+  }
+  return Array.from(new Set(paths.filter(Boolean)));
+}
+
 function classifyPath(normalizedPath: string): PathClassification {
   const blockedPrefixes = [
     "10_Conversations/raw/",
@@ -290,6 +316,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     "attachments/private/",
     ".dino/cache/",
     ".dino/tmp/",
+    ".dino/events/",
   ];
   const blockedExact = new Set([".env", ".dino/secrets.json", ".dino/local.json"]);
   const blockedExtensions = [".pem", ".key", ".p12", ".pfx"];
@@ -299,9 +326,9 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/index/",
     ".dino/evaluations/",
     ".dino/tasks/",
-    ".dino/events/",
     ".dino/traces/",
     ".dino/context-packs/",
+    ".dino/compounding/",
     ".dino/audits/",
     ".dino/quarantine/",
   ];
@@ -383,6 +410,37 @@ async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
   }
 }
 
+async function largeUnscannedFinding(normalizedPath: string, deleted: boolean): Promise<string | null> {
+  if (deleted) return null;
+  try {
+    const stat = await fs.stat(dataPath(normalizedPath));
+    if (!stat.isFile()) return null;
+    return stat.size > 512 * 1024 ? "file exceeds automatic sensitivity scan size limit" : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function acceptedInstancePolicyFinding(normalizedPath: string, deleted: boolean): Promise<string | null> {
+  if (deleted || !normalizedPath.startsWith("50_Instances/accepted/") || !normalizedPath.endsWith(".json")) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(await fs.readFile(dataPath(normalizedPath), "utf8")) as Record<string, unknown>;
+  } catch {
+    return "accepted JSON is unreadable";
+  }
+  if (parsed.auto_generated !== true) return null;
+  const hasReviewLineage = Boolean(
+    parsed.source_candidate_path ||
+      parsed.reviewed_by ||
+      parsed.reviewed_at ||
+      parsed.accepted_at ||
+      String(parsed.review_status ?? "").toLowerCase().includes("accepted"),
+  );
+  return hasReviewLineage ? null : "auto-generated accepted memory lacks review lineage";
+}
+
 async function buildSyncPlan(options: {
   includeSensitiveScan: boolean;
   allowConditionalAutoSync?: boolean;
@@ -429,13 +487,26 @@ async function buildSyncPlan(options: {
     const classification = classifyPath(change.path);
     const deleted = change.status.includes("D");
     const hits = options.includeSensitiveScan && !deleted ? await sensitivityHits(dataPath(change.path)) : [];
-    const finalClassification: SyncClassification = hits.length > 0 ? "blocked" : classification.classification;
-    const reasons =
-      hits.length > 0 ? [...classification.reasons, "sensitive pattern detected"] : classification.reasons;
+    const largeFinding = options.includeSensitiveScan ? await largeUnscannedFinding(change.path, deleted) : null;
+    const acceptedFinding = await acceptedInstancePolicyFinding(change.path, deleted);
+    const finalClassification: SyncClassification =
+      hits.length > 0 || acceptedFinding || largeFinding ? "blocked" : classification.classification;
+    const reasons = [
+      ...classification.reasons,
+      ...(hits.length > 0 ? ["sensitive pattern detected"] : []),
+      ...(acceptedFinding ? [acceptedFinding] : []),
+      ...(largeFinding ? [largeFinding] : []),
+    ];
     const file: SyncFileReport = {
       ...change,
       classification: finalClassification,
-      policy: hits.length > 0 ? "sensitive_pattern_block" : classification.policy,
+      policy: hits.length > 0
+        ? "sensitive_pattern_block"
+        : acceptedFinding
+          ? "unreviewed_generated_accepted_block"
+          : largeFinding
+            ? "large_unscanned_file_block"
+            : classification.policy,
       reasons,
       action:
         finalClassification === "syncable"
@@ -511,6 +582,7 @@ async function runDataAutoSync(options: {
   allowConditional: boolean;
   push: boolean;
   commitMessage: string;
+  allowedPaths?: string[];
 }): Promise<Record<string, unknown>> {
   const plan = await buildSyncPlan({
     includeSensitiveScan: options.includeSensitiveScan,
@@ -520,10 +592,18 @@ async function runDataAutoSync(options: {
   });
   if (!plan.ok) return plan as unknown as Record<string, unknown>;
 
-  const allowedPaths = plan.files
+  const scope = options.allowedPaths && options.allowedPaths.length > 0 ? new Set(normalizeVaultPaths(options.allowedPaths)) : null;
+  const scopedFiles = scope ? plan.files.filter((file) => scope.has(file.path)) : plan.files;
+  const outOfScopeChangedPaths = scope
+    ? plan.files
+        .filter((file) => !scope.has(file.path))
+        .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }))
+    : [];
+
+  const allowedPaths = scopedFiles
     .filter((file) => isAutoSyncAllowed(file, options.allowConditional))
     .map((file) => file.path);
-  const skippedPaths = plan.files
+  const skippedPaths = scopedFiles
     .filter((file) => !isAutoSyncAllowed(file, options.allowConditional))
     .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }));
 
@@ -533,7 +613,10 @@ async function runDataAutoSync(options: {
       committed: false,
       pushed: false,
       reason: "no_auto_sync_allowed_changes",
+      sync_scope: scope ? "allowed_paths" : "repo_policy",
+      scoped_path_count: scopedFiles.length,
       skipped_paths: skippedPaths,
+      out_of_scope_changed_paths: outOfScopeChangedPaths,
     };
   }
 
@@ -548,7 +631,10 @@ async function runDataAutoSync(options: {
       blocked: true,
       reason: "disallowed_files_already_staged",
       disallowed_staged_paths: disallowedStaged,
+      sync_scope: scope ? "allowed_paths" : "repo_policy",
+      scoped_path_count: scopedFiles.length,
       skipped_paths: skippedPaths,
+      out_of_scope_changed_paths: outOfScopeChangedPaths,
     };
   }
 
@@ -560,7 +646,10 @@ async function runDataAutoSync(options: {
       pushed: false,
       reason: "no_staged_changes_after_policy_add",
       allowed_paths: allowedPaths,
+      sync_scope: scope ? "allowed_paths" : "repo_policy",
+      scoped_path_count: scopedFiles.length,
       skipped_paths: skippedPaths,
+      out_of_scope_changed_paths: outOfScopeChangedPaths,
     };
   }
 
@@ -584,7 +673,10 @@ async function runDataAutoSync(options: {
     branch,
     remote: remote || null,
     allowed_paths: allowedPaths,
+    sync_scope: scope ? "allowed_paths" : "repo_policy",
+    scoped_path_count: scopedFiles.length,
     skipped_paths: skippedPaths,
+    out_of_scope_changed_paths: outOfScopeChangedPaths,
   };
 }
 
@@ -592,15 +684,14 @@ function isAutoSyncConditionalPath(normalizedPath: string): boolean {
   const allowedPrefixes = [
     ".dino/audits/",
     ".dino/context-packs/",
-    ".dino/events/",
     ".dino/evaluations/",
     ".dino/gates/",
-    ".dino/index/",
     ".dino/lifecycle/",
     ".dino/provenance/",
     ".dino/quarantine/",
     ".dino/tasks/",
     ".dino/traces/",
+    ".dino/compounding/",
     "50_Instances/candidates/",
     "80_Review_Queue/",
   ];
@@ -726,7 +817,8 @@ async function writeFinishGrowthRecords(params: {
   const outcome = firstString(params.trace.outcome, "completed");
   const growthId = `task-memory-${safeSlug(params.taskId)}`;
   const operationPath = dataPath("60_Operations", "task-summaries", `${growthId}.json`);
-  const acceptedPath = dataPath("50_Instances", "accepted", `${growthId}.json`);
+  const candidatePath = dataPath("50_Instances", "candidates", `${growthId}.json`);
+  const reviewPath = dataPath("80_Review_Queue", "promotion", `${growthId}.json`);
   const decisions = Array.isArray(params.trace.decisions) ? params.trace.decisions.map(String) : [];
   const nextSteps = Array.isArray(params.trace.next_steps) ? params.trace.next_steps.map(String) : [];
   const usedMemoryPaths = Array.isArray(params.trace.used_memory_paths) ? params.trace.used_memory_paths.map(String) : [];
@@ -767,20 +859,37 @@ async function writeFinishGrowthRecords(params: {
     },
     source_status: "internal",
     confidence: outcome === "completed" ? "medium" : "low",
+    last_verified: dateStamp(),
     tags,
     auto_generated: true,
     created_at: params.finishedAt,
     updated_at: params.finishedAt,
     source,
   };
-  const acceptedRecord = {
+  const candidateRecord = {
     ...operationRecord,
-    accepted_at: params.finishedAt,
+    status: "pending_review",
     source_operation_path: relDataPath(operationPath),
+    candidate_id: growthId,
+    sensitivity: firstString(params.taskRecord.sensitivity, "unknown"),
+    auto_promote: false,
+    promotion_blockers: ["manual_review_required", "auto_generated_task_memory"],
+  };
+  const reviewRecord = {
+    review_id: growthId,
+    type: "promotion",
+    status: "pending",
+    candidate_path: relDataPath(candidatePath),
+    source_operation_path: relDataPath(operationPath),
+    required_checks: ["evidence_snippet", "confidence", "last_verified", "sensitivity", "scope"],
+    promotion_blockers: ["manual_review_required", "auto_generated_task_memory"],
+    created_at: params.finishedAt,
+    updated_at: params.finishedAt,
   };
 
   await writeJson(operationPath, operationRecord);
-  await writeJson(acceptedPath, acceptedRecord);
+  await writeJson(candidatePath, candidateRecord);
+  await writeJson(reviewPath, reviewRecord);
   await invalidateWikiIndex(DATA_ROOT);
   await invalidateSqliteWikiShard(DATA_ROOT);
   const eventLog = await appendEvent({
@@ -788,7 +897,8 @@ async function writeFinishGrowthRecords(params: {
     task_id: params.taskId,
     at: params.finishedAt,
     operation_path: relDataPath(operationPath),
-    accepted_path: relDataPath(acceptedPath),
+    candidate_path: relDataPath(candidatePath),
+    review_path: relDataPath(reviewPath),
     os_version: DINOBRAIN_OS_VERSION,
   });
 
@@ -796,7 +906,11 @@ async function writeFinishGrowthRecords(params: {
     ok: true,
     enabled: true,
     memory_id: growthId,
-    created_paths: [relDataPath(operationPath), relDataPath(acceptedPath)],
+    destination: "candidate_review",
+    created_paths: [relDataPath(operationPath), relDataPath(candidatePath), relDataPath(reviewPath)],
+    operation_path: relDataPath(operationPath),
+    candidate_path: relDataPath(candidatePath),
+    review_path: relDataPath(reviewPath),
     event_log: eventLog,
   };
 }
@@ -1237,6 +1351,7 @@ server.registerTool(
       task_id: z.string().min(1),
       summary: z.string().min(1),
       outcome: z.enum(["completed", "partial", "blocked"]).default("completed"),
+      growth_policy: z.enum(["auto", "trace_only"]).default("auto"),
       changed_files: z.array(z.string()).default([]),
       decisions: z.array(z.string()).default([]),
       next_steps: z.array(z.string()).default([]),
@@ -1251,6 +1366,7 @@ server.registerTool(
     task_id,
     summary,
     outcome,
+    growth_policy,
     changed_files,
     decisions,
     next_steps,
@@ -1276,6 +1392,7 @@ server.registerTool(
       task_id,
       outcome,
       summary,
+      growth_policy,
       changed_files,
       decisions,
       next_steps,
@@ -1321,15 +1438,24 @@ server.registerTool(
       candidate_paths: normalizedCandidatePaths,
       search_query_count: normalizedSearchQueries.length,
     });
-    const growth = await writeFinishGrowthRecords({
-      taskId: task_id,
-      taskRecord: updated,
-      tracePath: traceRelativePath,
-      trace,
-      finishedAt,
-    });
+    const effectiveGrowthPolicy = growth_policy === "auto" ? envString("DINOBRAIN_FINISH_GROWTH_POLICY", "auto") : growth_policy;
+    const traceOnly = effectiveGrowthPolicy === "trace_only";
+    const growth = traceOnly
+      ? {
+          ok: true,
+          enabled: false,
+          reason: "growth_policy_trace_only",
+          created_paths: [],
+        }
+      : await writeFinishGrowthRecords({
+          taskId: task_id,
+          taskRecord: updated,
+          tracePath: traceRelativePath,
+          trace,
+          finishedAt,
+        });
     let compounding: Record<string, unknown> | null = null;
-    if (envFlag("DINOBRAIN_AUTO_COMPOUND", false)) {
+    if (!traceOnly && envFlag("DINOBRAIN_AUTO_COMPOUND", false)) {
       try {
         const traceLimit = Math.max(1, Math.min(200, Number(process.env.DINOBRAIN_AUTO_COMPOUND_TRACE_LIMIT ?? 50)));
         compounding = await runCompoundingCycleWithIndexRefresh({
@@ -1345,13 +1471,16 @@ server.registerTool(
       }
     }
     let autoSync: Record<string, unknown> | null = null;
-    if (envFlag("DINOBRAIN_AUTO_SYNC", false)) {
+    if (!traceOnly && envFlag("DINOBRAIN_AUTO_SYNC", false)) {
       try {
+        const growthPaths = stringList((growth as { created_paths?: unknown }).created_paths);
+        const compoundingPaths = compoundingSyncPaths(compounding);
         autoSync = await runDataAutoSync({
           includeSensitiveScan: true,
           allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", true),
           push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", true),
           commitMessage: `data: auto sync ${safeSlug(task_id).slice(0, 48)}`,
+          allowedPaths: [taskRelativePath, traceRelativePath, ...growthPaths, ...compoundingPaths],
         });
       } catch (error) {
         autoSync = {
@@ -1359,6 +1488,12 @@ server.registerTool(
           error: safeError(error),
         };
       }
+    } else if (traceOnly) {
+      autoSync = {
+        ok: true,
+        skipped: true,
+        reason: "growth_policy_trace_only",
+      };
     }
     return jsonResult({
       ok: true,
@@ -2169,9 +2304,10 @@ server.registerTool(
       allow_conditional: z.boolean().default(true),
       push: z.boolean().default(true),
       commit_message: z.string().default("data: auto sync DinoBrain OS loop"),
+      allowed_paths: z.array(z.string()).default([]),
     },
   },
-  async ({ include_sensitive_scan, allow_conditional, push, commit_message }) => {
+  async ({ include_sensitive_scan, allow_conditional, push, commit_message, allowed_paths }) => {
     try {
       return jsonResult(
         await runDataAutoSync({
@@ -2179,6 +2315,7 @@ server.registerTool(
           allowConditional: allow_conditional,
           push,
           commitMessage: commit_message,
+          allowedPaths: allowed_paths,
         }),
       );
     } catch (error) {

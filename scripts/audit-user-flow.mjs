@@ -425,21 +425,24 @@ async function auditFlow() {
       "finish_task trace did not preserve structured used_memory_paths",
     );
     assert(finish.growth?.enabled === true, "finish_task did not run automatic growth");
+    assert(finish.growth?.destination === "candidate_review", "automatic growth bypassed review queue");
+    assert(finish.growth?.candidate_path, "automatic growth did not create a candidate record");
+    assert(finish.growth?.review_path, "automatic growth did not create a promotion review record");
     assert(
-      Array.isArray(finish.growth.created_paths) && finish.growth.created_paths.length >= 2,
-      "automatic growth did not create reusable memory records",
+      Array.isArray(finish.growth.created_paths) && finish.growth.created_paths.length >= 3,
+      "automatic growth did not create operation, candidate, and review records",
     );
     assert(finish.compounding?.ok === true, "finish_task did not run automatic compounding");
     assert(
       Number(finish.compounding.promoted_count ?? 0) + Number(finish.compounding.updated_count ?? 0) >= 1,
-      "automatic compounding did not promote or update behavior rules",
+      "automatic compounding did not create or update behavior rule candidates",
     );
     checks.push(
       status(
         6,
         "finish_task媛 臾댁뾿???덇퀬 ?대뼡 湲곗뼲???ъ슜?덉쑝硫??⑥? ?쇱씠 萸붿? 湲곕줉?쒕떎.",
         "verified",
-        `Created ${finish.trace_path}; structured memory-use fields, auto-growth records ${finish.growth.created_paths.join(", ")}, and compounding cycle ${finish.compounding.cycle_path} are recorded.`,
+        `Created ${finish.trace_path}; structured memory-use fields, review-gated auto-growth records ${finish.growth.created_paths.join(", ")}, and compounding cycle ${finish.compounding.cycle_path} are recorded.`,
         null,
       ),
     );
@@ -504,7 +507,7 @@ async function auditFlow() {
         7,
         "諛섎났 ?먮떒/以묒슂 寃곌낵媛 Wiki, semantic job, correction, proposal ?깆쑝濡??뺣━?섏뼱 ?ㅼ쓬 ?몄뀡???댁뼱諛쏅뒗??",
         "verified",
-        `finish_task auto-created ${finish.growth.created_paths.join(", ")}; candidate ${candidate.candidate_path} was approved into ${review.accepted_path}, then retrieved by a later Context Pack.`,
+        `finish_task auto-created review-gated records ${finish.growth.created_paths.join(", ")}; candidate ${candidate.candidate_path} was approved into ${review.accepted_path}, then retrieved by a later Context Pack.`,
       ),
     );
 
