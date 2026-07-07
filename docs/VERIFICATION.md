@@ -24,6 +24,8 @@ npm run review:settle
 npm run review:settle:verify
 npm run task:lifecycle
 npm run task:lifecycle:verify
+npm run task:lifecycle:settle
+npm run task:lifecycle:settle:verify
 npm run sources:rag:seed
 npm run session:verify
 npm run session:promote
@@ -66,6 +68,10 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 `npm run task:lifecycle` writes `.dino/state/task_sessions.json` and `.dino/state/task_finish_grounding_classifications.jsonl`. It classifies active, stale-active, terminal, missing-trace, orphan-trace, partial-grounded, and ungrounded task finishes. The command fails when stale active tasks, missing terminal traces, orphan traces, task-id mismatches, or ungrounded finishes remain, because those block final readiness.
 
 `npm run task:lifecycle:verify` proves the lifecycle gate on clean and dirty temporary vaults.
+
+`npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when auto-close candidates remain. With `-- --apply`, it mutates only stale diagnostic hook/env probe tasks that were classified as `auto_close_candidate`, writes a grounded blocked trace, updates the task record, and leaves manual repair blockers untouched.
+
+`npm run task:lifecycle:settle:verify` proves that settlement auto-closes only diagnostic stale tasks and preserves manual stale tasks for repair.
 
 `npm run eval:rag` writes `.dino/state/rag_eval_status.json`. It evaluates the current vault against explicit `.dino/evaluations/rag-golden.json` when present, otherwise falls back to behavior/context golden sets. The report records memory-on versus memory-off proxy scores, expected path recall, required context term recall, provenance coverage, retrieval mode, hybrid ratio, failing cases, and caveats. This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet. A healthy report requires dense-vector hybrid retrieval unless a case explicitly disables that requirement.
 

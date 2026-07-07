@@ -254,6 +254,20 @@ function main() {
       args: ["dist/build-task-lifecycle.js"],
     }),
     runCheck({
+      id: "task_lifecycle_settlement_regression",
+      description:
+        "Task lifecycle settlement must auto-close only stale diagnostic tasks and leave manual repair blockers visible.",
+      command: node,
+      args: ["scripts/verify-task-lifecycle-settlement.mjs"],
+    }),
+    runCheck({
+      id: "task_lifecycle_settlement_current",
+      description:
+        "Current task lifecycle settlement must have no remaining auto-close candidates.",
+      command: node,
+      args: ["dist/build-task-lifecycle-settlement.js"],
+    }),
+    runCheck({
       id: "rag_eval_regression",
       description:
         "RAG evaluator must distinguish lexical fallback from dense hybrid retrieval and prove memory-on lift on a fixture.",
@@ -354,6 +368,18 @@ function main() {
         byId.task_lifecycle_regression.ok === true && byId.task_lifecycle_current.ok === true
           ? null
           : "task_lifecycle_finish_gate_failed",
+    },
+    {
+      requirement: "task_lifecycle_auto_settlement_applied",
+      ok:
+        byId.task_lifecycle_settlement_regression.ok === true &&
+        byId.task_lifecycle_settlement_current.ok === true,
+      evidence: "task_lifecycle_settlement_regression + task_lifecycle_settlement_current",
+      blocker:
+        byId.task_lifecycle_settlement_regression.ok === true &&
+        byId.task_lifecycle_settlement_current.ok === true
+          ? null
+          : "task_lifecycle_auto_settlement_failed",
     },
     {
       requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",

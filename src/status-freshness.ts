@@ -9,6 +9,7 @@ import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
+import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
 import { WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
 
 export const STATUS_FRESHNESS_VERSION = "status_freshness_v1";
@@ -141,6 +142,13 @@ const ARTIFACTS: ArtifactSpec[] = [
     label: "작업 세션 완료 게이트",
     artifactPath: TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
     sourceRoots: [".dino/tasks", ".dino/traces", ".dino/context-packs", ".dino/events"],
+    required: true,
+  },
+  {
+    id: "task_lifecycle_settlement",
+    label: "작업 세션 자동정리",
+    artifactPath: TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
+    sourceRoots: [".dino/tasks", ".dino/traces"],
     required: true,
   },
   {

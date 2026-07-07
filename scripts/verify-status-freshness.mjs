@@ -9,7 +9,7 @@ const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAn
   buildAndWriteStatusFreshness,
   buildStatusFreshness,
   MONITORING_STATUS_RELATIVE_PATH,
-}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { buildAndWriteReviewSettlements }, { buildAndWriteTaskLifecycleReport }, { buildAndWriteRagEvalReport }] = await Promise.all([
+}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { buildAndWriteReviewSettlements }, { buildAndWriteTaskLifecycleReport }, { settleTaskLifecycle }, { buildAndWriteRagEvalReport }] = await Promise.all([
   import(pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href),
   import(pathToFileURL(path.join(root, "dist", "graph-health.js")).href),
   import(pathToFileURL(path.join(root, "dist", "operations-index.js")).href),
@@ -18,6 +18,7 @@ const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAn
   import(pathToFileURL(path.join(root, "dist", "wiki-index.js")).href),
   import(pathToFileURL(path.join(root, "dist", "review-settlement.js")).href),
   import(pathToFileURL(path.join(root, "dist", "task-lifecycle.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "task-lifecycle-settlement.js")).href),
   import(pathToFileURL(path.join(root, "dist", "rag-eval.js")).href),
 ]);
 
@@ -102,6 +103,7 @@ async function refreshAllRequiredArtifacts(dataRoot) {
   await buildAndWriteGraphHealth(dataRoot);
   await buildAndWriteReviewSettlements(dataRoot);
   await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: 24 * 60 * 60 * 1000 });
+  await settleTaskLifecycle(dataRoot, { staleAfterMs: 24 * 60 * 60 * 1000 });
   await buildAndWriteRagEvalReport(dataRoot);
   await buildAndWriteFullMemoryAudit(dataRoot);
 }
