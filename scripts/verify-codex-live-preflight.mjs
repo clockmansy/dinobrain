@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ const codexConfigPath = path.resolve(
   process.env.DINOBRAIN_CODEX_CONFIG_PATH ?? path.join(homedir(), ".codex", "config.toml"),
 );
 const codexHooksPath = path.resolve(process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? path.join(homedir(), ".codex", "hooks.json"));
+const serverPath = path.join(root, "dist", "index.js");
 
 function argValue(name, fallback = "") {
   const prefix = `--${name}=`;
@@ -108,6 +110,99 @@ function parseUserHookRegistration() {
   };
 }
 
+function loadProcessDiagnostics() {
+  if (process.platform !== "win32") {
+    return {
+      ok: true,
+      platform: process.platform,
+      skipped: true,
+      reason: "process_diagnostics_windows_only",
+    };
+  }
+
+  const command = String.raw`
+$ErrorActionPreference = "Stop"
+$hooksPath = $env:DINOBRAIN_DIAG_HOOKS_PATH
+$serverPath = $env:DINOBRAIN_DIAG_SERVER_PATH
+$hooksItem = if (Test-Path -LiteralPath $hooksPath) { Get-Item -LiteralPath $hooksPath } else { $null }
+$serverItem = if (Test-Path -LiteralPath $serverPath) { Get-Item -LiteralPath $serverPath } else { $null }
+$codexProcesses = @(
+  Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessName -match "^(Codex|OpenAI\.Codex|codex)$" } |
+    ForEach-Object {
+      $start = $null
+      try { $start = $_.StartTime } catch {}
+      [ordered]@{
+        name = $_.ProcessName
+        id = $_.Id
+        start_time = if ($start) { $start.ToUniversalTime().ToString("o") } else { $null }
+        stale_for_hooks = [bool]($hooksItem -and $start -and $start -lt $hooksItem.LastWriteTime)
+      }
+    }
+)
+$serverNeedle = if ($serverItem) { $serverItem.FullName.ToLowerInvariant().Replace("/", "\") } else { "" }
+$mcpProcesses = @(
+  if ($serverNeedle) {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $cmd = [string]$_.CommandLine
+        $_.Name -match "^(?i:node(\.exe)?)$" -and $cmd.ToLowerInvariant().Replace("/", "\").Contains($serverNeedle)
+      } |
+      ForEach-Object {
+        $start = $null
+        try {
+          if ($_.CreationDate -is [datetime]) {
+            $start = $_.CreationDate
+          } elseif ($_.CreationDate) {
+            $start = [System.Management.ManagementDateTimeConverter]::ToDateTime($_.CreationDate)
+          }
+        } catch {}
+        [ordered]@{
+          name = $_.Name
+          id = $_.ProcessId
+          start_time = if ($start) { $start.ToUniversalTime().ToString("o") } else { $null }
+          stale_for_server = [bool]($serverItem -and $start -and $start -lt $serverItem.LastWriteTime)
+        }
+      }
+  }
+)
+[ordered]@{
+  ok = $true
+  platform = "win32"
+  hooks_last_write = if ($hooksItem) { $hooksItem.LastWriteTimeUtc.ToString("o") } else { $null }
+  server_last_write = if ($serverItem) { $serverItem.LastWriteTimeUtc.ToString("o") } else { $null }
+  codex_process_count = $codexProcesses.Count
+  stale_codex_count = @($codexProcesses | Where-Object { $_.stale_for_hooks }).Count
+  mcp_process_count = $mcpProcesses.Count
+  stale_mcp_count = @($mcpProcesses | Where-Object { $_.stale_for_server }).Count
+  codex_processes = $codexProcesses
+  mcp_processes = $mcpProcesses
+  approval_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-codex-hook-approval.ps1 -RestartStaleCodex -RestartStaleMcp"
+} | ConvertTo-Json -Depth 8 -Compress
+`;
+
+  try {
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", command], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DINOBRAIN_DIAG_HOOKS_PATH: codexHooksPath,
+        DINOBRAIN_DIAG_SERVER_PATH: serverPath,
+      },
+      windowsHide: true,
+    });
+    return JSON.parse(output);
+  } catch (error) {
+    return {
+      ok: false,
+      platform: "win32",
+      reason: "process_diagnostics_failed",
+      error: String(error?.message ?? error).slice(0, 500),
+    };
+  }
+}
+
 function loadLiveEvents(since) {
   const eventsDir = path.join(dataRoot, ".dino", "events");
   return filesUnder(eventsDir, ".jsonl")
@@ -145,6 +240,7 @@ function main() {
 
   const hookRuntime = parseTomlFeatureHooks();
   const userHook = parseUserHookRegistration();
+  const processDiagnostics = loadProcessDiagnostics();
   const events = loadLiveEvents(since);
   const reports = loadLiveReports(since);
   const submitted = events.find(
@@ -192,6 +288,7 @@ function main() {
     event_count_after_since: events.length,
     report_count_after_since: reports.length,
     required_launch_kind: "codex_desktop",
+    process_diagnostics: processDiagnostics,
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -201,7 +298,9 @@ function main() {
       : !userHook.ok
         ? userHook.reason
         : !submitted
-          ? `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`
+        ? processDiagnostics.stale_codex_count > 0
+          ? `no live Codex desktop UserPromptSubmit preflight event found; ${processDiagnostics.stale_codex_count} Codex process(es) started before hooks.json was updated. Run: ${processDiagnostics.approval_command}`
+          : `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`
           : !completed
             ? "no live codex_preflight_completed event found with matching hook_run_id and prompt_hash"
             : "no matching live hook report with hook_run_id, prompt_hash, context paths, and existing Context Pack trace found";

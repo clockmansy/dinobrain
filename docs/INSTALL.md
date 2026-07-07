@@ -183,6 +183,13 @@ Codex requires you to review and trust hooks before they run in a live session. 
 
 If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd` from the install folder. If the probe passes but live Codex prompts are silent, open `/hooks` in Codex, trust the DinoBrain `UserPromptSubmit` hook, then start a new thread.
 
+From the app repo, the same diagnose and approval flow is:
+
+```powershell
+npm run codex:hooks:diagnose
+npm run codex:hooks:approval
+```
+
 To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
 
 ```powershell
