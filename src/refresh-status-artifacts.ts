@@ -1,6 +1,7 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { buildAndWriteBehaviorRecallReport } from "./behavior-recall.js";
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
@@ -77,6 +78,9 @@ export async function refreshStatusArtifacts(
 
   const sourceLineage = await buildAndWriteSourceLineageReport(dataRoot);
   steps.push({ id: "source_lineage", status: sourceLineage.report.status, path: sourceLineage.path });
+
+  const behaviorRecall = await buildAndWriteBehaviorRecallReport(dataRoot);
+  steps.push({ id: "behavior_recall", status: behaviorRecall.report.status, path: behaviorRecall.path });
 
   const audit = await buildAndWriteFullMemoryAudit(dataRoot);
   steps.push({ id: "full_memory_audit", status: audit.report.status, path: audit.statusPath });

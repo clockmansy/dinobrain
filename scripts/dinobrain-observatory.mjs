@@ -396,6 +396,47 @@ async function readSourceLineageStatus() {
   };
 }
 
+async function readBehaviorRecallStatus() {
+  const statusPath = path.join(dataRoot, ".dino", "state", "behavior_recall_status.json");
+  const status = await readJson(statusPath);
+  if (status && typeof status === "object") {
+    return {
+      ok: true,
+      _path: rel(statusPath),
+      ...status,
+    };
+  }
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    generated_at: null,
+    latest_verified_at: null,
+    ledger_path: ".dino/state/behavior_recall_audit.jsonl",
+    counts: {
+      entries: 0,
+      malformed_entries: 0,
+      completion: 0,
+      handoff: 0,
+      error: 0,
+      direction_change: 0,
+      correction: 0,
+      performed: 0,
+      skipped: 0,
+      not_applicable: 0,
+      correction_conflicts: 0,
+      correction_records: 0,
+      correction_records_without_recall: 0,
+      blockers: 0,
+    },
+    latest_entries: [],
+    findings: [],
+    warnings: ["behavior_recall_status_missing"],
+    visible_status: "Behavior recall status missing",
+    _path: rel(statusPath),
+  };
+}
+
 async function readOsV2Status() {
   const [gates, lifecycleReports, behaviorEvals, provenance, sourceChunks] = await Promise.all([
     readJsonDir(".dino/gates", 20),
@@ -780,13 +821,14 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecall, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
     readNativeInstructionAuthority(),
     readSourceLineageStatus(),
+    readBehaviorRecallStatus(),
     readLifecycleQueue(),
     readSyncRisk(),
     readOsV2Status(),
@@ -799,6 +841,7 @@ async function state() {
       graph_health_score: graphHealth.score,
       native_instruction_authority_status: nativeAuthority.status,
       source_lineage_status: sourceLineage.status,
+      behavior_recall_status: behaviorRecall.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
       os_v2_status: osV2.status,
@@ -806,6 +849,7 @@ async function state() {
     graph_health: graphHealth,
     native_instruction_authority: nativeAuthority,
     source_lineage: sourceLineage,
+    behavior_recall: behaviorRecall,
     lifecycle,
     sync_risk: syncRisk,
     os_v2: osV2,
@@ -1239,6 +1283,7 @@ function html() {
     <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
     <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
     <div id="chip-source" class="chip"><strong>Sources</strong><span>--</span></div>
+    <div id="chip-recall" class="chip"><strong>Recall</strong><span>--</span></div>
     <div id="chip-graph" class="chip"><strong>Graph Health</strong><span>--</span></div>
     <div id="chip-sync" class="chip"><strong>GitHub Sync</strong><span>--</span></div>
   </nav>
@@ -1298,6 +1343,11 @@ function html() {
         <div id="source-lineage-findings" class="list"></div>
       </div>
       <div class="block">
+        <h2>Behavior Recall</h2>
+        <div id="behavior-recall" class="kv"></div>
+        <div id="behavior-recall-findings" class="list"></div>
+      </div>
+      <div class="block">
         <h2>Sync Risk</h2>
         <div id="sync-risk" class="kv"></div>
       </div>
@@ -1339,6 +1389,8 @@ function html() {
     const lifecycleRetryEl = document.getElementById("lifecycle-retry");
     const sourceLineageEl = document.getElementById("source-lineage");
     const sourceLineageFindingsEl = document.getElementById("source-lineage-findings");
+    const behaviorRecallEl = document.getElementById("behavior-recall");
+    const behaviorRecallFindingsEl = document.getElementById("behavior-recall-findings");
     const syncRiskEl = document.getElementById("sync-risk");
     const osV2El = document.getElementById("os-v2");
     const chips = {
@@ -1348,6 +1400,7 @@ function html() {
       read: document.getElementById("chip-read"),
       lifecycle: document.getElementById("chip-lifecycle"),
       source: document.getElementById("chip-source"),
+      recall: document.getElementById("chip-recall"),
       graph: document.getElementById("chip-graph"),
       sync: document.getElementById("chip-sync"),
     };
@@ -1806,6 +1859,7 @@ function html() {
       const graphHealth = data.graph_health || {};
       const lifecycle = data.lifecycle || { counts: {} };
       const sourceLineage = data.source_lineage || { counts: {} };
+      const behaviorRecall = data.behavior_recall || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
       const osV2 = data.os_v2 || { counts: {} };
@@ -1844,6 +1898,13 @@ function html() {
         sourceLineage.status || "--",
         "verified " + (sourceLineage.counts?.verified_source_chunks ?? 0) + " / blockers " + (sourceLineage.counts?.blockers ?? 0),
         healthTone(sourceLineage.status),
+      );
+      renderChip(
+        chips.recall,
+        "Recall",
+        behaviorRecall.status || "--",
+        "entries " + (behaviorRecall.counts?.entries ?? 0) + " / blockers " + (behaviorRecall.counts?.blockers ?? 0),
+        healthTone(behaviorRecall.status),
       );
       renderChip(
         chips.graph,
@@ -1924,6 +1985,24 @@ function html() {
           <div class="item"><code>\${esc(finding.signal || "")}</code><div class="muted">\${esc(compact((finding.path || "") + " / " + (finding.reason || ""), 160))}</div></div>
         \`).join("")
         : '<p class="muted">No source lineage blockers.</p>';
+      kv(behaviorRecallEl, [
+        ["status", behaviorRecall.status],
+        ["entries", behaviorRecall.counts?.entries],
+        ["completion", behaviorRecall.counts?.completion],
+        ["handoff", behaviorRecall.counts?.handoff],
+        ["error", behaviorRecall.counts?.error],
+        ["direction change", behaviorRecall.counts?.direction_change],
+        ["correction", behaviorRecall.counts?.correction],
+        ["performed", behaviorRecall.counts?.performed],
+        ["conflicts", behaviorRecall.counts?.correction_conflicts],
+        ["blockers", behaviorRecall.counts?.blockers],
+        ["path", behaviorRecall._path],
+      ]);
+      behaviorRecallFindingsEl.innerHTML = Array.isArray(behaviorRecall.findings) && behaviorRecall.findings.length
+        ? behaviorRecall.findings.slice(0, 6).map((finding) => \`
+          <div class="item"><code>\${esc(finding.signal || "")}</code><div class="muted">\${esc(compact((finding.path || "") + " / " + (finding.reason || ""), 160))}</div></div>
+        \`).join("")
+        : '<p class="muted">No behavior recall blockers.</p>';
       kv(syncRiskEl, [
         ["status", syncRisk.status],
         ["branch", syncRisk.branch],

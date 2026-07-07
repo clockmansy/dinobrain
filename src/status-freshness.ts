@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH, BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
@@ -122,6 +123,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
       NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
       SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
+      BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
       TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
@@ -154,6 +156,21 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: ["20_Wiki", "30_Sources", ".dino/provenance", "40_Projects", "50_Instances/accepted"],
     required: true,
     authorityRank: 93,
+  },
+  {
+    id: "behavior_recall",
+    label: "behavior recall ledger",
+    artifactPath: BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH,
+      ".dino/traces",
+      ".dino/tasks",
+      "50_Instances/accepted",
+      ".dino/quarantine",
+      "80_Review_Queue/behavior-conflicts",
+    ],
+    required: true,
+    authorityRank: 92,
   },
   {
     id: "wiki_index",

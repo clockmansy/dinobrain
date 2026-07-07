@@ -8,6 +8,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import {
+  appendBehaviorRecallEntry,
+  buildFinishBehaviorRecallEntry,
+  recordFeedbackCorrectionRecall,
+} from "./behavior-recall.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import { runCompoundingCycle } from "./compounding.js";
 import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
@@ -1425,12 +1430,30 @@ server.registerTool(
     await upsertOperationTrace(DATA_ROOT, traceRelativePath, trace);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
     await upsertSqliteOperationTrace(DATA_ROOT, traceEntryFromRecord(traceRelativePath, trace));
+    const behaviorRecall = await appendBehaviorRecallEntry(
+      DATA_ROOT,
+      buildFinishBehaviorRecallEntry({
+        taskId: task_id,
+        outcome,
+        summary,
+        decisions,
+        nextSteps: next_steps,
+        usedMemoryPaths: normalizedUsedMemoryPaths,
+        contextPackPaths: normalizedContextPackPaths,
+        tracePath: traceRelativePath,
+        finishedAt,
+      }),
+    );
     const eventLog = await appendEvent({
       event: "task_finished",
       task_id,
       outcome,
       at: finishedAt,
       trace_path: relDataPath(tracePath),
+      behavior_recall_ledger_path: behaviorRecall.ledger_path,
+      behavior_recall_id: behaviorRecall.entry.recall_id,
+      behavior_recall_trigger: behaviorRecall.entry.trigger_type,
+      behavior_recall_decision_status: behaviorRecall.entry.decision_status,
       used_memory_paths: normalizedUsedMemoryPaths,
       context_pack_paths: normalizedContextPackPaths,
       session_archive_paths: normalizedSessionArchivePaths,
@@ -1500,6 +1523,12 @@ server.registerTool(
       task_path: taskRelativePath,
       trace_path: traceRelativePath,
       event_log: eventLog,
+      behavior_recall: {
+        ledger_path: behaviorRecall.ledger_path,
+        recall_id: behaviorRecall.entry.recall_id,
+        trigger_type: behaviorRecall.entry.trigger_type,
+        decision_status: behaviorRecall.entry.decision_status,
+      },
       growth,
       compounding,
       auto_sync: autoSync,
@@ -1853,12 +1882,25 @@ server.registerTool(
     await writeJson(acceptedPath, record);
     await invalidateWikiIndex(DATA_ROOT);
     await invalidateSqliteWikiShard(DATA_ROOT);
+    const behaviorRecall = await recordFeedbackCorrectionRecall(DATA_ROOT, {
+      feedbackId,
+      correction,
+      appliesTo: applies_to,
+      taskId: task_id ?? null,
+      acceptedPath: relDataPath(acceptedPath),
+      createdAt,
+    });
     const eventLog = await appendEvent({
       event: "feedback_correction_accepted",
       feedback_id: feedbackId,
       at: createdAt,
       accepted_path: relDataPath(acceptedPath),
       task_id: task_id ?? null,
+      behavior_recall_ledger_path: behaviorRecall.ledger_path,
+      behavior_recall_id: behaviorRecall.entry.recall_id,
+      conflicting_memory_paths: behaviorRecall.conflicting_memory_paths,
+      quarantine_paths: behaviorRecall.quarantine_paths,
+      review_path: behaviorRecall.review_path,
       os_version: DINOBRAIN_OS_VERSION,
     });
     return jsonResult({
@@ -1866,6 +1908,13 @@ server.registerTool(
       feedback_id: feedbackId,
       accepted_path: relDataPath(acceptedPath),
       event_log: eventLog,
+      behavior_recall: {
+        ledger_path: behaviorRecall.ledger_path,
+        recall_id: behaviorRecall.entry.recall_id,
+        conflicting_memory_paths: behaviorRecall.conflicting_memory_paths,
+        quarantine_paths: behaviorRecall.quarantine_paths,
+        review_path: behaviorRecall.review_path,
+      },
       next_context_effect: "included_in_default_context_packs_after_index_rebuild",
     });
   },

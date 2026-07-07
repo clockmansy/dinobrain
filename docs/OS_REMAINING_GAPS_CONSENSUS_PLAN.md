@@ -34,6 +34,7 @@ Implementation progress:
 - 2026-07-07: P0-05 native instruction authority scanner, `verify:native-authority`, health/status refresh wiring, and Observatory `/api/state` exposure were added. Current scanned native surfaces report `healthy`; completion remains blocked by other gates.
 - 2026-07-07: Final reviewer objections for native rules coverage and RAG scaffold-vs-completion honesty were integrated. `~/.codex/rules/*.rules` and safe-readable Codex/Claude custom instruction surfaces are now in scope, and `verify:goal` no longer counts text-hash deterministic RAG canaries as completion-grade semantic RAG evidence.
 - 2026-07-07: P0-06 source/chunk/claim lineage was promoted from document-only criteria into `status:source-lineage`, `verify:source-lineage`, health/freshness artifacts, Observatory visibility, and `verify:goal` hard-gate wiring. Anchor-only URL records are visible but cannot satisfy factual claim support.
+- 2026-07-07: P1-09 behavior recall was promoted into a ledger/status gate. `finish_task` writes recall entries for completion/handoff/error/direction-change, `record_feedback_correction` writes correction recall plus conflict quarantine/review records, and `verify:goal` now checks `behavior_recall_ledger_and_feedback_writeback`.
 - 2026-07-07: Ten independent reviewers returned explicit `AGREE` after revisions. Empty `completed=null` subagent runs were not counted.
 
 ## Completion Bar
@@ -235,6 +236,8 @@ Acceptance tests:
 - A user correction is retrieved in a later relevant Context Pack.
 - A contradictory older behavior memory is held, merged, or demoted.
 - Memory-on answer behavior beats memory-off on representative non-self-referential cases.
+- `npm run verify:behavior-recall` must pass its regression fixtures.
+- `npm run status:behavior-recall` must report `healthy` on the real data vault before `verify:goal` can pass the behavior recall requirement.
 
 ### P1-10 Real Semantic Retrieval And Answer-Quality Evaluation
 

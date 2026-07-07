@@ -206,6 +206,8 @@ function nextActionFor(requirementEvidence) {
       return "Inspect .dino/state/native_instruction_authority.json, repair conflicting AGENTS/Codex/Claude/hook instructions, then rerun npm run status:native-authority and npm run verify:goal.";
     case "source_lineage_not_healthy":
       return "Run npm run status:source-lineage, repair missing source chunks, provenance links, verification_status, or dangling claim_paths, then rerun npm run verify:goal.";
+    case "behavior_recall_not_healthy":
+      return "Run npm run status:behavior-recall, repair missing/malformed recall ledger entries or correction conflict quarantine records, then rerun npm run verify:goal.";
     case "task_lifecycle_finish_gate_failed":
       return "Run npm run task:lifecycle and inspect .dino/state/task_sessions.json plus .dino/state/task_finish_grounding_classifications.jsonl, then repair or settle missing terminal traces before rerunning npm run verify:goal.";
     case "task_lifecycle_auto_settlement_failed":
@@ -315,6 +317,20 @@ function main() {
         "Current data vault must distinguish internal behavior memory from factual claims and require verified source chunk plus provenance support for source-backed claims.",
       command: node,
       args: ["dist/build-source-lineage-status.js"],
+    }),
+    runCheck({
+      id: "behavior_recall_regression",
+      description:
+        "Behavior recall ledger must write completion, handoff, error, direction-change, and correction entries, retrieve later corrections, and quarantine conflicting old behavior memory.",
+      command: node,
+      args: ["scripts/verify-behavior-recall.mjs"],
+    }),
+    runCheck({
+      id: "behavior_recall_current",
+      description:
+        "Current data vault must have a well-formed behavior recall ledger and correction conflict quarantine evidence when corrections exist.",
+      command: node,
+      args: ["dist/build-behavior-recall-status.js"],
     }),
     runCheck({
       id: "review_settlement_regression",
@@ -501,6 +517,20 @@ function main() {
         byId.source_lineage_current.parsed?.status === "healthy"
           ? null
           : "source_lineage_not_healthy",
+    },
+    {
+      requirement: "behavior_recall_ledger_and_feedback_writeback",
+      ok:
+        byId.behavior_recall_regression.ok === true &&
+        byId.behavior_recall_current.ok === true &&
+        byId.behavior_recall_current.parsed?.status === "healthy",
+      evidence: "behavior_recall_regression + behavior_recall_current.status",
+      blocker:
+        byId.behavior_recall_regression.ok === true &&
+        byId.behavior_recall_current.ok === true &&
+        byId.behavior_recall_current.parsed?.status === "healthy"
+          ? null
+          : "behavior_recall_not_healthy",
     },
     {
       requirement: "review_queue_and_semantic_job_settlement",

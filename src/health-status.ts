@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
@@ -85,6 +86,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     id: "source_lineage",
     artifactPath: SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
     authorityRank: 93,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "behavior_recall",
+    artifactPath: BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
+    authorityRank: 92,
     healthyStatuses: ["healthy"],
   },
   {

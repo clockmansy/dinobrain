@@ -138,6 +138,10 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run verify:source-lineage` proves the source/chunk/claim lineage gate with fixtures. It accepts a verified source chunk plus provenance supporting a wiki claim and rejects anchor-only support, missing provenance, dangling claim paths, missing verification status, missing source body, and missing source URI.
 
+`npm run status:behavior-recall` writes `.dino/state/behavior_recall_status.json` from `.dino/state/behavior_recall_audit.jsonl`. The ledger records completion, handoff, error, direction-change, and correction recall decisions with `performed` / `skipped` / `not_applicable`, evidence paths, conflicting memories, and follow-up actions.
+
+`npm run verify:behavior-recall` proves the behavior recall gate with fixtures. It writes all trigger types, rejects malformed ledger rows, proves a later Context Pack retrieves a direct user correction, and verifies that a contradictory older behavior memory is quarantined and queued for review instead of remaining equal-weight retrievable memory.
+
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 
 `npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data. The fixture explicitly opts in to conditional push with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and `DINOBRAIN_AUTO_SYNC_PUSH=1`; the installed public-safe default keeps both flags at `0`.
