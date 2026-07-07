@@ -82,6 +82,18 @@ function hasLiveMemoryEvidence(check) {
   );
 }
 
+function hasMcpPreflightEvidence(check) {
+  const parsed = check.parsed;
+  return Boolean(
+    parsed?.ok === true &&
+      parsed?.proof?.task_id &&
+      parsed?.proof?.trace_path &&
+      parsed?.proof?.context_pack_trace &&
+      parsed?.proof?.context_item_count > 0 &&
+      parsed?.proof?.event_order_verified === true,
+  );
+}
+
 function hasClosedLoopEvidence(check) {
   const parsed = check.parsed;
   return Boolean(
@@ -104,6 +116,13 @@ function main() {
         "Real Codex Desktop prompt must dispatch DinoBrain UserPromptSubmit before response and write live hook evidence.",
       command: node,
       args: ["scripts/verify-codex-live-preflight.mjs", "--require-snippet=false"],
+    }),
+    runCheck({
+      id: "codex_mcp_pre_response",
+      description:
+        "Real Codex app thread must run DinoBrain start_task, Context Pack retrieval, and finish_task before substantive response when injected hook context is absent.",
+      command: node,
+      args: ["scripts/verify-codex-mcp-preflight-proof.mjs"],
     }),
     runCheck({
       id: "closed_loop_fixture_push",
@@ -134,18 +153,29 @@ function main() {
   ];
 
   const byId = Object.fromEntries(checks.map((check) => [check.id, check]));
+  const liveMemoryEvidence = hasLiveMemoryEvidence(byId.codex_live_pre_response);
+  const mcpPreflightEvidence = hasMcpPreflightEvidence(byId.codex_mcp_pre_response);
   const requirementEvidence = [
     {
-      requirement: "pre_response_os_for_real_codex_desktop",
+      requirement: "pre_response_os_for_real_codex_desktop_hook",
       ok: byId.codex_live_pre_response.ok === true,
       evidence: "codex_live_pre_response",
       blocker: byId.codex_live_pre_response.ok ? null : classifyLiveBlocker(byId.codex_live_pre_response),
     },
     {
+      requirement: "pre_response_os_for_real_codex_session",
+      ok: byId.codex_live_pre_response.ok === true || mcpPreflightEvidence,
+      evidence: "codex_live_pre_response || codex_mcp_pre_response",
+      blocker:
+        byId.codex_live_pre_response.ok === true || mcpPreflightEvidence
+          ? null
+          : "missing_real_codex_session_preflight",
+    },
+    {
       requirement: "memory_context_visible_before_agent_work",
-      ok: hasLiveMemoryEvidence(byId.codex_live_pre_response),
-      evidence: "codex_live_pre_response.live_report.context_paths",
-      blocker: hasLiveMemoryEvidence(byId.codex_live_pre_response) ? null : "missing_live_context_paths",
+      ok: liveMemoryEvidence || mcpPreflightEvidence,
+      evidence: "codex_live_pre_response.live_report.context_paths || codex_mcp_pre_response.proof.context_paths",
+      blocker: liveMemoryEvidence || mcpPreflightEvidence ? null : "missing_pre_response_context_paths",
     },
     {
       requirement: "finish_growth_review_and_github_push_loop",
