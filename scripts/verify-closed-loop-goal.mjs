@@ -90,6 +90,9 @@ function classifyLiveBlocker(check) {
   const hasRunnableHook = parsed.user_prompt_hook?.ok === true || parsed.managed_prompt_hook?.ok === true;
   if (!hasRunnableHook) return "user_prompt_hook_not_registered";
   if (parsed.hook_runtime?.ok !== true) return "codex_hooks_runtime_not_enabled";
+  if (!parsed.submitted_event && parsed.stale_live_proof?.present === true) {
+    return "stale_live_codex_desktop_proof_present";
+  }
   if (!parsed.submitted_event && parsed.managed_prompt_hook?.ok === true) {
     return "managed_prompt_hook_seen_but_no_live_event";
   }
@@ -236,6 +239,8 @@ function nextActionFor(requirementEvidence) {
       return "The DinoBrain UserPromptSubmit hook is registered, but no persisted trusted hash/state is visible. In Codex, run /hooks, trust the DinoBrain hook for the current command hash, paste the live-proof prompt into a fresh Codex Desktop workspace thread, then rerun npm run verify:goal.";
     case "managed_prompt_hook_seen_but_no_live_event":
       return "The managed DinoBrain hook is installed, but no live Codex Desktop event has appeared yet. Fully restart Codex, paste the live-proof prompt into a fresh Codex Desktop workspace thread, then rerun npm run verify:goal.";
+    case "stale_live_codex_desktop_proof_present":
+      return "A real Codex Desktop hook proof exists, but it is older than the latest hook/server update. Run npm run codex:live-proof, paste the copied prompt into a fresh Codex Desktop workspace thread, wait for the hook report, then rerun npm run verify:goal.";
     case "fresh_codex_thread_seen_but_no_hook_event":
       return "A Codex thread was created after hooks.json, but no DinoBrain UserPromptSubmit event was written. Do not use app-thread delegation as proof; open a trusted Codex Desktop workspace thread, approve the DinoBrain hook in /hooks if prompted, paste the live-proof prompt manually, then rerun npm run verify:goal.";
     case "user_prompt_hook_not_registered":

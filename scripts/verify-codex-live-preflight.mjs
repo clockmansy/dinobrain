@@ -396,6 +396,69 @@ function loadLiveReports(since) {
     .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
 }
 
+function findLatestCompleteLiveProof(events, reports, snippet) {
+  const submittedEvents = events
+    .filter(
+      (event) =>
+        event.event === "codex_prompt_submitted" &&
+        event.source === "codex_hook" &&
+        isCodexDesktopLaunch(event) &&
+        includesSnippet(event.prompt_preview, snippet),
+    )
+    .sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? "")));
+
+  for (const submitted of submittedEvents) {
+    const completed = events.find(
+      (event) =>
+        event.event === "codex_preflight_completed" &&
+        event.source === "codex_hook" &&
+        event.hook_run_id === submitted.hook_run_id &&
+        event.prompt_hash === submitted.prompt_hash &&
+        isCodexDesktopLaunch(event) &&
+        String(event.at ?? "") >= String(submitted.at ?? ""),
+    );
+    if (!completed) continue;
+
+    const report = reports.find(
+      (item) =>
+        item.event === "codex_preflight_completed" &&
+        item.hook_run_id === completed.hook_run_id &&
+        item.prompt_hash === completed.prompt_hash &&
+        isCodexDesktopLaunch(item) &&
+        String(item.at ?? "") >= String(completed.at ?? "") &&
+        typeof item.context_pack_trace === "string" &&
+        existsSync(path.join(dataRoot, item.context_pack_trace.replace(/\//g, path.sep))) &&
+        Array.isArray(item.context_paths) &&
+        item.context_paths.length > 0,
+    );
+    if (report) return { submitted, completed, report };
+  }
+
+  return null;
+}
+
+function summarizeLiveProof(proof, since) {
+  if (!proof) return null;
+  const completedAt = new Date(String(proof.completed.at ?? ""));
+  return {
+    present: true,
+    submitted_at: proof.submitted.at ?? null,
+    completed_at: proof.completed.at ?? null,
+    report_at: proof.report.at ?? null,
+    stale_since: since.toISOString(),
+    stale_for_current_window: Number.isFinite(completedAt.getTime()) ? completedAt < since : null,
+    hook_run_id: proof.completed.hook_run_id ?? null,
+    prompt_hash: proof.completed.prompt_hash ?? null,
+    prompt_preview: String(proof.submitted.prompt_preview ?? "").slice(0, 240),
+    task_id: proof.completed.task_id ?? proof.report.task_id ?? null,
+    context_pack_trace: proof.report.context_pack_trace ?? proof.completed.context_pack_trace ?? null,
+    context_item_count: proof.report.context_item_count ?? proof.completed.context_item_count ?? null,
+    context_paths: Array.isArray(proof.report.context_paths) ? proof.report.context_paths.slice(0, 20) : [],
+    report_path: proof.report._path ?? null,
+    event_path: proof.completed._path ?? proof.submitted._path ?? null,
+  };
+}
+
 function main() {
   const snippet = argValue("snippet", process.env.DINOBRAIN_LIVE_PREFLIGHT_SNIPPET ?? "");
   const since = sinceDate(argValue("since", process.env.DINOBRAIN_LIVE_PREFLIGHT_SINCE ?? ""));
@@ -440,6 +503,10 @@ function main() {
       item.context_paths.length > 0,
   );
   const hookRegistered = Boolean(userHook.ok || managedHook.ok);
+  const staleProof =
+    submitted && completed && report
+      ? null
+      : summarizeLiveProof(findLatestCompleteLiveProof(loadLiveEvents(new Date(0)), loadLiveReports(new Date(0)), snippet), since);
 
   const result = {
     ok: Boolean(hookRuntime.ok && hookRegistered && submitted && completed && report),
@@ -456,6 +523,7 @@ function main() {
     event_count_after_since: events.length,
     report_count_after_since: reports.length,
     required_launch_kind: "codex_desktop",
+    stale_live_proof: staleProof?.stale_for_current_window ? staleProof : null,
     process_diagnostics: processDiagnostics,
     thread_diagnostics: threadDiagnostics,
   };
@@ -468,7 +536,9 @@ function main() {
         ? userHook.reason
       : !submitted
         ? managedHook.ok
-          ? `DinoBrain managed hook is registered through requirements.toml, but no live Codex desktop UserPromptSubmit preflight event was found. Restart Codex so it reloads managed requirements, paste the proof prompt into a fresh Codex Desktop workspace thread, then rerun this verifier.`
+          ? staleProof?.stale_for_current_window
+            ? `DinoBrain managed hook is registered and an older live Codex desktop preflight proof exists at ${staleProof.completed_at}, but no proof was found after ${since.toISOString()}. Paste the proof prompt into a fresh Codex Desktop workspace thread after the latest hook/server update, then rerun this verifier.`
+            : `DinoBrain managed hook is registered through requirements.toml, but no live Codex desktop UserPromptSubmit preflight event was found. Restart Codex so it reloads managed requirements, paste the proof prompt into a fresh Codex Desktop workspace thread, then rerun this verifier.`
           : userHook.trust_review_likely_required
           ? `DinoBrain hook is registered but no persisted trusted_hash/state is visible in hooks.json. Codex skips non-managed command hooks until /hooks records trust for the current command hash; approve the DinoBrain UserPromptSubmit hook in /hooks, then paste the proof prompt into a fresh Codex Desktop workspace thread.`
           : processDiagnostics.stale_codex_count > 0
