@@ -20,6 +20,8 @@ npm run audit:full-memory
 npm run audit:full-memory:verify
 npm run status:freshness
 npm run status:freshness:verify
+npm run review:settle
+npm run review:settle:verify
 npm run sources:rag:seed
 npm run session:verify
 npm run session:promote
@@ -49,9 +51,13 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
 
-`npm run status:freshness` writes `.dino/state/monitoring_status.json`. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, and graph-health artifact are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
+`npm run status:freshness` writes `.dino/state/monitoring_status.json`. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, and semantic job settlement are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
 
 `npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
+
+`npm run review:settle` writes `.dino/state/wiki-review-queue.json` and `.dino/state/semantic_jobs.json`. It does not auto-approve memory. It classifies every candidate/review item as closed, manual semantic review, auto-compounded behavior hold, legacy unreviewed hold, evidence repair, missing review, missing candidate, or unclassified. The command succeeds when open backlog remains but every residual item has a decision class, reason, evidence path, owner, and next action.
+
+`npm run review:settle:verify` proves this classification on a temporary vault with behavior-rule, legacy, missing-evidence, missing-review, missing-candidate, and closed-review fixtures.
 
 `npm run verify:goal` includes both the regression verifiers and current-vault `audit:full-memory` / `status:freshness` gates, so final closed-loop readiness cannot bypass P0-01 or P0-02.
 

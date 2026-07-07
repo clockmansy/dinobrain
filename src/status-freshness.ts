@@ -5,6 +5,7 @@ import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
+import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
 
@@ -119,6 +120,20 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: ["20_Wiki", "30_Sources", "50_Instances/accepted", "50_Instances/candidates", "80_Review_Queue", ".dino/index"],
     required: true,
   },
+  {
+    id: "review_queue_settlement",
+    label: "리뷰 큐 정산",
+    artifactPath: REVIEW_QUEUE_STATUS_RELATIVE_PATH,
+    sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
+    required: true,
+  },
+  {
+    id: "semantic_jobs",
+    label: "시맨틱 작업 정산",
+    artifactPath: SEMANTIC_JOBS_RELATIVE_PATH,
+    sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "50_Instances/accepted"],
+    required: true,
+  },
 ];
 
 function nowIso(date: Date): string {
@@ -131,7 +146,7 @@ function isIgnoredDirectory(name: string): boolean {
 
 function isGeneratedStatusArtifact(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
-  return normalized === MONITORING_STATUS_RELATIVE_PATH || normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/full_memory_`);
+  return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`);
 }
 
 function toMillis(value: string | null): number | null {

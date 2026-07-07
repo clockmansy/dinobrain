@@ -9,13 +9,14 @@ const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAn
   buildAndWriteStatusFreshness,
   buildStatusFreshness,
   MONITORING_STATUS_RELATIVE_PATH,
-}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }] = await Promise.all([
+}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { buildAndWriteReviewSettlements }] = await Promise.all([
   import(pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href),
   import(pathToFileURL(path.join(root, "dist", "graph-health.js")).href),
   import(pathToFileURL(path.join(root, "dist", "operations-index.js")).href),
   import(pathToFileURL(path.join(root, "dist", "status-freshness.js")).href),
   import(pathToFileURL(path.join(root, "dist", "sqlite-shards.js")).href),
   import(pathToFileURL(path.join(root, "dist", "wiki-index.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "review-settlement.js")).href),
 ]);
 
 function assert(condition, message) {
@@ -73,6 +74,7 @@ async function refreshAllRequiredArtifacts(dataRoot) {
   await buildAndWriteOperationsIndex(dataRoot);
   await buildAndWriteSqliteShards(dataRoot);
   await buildAndWriteGraphHealth(dataRoot);
+  await buildAndWriteReviewSettlements(dataRoot);
   await buildAndWriteFullMemoryAudit(dataRoot);
 }
 

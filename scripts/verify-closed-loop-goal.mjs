@@ -226,6 +226,20 @@ function main() {
       args: ["dist/build-status-freshness.js"],
     }),
     runCheck({
+      id: "review_settlement_regression",
+      description:
+        "Review queue settlement must classify residual promotion items with reason, evidence, owner, and next action.",
+      command: node,
+      args: ["scripts/verify-review-settlement.mjs"],
+    }),
+    runCheck({
+      id: "review_settlement_current",
+      description:
+        "Current review queue and semantic jobs must have zero unclassified open items, even when backlog remains.",
+      command: node,
+      args: ["dist/build-review-settlement.js"],
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -294,6 +308,15 @@ function main() {
         byId.status_freshness_regression.ok === true && byId.status_freshness_current.ok === true
           ? null
           : "status_freshness_failed",
+    },
+    {
+      requirement: "review_queue_and_semantic_job_settlement",
+      ok: byId.review_settlement_regression.ok === true && byId.review_settlement_current.ok === true,
+      evidence: "review_settlement_regression + review_settlement_current",
+      blocker:
+        byId.review_settlement_regression.ok === true && byId.review_settlement_current.ok === true
+          ? null
+          : "review_settlement_failed",
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",

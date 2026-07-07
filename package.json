@@ -15,6 +15,8 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "status:freshness": "node dist/build-status-freshness.js",
     "status:freshness:verify": "node scripts/verify-status-freshness.mjs",
+    "review:settle": "node dist/build-review-settlement.js",
+    "review:settle:verify": "node scripts/verify-review-settlement.mjs",
     "eval:context": "node dist/evaluate-context.js",
     "eval:behavior": "node dist/evaluate-behavior.js",
     "graph:health": "node dist/build-graph-health.js",

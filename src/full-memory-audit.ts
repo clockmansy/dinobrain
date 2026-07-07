@@ -197,7 +197,7 @@ async function readPreviousManifest(dataRoot: string): Promise<FullMemoryManifes
 
 function classifyDrift(vaultPath: string): DriftClass {
   const normalized = vaultPath.replace(/\\/g, "/");
-  if (normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/full_memory_`) || normalized === `${FULL_MEMORY_STATE_DIR}/monitoring_status.json`) {
+  if (normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`)) {
     return "audit_artifact";
   }
   if (
