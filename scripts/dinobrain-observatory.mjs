@@ -12,6 +12,7 @@ const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
 const observatoryVersion = "2026-07-03-os-health-cockpit-v1";
 const execFileAsync = promisify(execFile);
+const readinessVersion = "observatory_readiness_v1";
 
 function rel(filePath) {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
@@ -24,6 +25,45 @@ async function readJson(filePath) {
     if (error?.code === "ENOENT") return null;
     return null;
   }
+}
+
+async function readStatusArtifact(relativePath) {
+  const filePath = path.join(dataRoot, relativePath.replace(/\//g, path.sep));
+  try {
+    const text = await fs.readFile(filePath, "utf8");
+    try {
+      return {
+        ok: true,
+        artifact_parse_status: "ok",
+        artifact_path: relativePath,
+        value: JSON.parse(text),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        artifact_parse_status: "invalid_json",
+        artifact_path: relativePath,
+        value: null,
+        error: String(error?.message ?? error),
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      artifact_parse_status: error?.code === "ENOENT" ? "missing" : "unreadable",
+      artifact_path: relativePath,
+      value: null,
+      error: error?.code === "ENOENT" ? null : String(error?.message ?? error),
+    };
+  }
+}
+
+function artifactWarnings(artifact) {
+  return Array.isArray(artifact?.value?.warnings) ? artifact.value.warnings.map(String) : [];
+}
+
+function artifactVisibleStatus(artifact, fallback = null) {
+  return String(artifact?.value?.visible_status ?? fallback ?? artifact?.value?.status ?? artifact?.artifact_parse_status ?? "unknown");
 }
 
 async function pathExists(filePath) {
@@ -569,6 +609,241 @@ async function readSyncRisk() {
       detail: String(error?.message ?? error),
     };
   }
+}
+
+function statusOk(value, healthyStatuses = ["healthy", "verified", "ready", "clean"]) {
+  return healthyStatuses.includes(String(value ?? "").toLowerCase());
+}
+
+function hasGeneratedAnswerQualityEvidence(evalReport) {
+  const candidates = [evalReport?.generated_answer_eval, evalReport?.answer_quality, evalReport?.ragas_eval].filter(Boolean);
+  return candidates.some((candidate) => {
+    const status = candidate?.status;
+    const metrics = candidate?.metrics ?? candidate;
+    return Boolean(
+      ["healthy", "passed", "verified"].includes(String(status ?? "").toLowerCase()) &&
+        typeof metrics?.faithfulness === "number" &&
+        typeof (metrics?.answer_relevance ?? metrics?.answer_relevancy) === "number" &&
+        typeof (metrics?.correctness ?? metrics?.answer_correctness) === "number" &&
+        typeof (metrics?.grounding ?? metrics?.source_support) === "number",
+    );
+  });
+}
+
+function classifyRagCompletionBlocker(proof, evalReport) {
+  const denseVector = proof?.dense_vector;
+  if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
+  if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
+  const caveats = Array.isArray(evalReport?.caveats) ? evalReport.caveats.join("\n") : "";
+  if (/deterministic\s+RAG\s+canary|not\s+a\s+full\s+Ragas|not\s+a\s+full.*answer-quality/i.test(caveats)) {
+    return "rag_deterministic_canary_only";
+  }
+  if (!hasGeneratedAnswerQualityEvidence(evalReport)) return "rag_answer_quality_eval_missing";
+  return null;
+}
+
+function hardGateFromArtifact({ id, label, artifact, expectedStatuses = ["healthy"], proofPath = null, missingTools = [], blockerReason = null }) {
+  const value = artifact.value;
+  const parseOk = artifact.artifact_parse_status === "ok";
+  const valueStatus = value?.status ?? null;
+  const ok = parseOk && statusOk(valueStatus, expectedStatuses) && !blockerReason;
+  return {
+    id,
+    label,
+    ok,
+    status: ok ? "healthy" : "needs_attention",
+    visible_status: ok ? artifactVisibleStatus(artifact, "healthy") : artifactVisibleStatus(artifact, "needs attention"),
+    blocker_reason:
+      blockerReason ??
+      (parseOk ? `${id}_not_healthy` : `${id}_${artifact.artifact_parse_status}`),
+    proof_path: proofPath,
+    artifact_path: artifact.artifact_path,
+    artifact_parse_status: artifact.artifact_parse_status,
+    artifact_report_status: valueStatus,
+    latest_verified_at: value?.latest_verified_at ?? value?.generated_at ?? null,
+    generated_at: value?.generated_at ?? null,
+    stale_after_ms: value?.stale_after_ms ?? null,
+    missing_tools: missingTools,
+    warnings: artifactWarnings(artifact),
+  };
+}
+
+function latestAuditForReadiness(audits) {
+  const audit = audits?.[0];
+  if (!audit) return null;
+  return {
+    audit_id: audit.audit_id ?? null,
+    task_id: audit.task_id ?? null,
+    trust_score: audit.trust_score ?? null,
+    verdict: audit.verdict ?? null,
+    audit_path: audit._path ?? null,
+    provided_memory_paths: Array.isArray(audit.provided_memory_paths) ? audit.provided_memory_paths.slice(0, 20) : [],
+    declared_used_memory_paths: Array.isArray(audit.declared_used_memory_paths) ? audit.declared_used_memory_paths.slice(0, 20) : [],
+    observed_used_memory_paths: Array.isArray(audit.observed_used_memory_paths) ? audit.observed_used_memory_paths.slice(0, 20) : [],
+    missing_expected_memory: Array.isArray(audit.missing_expected_memory) ? audit.missing_expected_memory.slice(0, 20) : [],
+    hallucinated_memory_reference: Array.isArray(audit.hallucinated_memory_reference)
+      ? audit.hallucinated_memory_reference.slice(0, 20)
+      : [],
+  };
+}
+
+function laneItem(id, status, reason, pathValue = null) {
+  return { id, status, reason, path: pathValue };
+}
+
+async function readiness(existingState = null) {
+  const [
+    healthArtifact,
+    clientArtifact,
+    nativeArtifact,
+    sourceArtifact,
+    recallArtifact,
+    taskArtifact,
+    settlementArtifact,
+    ragProofArtifact,
+    ragEvalArtifact,
+    graphArtifact,
+    audits,
+  ] = await Promise.all([
+    readStatusArtifact(".dino/state/health_status.json"),
+    readStatusArtifact(".dino/state/client_mcp_direct_status.json"),
+    readStatusArtifact(".dino/state/native_instruction_authority.json"),
+    readStatusArtifact(".dino/state/source_lineage_status.json"),
+    readStatusArtifact(".dino/state/behavior_recall_status.json"),
+    readStatusArtifact(".dino/state/task_sessions.json"),
+    readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
+    readStatusArtifact(".dino/state/rag_proof_status.json"),
+    readStatusArtifact(".dino/state/rag_eval_status.json"),
+    readStatusArtifact(".dino/index/graph-health.json"),
+    existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
+  ]);
+
+  const clientAgents = Array.isArray(clientArtifact.value?.agents) ? clientArtifact.value.agents : [];
+  const clientMissingTools = clientAgents.flatMap((agent) =>
+    Array.isArray(agent.missing_tools) ? agent.missing_tools.map((tool) => `${agent.agent}:${tool}`) : [],
+  );
+  const clientProofPath = clientAgents.map((agent) => agent.proof_path).filter(Boolean).join(" | ") || null;
+  const ragBlocker =
+    ragProofArtifact.artifact_parse_status === "ok" && ragEvalArtifact.artifact_parse_status === "ok"
+      ? classifyRagCompletionBlocker(ragProofArtifact.value, ragEvalArtifact.value)
+      : "rag_status_artifact_unavailable";
+
+  const hardGates = [
+    hardGateFromArtifact({ id: "health_status", label: "Health Rollup", artifact: healthArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({
+      id: "client_mcp_direct_status",
+      label: "Direct MCP Parity",
+      artifact: clientArtifact,
+      expectedStatuses: ["verified"],
+      proofPath: clientProofPath,
+      missingTools: clientMissingTools,
+    }),
+    hardGateFromArtifact({
+      id: "native_instruction_authority",
+      label: "Native Instruction Authority",
+      artifact: nativeArtifact,
+      expectedStatuses: ["healthy"],
+    }),
+    hardGateFromArtifact({ id: "source_lineage", label: "Source Lineage", artifact: sourceArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({ id: "behavior_recall", label: "Behavior Recall", artifact: recallArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({ id: "task_lifecycle", label: "Task Lifecycle", artifact: taskArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({
+      id: "task_lifecycle_settlement",
+      label: "Lifecycle Settlement",
+      artifact: settlementArtifact,
+      expectedStatuses: ["healthy"],
+    }),
+    hardGateFromArtifact({
+      id: "rag_completion_grade",
+      label: "Semantic RAG + Answer Quality",
+      artifact: ragProofArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: ragProofArtifact.artifact_path,
+      blockerReason: ragBlocker,
+    }),
+    hardGateFromArtifact({
+      id: "rag_eval_quality",
+      label: "Generated Answer Evaluation",
+      artifact: ragEvalArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: ragEvalArtifact.artifact_path,
+      blockerReason: ragBlocker === null ? null : "rag_answer_quality_or_semantic_gate_not_complete",
+    }),
+    hardGateFromArtifact({ id: "graph_health", label: "Graph Health", artifact: graphArtifact, expectedStatuses: ["healthy"] }),
+  ];
+
+  const blockers = hardGates.filter((gate) => !gate.ok);
+  const reviewerPending = [];
+  const mainPending = [];
+  const verifierPending = [];
+  const recallCounts = recallArtifact.value?.counts ?? {};
+  const reviewCounts = existingState?.lifecycle?.counts ?? {};
+  const ragProof = ragProofArtifact.value ?? {};
+  const ragEval = ragEvalArtifact.value ?? {};
+
+  if ((reviewCounts.promotion_reviews ?? 0) > (reviewCounts.accepted ?? 0)) {
+    reviewerPending.push(laneItem("review_queue", "pending", "promotion reviews remain visible", "80_Review_Queue/promotion"));
+  }
+  if (Number(recallCounts.handoff ?? 0) === 0) mainPending.push(laneItem("behavior_handoff", "pending", "no handoff recall coverage yet"));
+  if (Number(recallCounts.direction_change ?? 0) === 0) {
+    mainPending.push(laneItem("behavior_direction_change", "pending", "no direction-change recall coverage yet"));
+  }
+  if (Number(recallCounts.correction ?? 0) === 0) mainPending.push(laneItem("behavior_correction", "pending", "no correction recall coverage yet"));
+  if (ragProof?.dense_vector?.semantic_embedding_provider !== true) {
+    mainPending.push(laneItem("semantic_embedding_provider", "blocked", "completion-grade dense semantic provider missing", ragProofArtifact.artifact_path));
+  }
+  if (!hasGeneratedAnswerQualityEvidence(ragEval)) {
+    verifierPending.push(laneItem("answer_quality_eval", "pending", "generated-answer quality evidence missing", ragEvalArtifact.artifact_path));
+  }
+  verifierPending.push(laneItem("public_data_safety", "verify", "public-data safety proof is verified by CLI, not yet a dedicated Observatory artifact"));
+
+  const ok = blockers.length === 0;
+  return {
+    ok,
+    version: readinessVersion,
+    generated_at: new Date().toISOString(),
+    data_root: dataRoot,
+    status: ok ? "ready" : "needs_attention",
+    visible_status: ok ? "Completion readiness green" : "Completion blockers visible",
+    health_status: {
+      artifact_path: healthArtifact.artifact_path,
+      artifact_parse_status: healthArtifact.artifact_parse_status,
+      status: healthArtifact.value?.status ?? "missing",
+      checks: Array.isArray(healthArtifact.value?.checks) ? healthArtifact.value.checks : [],
+      warnings: artifactWarnings(healthArtifact),
+    },
+    client_mcp_direct_status: {
+      artifact_path: clientArtifact.artifact_path,
+      artifact_parse_status: clientArtifact.artifact_parse_status,
+      status: clientArtifact.value?.status ?? "missing",
+      agents: clientAgents,
+      warnings: artifactWarnings(clientArtifact),
+    },
+    rag_status: {
+      proof_artifact_parse_status: ragProofArtifact.artifact_parse_status,
+      eval_artifact_parse_status: ragEvalArtifact.artifact_parse_status,
+      provider: ragProof?.dense_vector?.provider ?? null,
+      semantic_embedding_provider: ragProof?.dense_vector?.semantic_embedding_provider === true,
+      blocker: ragBlocker,
+      eval_caveats: Array.isArray(ragEval?.caveats) ? ragEval.caveats : [],
+    },
+    hard_gates: hardGates,
+    lanes: {
+      blockers,
+      reviewer_pending: reviewerPending,
+      main_pending: mainPending,
+      verifier_pending: verifierPending,
+    },
+    counts: {
+      blockers: blockers.length,
+      reviewer_pending: reviewerPending.length,
+      main_pending: mainPending.length,
+      verifier_pending: verifierPending.length,
+      hard_gates: hardGates.length,
+    },
+    latest_audit: latestAuditForReadiness(audits),
+    warnings: hardGates.flatMap((gate) => gate.warnings).filter(Boolean),
+  };
 }
 
 function readTraceSummary(events, packs, traces) {
@@ -1278,6 +1553,7 @@ function html() {
   </header>
   <nav class="health-strip" aria-label="DinoBrain OS health">
     <div id="chip-active" class="chip"><strong>Active</strong><span>--</span></div>
+    <div id="chip-readiness" class="chip"><strong>Readiness</strong><span>--</span></div>
     <div id="chip-v2" class="chip"><strong>OS v2</strong><span>--</span></div>
     <div id="chip-mcp" class="chip"><strong>MCP</strong><span>--</span></div>
     <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
@@ -1319,6 +1595,15 @@ function html() {
       <div id="timeline" class="timeline"></div>
     </section>
     <section class="details">
+      <div class="block">
+        <h2>Completion Readiness</h2>
+        <div id="readiness-summary" class="kv"></div>
+        <div id="readiness-blockers" class="list"></div>
+      </div>
+      <div class="block">
+        <h2>Pending Lanes</h2>
+        <div id="readiness-pending" class="list"></div>
+      </div>
       <div class="block">
         <h2>OS Health</h2>
         <div id="os-health" class="kv"></div>
@@ -1370,6 +1655,7 @@ function html() {
       <div class="block">
         <h2>Latest Memory Audit</h2>
         <div id="latest-audit" class="kv"></div>
+        <div id="readiness-audit-paths" class="list"></div>
       </div>
     </section>
   </main>
@@ -1382,6 +1668,10 @@ function html() {
     const latestPackEl = document.getElementById("latest-pack");
     const latestTraceEl = document.getElementById("latest-trace");
     const latestAuditEl = document.getElementById("latest-audit");
+    const readinessSummaryEl = document.getElementById("readiness-summary");
+    const readinessBlockersEl = document.getElementById("readiness-blockers");
+    const readinessPendingEl = document.getElementById("readiness-pending");
+    const readinessAuditPathsEl = document.getElementById("readiness-audit-paths");
     const osHealthEl = document.getElementById("os-health");
     const readTraceEl = document.getElementById("read-trace");
     const readTraceItemsEl = document.getElementById("read-trace-items");
@@ -1395,6 +1685,7 @@ function html() {
     const osV2El = document.getElementById("os-v2");
     const chips = {
       active: document.getElementById("chip-active"),
+      readiness: document.getElementById("chip-readiness"),
       v2: document.getElementById("chip-v2"),
       mcp: document.getElementById("chip-mcp"),
       read: document.getElementById("chip-read"),
@@ -1427,6 +1718,13 @@ function html() {
       target.className = "chip " + String(tone || "").replace(/[^a-z0-9_-]/gi, "");
       target.innerHTML = \`<strong>\${esc(label)} \${esc(value ?? "")}</strong><span>\${esc(detail ?? "")}</span>\`;
     }
+    function renderLaneItems(items) {
+      return Array.isArray(items) && items.length
+        ? items.map((item) => \`
+          <div class="item"><code>\${esc(item.id || item.label || "")}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || item.blocker_reason || ""), 180))}</div><code>\${esc(item.path || item.proof_path || item.artifact_path || "")}</code></div>
+        \`).join("")
+        : '<p class="muted">No items.</p>';
+    }
     function healthTone(value) {
       const status = String(value ?? "").toLowerCase();
       if (["healthy", "ready", "clean", "grounded", "pass"].includes(status)) return status === "pass" ? "ready" : status;
@@ -1441,6 +1739,45 @@ function html() {
     }
     function eventDetail(event) {
       return event.prompt_preview || event.audit_id || event.task_id || event.pack_id || event.trace_path || event.context_pack_trace || event.path || event.error || "";
+    }
+    function renderReadiness(readiness) {
+      renderChip(
+        chips.readiness,
+        "Ready",
+        readiness.status || "--",
+        (readiness.counts?.blockers ?? 0) + " blockers / " + (readiness.counts?.verifier_pending ?? 0) + " verifier",
+        readiness.ok ? "healthy" : "warning",
+      );
+      kv(readinessSummaryEl, [
+        ["status", readiness.status],
+        ["blockers", readiness.counts?.blockers],
+        ["reviewer pending", readiness.counts?.reviewer_pending],
+        ["main pending", readiness.counts?.main_pending],
+        ["verifier pending", readiness.counts?.verifier_pending],
+        ["health", readiness.health_status?.status],
+        ["direct MCP", readiness.client_mcp_direct_status?.status],
+        ["RAG provider", readiness.rag_status?.provider],
+        ["semantic", readiness.rag_status?.semantic_embedding_provider],
+        ["RAG blocker", readiness.rag_status?.blocker],
+      ]);
+      readinessBlockersEl.innerHTML = renderLaneItems(readiness.lanes?.blockers);
+      readinessPendingEl.innerHTML = [
+        ...(readiness.lanes?.reviewer_pending || []).map((item) => ({ ...item, id: "reviewer:" + item.id })),
+        ...(readiness.lanes?.main_pending || []).map((item) => ({ ...item, id: "main:" + item.id })),
+        ...(readiness.lanes?.verifier_pending || []).map((item) => ({ ...item, id: "verifier:" + item.id })),
+      ].map((item) => \`
+        <div class="item"><code>\${esc(item.id)}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || ""), 180))}</div><code>\${esc(item.path || "")}</code></div>
+      \`).join("") || '<p class="muted">No pending lanes.</p>';
+      const audit = readiness.latest_audit;
+      readinessAuditPathsEl.innerHTML = audit ? [
+        ["provided", audit.provided_memory_paths],
+        ["declared", audit.declared_used_memory_paths],
+        ["observed", audit.observed_used_memory_paths],
+        ["missing", audit.missing_expected_memory],
+        ["hallucinated", audit.hallucinated_memory_reference],
+      ].map(([label, paths]) => \`
+        <div class="item"><code>\${esc(label)}</code><div class="muted">\${esc((paths || []).slice(0, 4).join(" | ") || "none")}</div></div>
+      \`).join("") : '<p class="muted">No audit path details.</p>';
     }
     function graphSize() {
       const rect = graphCanvas.getBoundingClientRect();
@@ -2060,12 +2397,14 @@ function html() {
     }
     async function tick() {
       try {
-        const [stateResponse, graphResponse] = await Promise.all([
+        const [stateResponse, graphResponse, readinessResponse] = await Promise.all([
           fetch("/api/state", { cache: "no-store" }),
           fetch("/api/graph", { cache: "no-store" }),
+          fetch("/api/readiness", { cache: "no-store" }),
         ]);
         render(await stateResponse.json());
         renderGraph(await graphResponse.json());
+        renderReadiness(await readinessResponse.json());
       } catch (error) {
         statusEl.textContent = "disconnected";
       }
@@ -2089,8 +2428,17 @@ const server = http.createServer(async (request, response) => {
       app_root: root,
       data_root: dataRoot,
       graph_health: await readGraphHealth(),
-      endpoints: ["/api/health", "/api/state", "/api/graph", "/api/graph-health"],
+      endpoints: ["/api/health", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],
     }, null, 2));
+    return;
+  }
+
+  if (request.url === "/api/readiness") {
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    response.end(JSON.stringify(await readiness(), null, 2));
     return;
   }
 

@@ -375,6 +375,13 @@ function main() {
       args: ["dist/build-task-lifecycle-settlement.js"],
     }),
     runCheck({
+      id: "observatory_evidence",
+      description:
+        "Observatory must expose health/goal blockers, pending lanes, memory-audit paths, and invalid status artifacts through API and UI evidence.",
+      command: node,
+      args: ["scripts/verify-observatory-live-graph.mjs"],
+    }),
+    runCheck({
       id: "rag_proof_regression",
       description:
         "RAG proof builder must write explicit rag-golden and dense-vector proof artifacts without pretending local hashing is an external embedding provider.",
@@ -561,6 +568,12 @@ function main() {
         byId.task_lifecycle_settlement_current.ok === true
           ? null
           : "task_lifecycle_auto_settlement_failed",
+    },
+    {
+      requirement: "observatory_health_gate_alignment",
+      ok: byId.observatory_evidence.ok === true,
+      evidence: "observatory_evidence",
+      blocker: byId.observatory_evidence.ok === true ? null : "observatory_evidence_failed",
     },
     {
       requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",
