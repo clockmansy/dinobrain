@@ -26,6 +26,8 @@
     "session:promote": "node scripts/promote-codex-session-knowledge.mjs --write",
     "session:promote:check": "node scripts/promote-codex-session-knowledge.mjs",
     "memory:migrate:unreviewed": "node scripts/migrate-unreviewed-auto-generated-accepted.mjs",
+    "hooks:data:install": "powershell -ExecutionPolicy Bypass -File scripts/install-data-git-hooks.ps1",
+    "hooks:data:verify": "node scripts/verify-data-git-hooks.mjs",
     "safety:public-data": "node scripts/verify-public-data-safety.mjs --write",
     "safety:public-data:check": "node scripts/verify-public-data-safety.mjs",
     "index:operations": "node dist/build-operations-index.js",

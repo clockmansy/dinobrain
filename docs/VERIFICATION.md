@@ -24,6 +24,7 @@ npm run eval:context
 npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
+npm run hooks:data:verify
 npm run hook:verify
 npm run verify:os
 npm run verify:codex-loop
@@ -42,6 +43,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
 
 `npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
+
+`npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
 `npm run verify:codex-loop` proves the Codex closed-loop fixture end to end against a temporary Git repository and bare remote: the hook preflight injects memory, the task is finished with declared memory paths, auto-growth creates durable memory, and `auto_sync` commits and pushes policy-approved data.
 

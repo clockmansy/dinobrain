@@ -256,6 +256,40 @@ function Assert-DinoBrainRepoAligned {
   Write-Warning "$Name is pinned to detached ref $Ref. This is reproducible, but it will not automatically track origin/main."
 }
 
+function Enable-DinoBrainDataGitHooks {
+  param(
+    [Parameter(Mandatory = $true)][string]$DataDir
+  )
+
+  if (-not (Test-Command "git")) {
+    Write-Warning "Git is not available; DinoBrain data safety hooks cannot be configured."
+    return
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $DataDir ".git"))) {
+    Write-Warning "DinoBrain data directory is not a git checkout; safety hooks cannot be configured: $DataDir"
+    return
+  }
+
+  $hookRoot = Join-Path $DataDir ".githooks"
+  $requiredHooks = @(
+    (Join-Path $hookRoot "pre-commit"),
+    (Join-Path $hookRoot "pre-push"),
+    (Join-Path $hookRoot "verify-public-data-guard.ps1")
+  )
+  foreach ($hook in $requiredHooks) {
+    if (-not (Test-Path -LiteralPath $hook)) {
+      throw "DinoBrain data safety hook is missing: $hook"
+    }
+  }
+
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $DataDir, "config", "core.hooksPath", ".githooks") -WorkingDirectory $DataDir
+  $configured = (& git -C $DataDir config --get core.hooksPath)
+  if ($LASTEXITCODE -ne 0 -or $configured.Trim() -ne ".githooks") {
+    throw "Failed to configure DinoBrain data safety hooks. Expected .githooks, got '$configured'."
+  }
+  Write-Host "DinoBrain data safety hooks configured: $DataDir\.githooks"
+}
+
 function Sync-DinoBrainRepo {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -1073,6 +1107,7 @@ Sync-DinoBrainRepo -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir
 if ($gitAvailable) {
   Assert-DinoBrainRepoAligned -Name "dinobrain" -TargetDir $AppDir -Ref $AppRef
   Assert-DinoBrainRepoAligned -Name "dinobrain-data" -TargetDir $DataDir -Ref $DataRef
+  Enable-DinoBrainDataGitHooks -DataDir $DataDir
 }
 
 $nodeRoot = Install-PortableNode -Version $NodeVersion -DestinationRoot $ToolsDir
@@ -1085,6 +1120,9 @@ $oldDataRoot = $env:DINOBRAIN_DATA_DIR
 $env:DINOBRAIN_DATA_DIR = $DataDir
 try {
   Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "index:sqlite") -WorkingDirectory $AppDir
+  if ($gitAvailable) {
+    Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "hooks:data:verify") -WorkingDirectory $AppDir
+  }
 } finally {
   if ($null -eq $oldDataRoot) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldDataRoot }
 }

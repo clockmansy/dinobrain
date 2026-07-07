@@ -110,11 +110,13 @@ This script builds `artifacts\DinoBrainSetup.exe`, packages `artifacts\DinoBrain
 
 1. Clones or updates `dinobrain`.
 2. Clones or updates `dinobrain-data`.
-3. Downloads portable Node.js if missing.
-4. Runs `npm install`.
-5. Runs `npm run build`.
-6. Runs `npm run index:sqlite`.
-7. Registers DinoBrain in Codex `config.toml`:
+3. Configures `dinobrain-data` with `core.hooksPath = .githooks` so Git blocks local-only files and unreviewed auto-generated accepted memories even if an older MCP process tries to commit them.
+4. Downloads portable Node.js if missing.
+5. Runs `npm install`.
+6. Runs `npm run build`.
+7. Runs `npm run index:sqlite`.
+8. Runs `npm run hooks:data:verify`.
+9. Registers DinoBrain in Codex `config.toml`:
 
 ```toml
 [mcp_servers.dinobrain]
@@ -131,7 +133,7 @@ DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '1'
 DINOBRAIN_AUTO_SYNC_PUSH = '1'
 ```
 
-8. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
+10. Registers a Codex user-level prompt hook at `C:\Users\<you>\.codex\hooks.json`.
 
 This hook calls:
 
@@ -143,13 +145,13 @@ Because this is a user-level hook, Codex can run the DinoBrain preflight from an
 
 The Codex config writer normalizes line endings to CRLF, rejects bare carriage return bytes after writing, and validates the DinoBrain TOML block before reporting success. This prevents hidden `\r` bytes in `config.toml` from breaking Codex startup.
 
-9. Runs a Codex hook handshake.
+11. Runs a Codex hook handshake.
 
 The installer immediately simulates a `UserPromptSubmit` event through the same PowerShell hook wrapper that Codex will call. This proves the installed hook can start DinoBrain preflight, use the portable Node runtime, reach the data vault, and return `hookSpecificOutput.additionalContext` without requiring a manual first hook run. The handshake is tagged as `dinobrain-installer` and disables session import so it does not create review candidates from the synthetic prompt.
 
 This handshake does not bypass Codex hook trust. After hook registration, the installer creates and launches `DinoBrain Codex Hook Approval.cmd`. That helper restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click still has to be done by the user in Codex.
 
-10. Registers DinoBrain in Claude Code. The installer writes a user-level `UserPromptSubmit` hook to `C:\Users\<you>\.claude\settings.json` so Claude Code can receive DinoBrain pre-response context before it processes a prompt. When `claude` is available, it also registers the DinoBrain MCP server:
+12. Registers DinoBrain in Claude Code. The installer writes a user-level `UserPromptSubmit` hook to `C:\Users\<you>\.claude\settings.json` so Claude Code can receive DinoBrain pre-response context before it processes a prompt. When `claude` is available, it also registers the DinoBrain MCP server:
 
 ```powershell
 claude mcp add `
@@ -160,14 +162,14 @@ claude mcp add `
   -- C:\Users\<you>\AppData\Local\DinoBrain\tools\node-v24.18.0-win-x64\node.exe C:\Users\<you>\Documents\dinobrain\dist\index.js
 ```
 
-11. Runs `npm run verify:os`.
-12. Runs `npm run verify:codex-loop` against a temporary data vault and bare Git remote to prove the Codex hook, Context Pack, finish_task, auto-growth, and auto-sync push path can close end to end.
-13. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
-14. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
-15. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
-16. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
+13. Runs `npm run verify:os`.
+14. Runs `npm run verify:codex-loop` against a temporary data vault and bare Git remote to prove the Codex hook, Context Pack, finish_task, auto-growth, and auto-sync push path can close end to end.
+15. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
+16. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
+17. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
+18. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
-`verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
+`hooks:data:verify` proves the data repo Git hook is configured and blocks unreviewed auto-generated accepted memories plus local-only event/index paths at commit/push time. This is the last safety line for stale MCP processes that were started before an update. `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 
 The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
 
@@ -283,6 +285,7 @@ After install, run:
 ```powershell
 npm run verify:os
 npm run verify:codex-loop
+npm run hooks:data:verify
 npm run hook:verify
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
 npm run observatory

@@ -88,6 +88,9 @@ try {
   if ($probeText -notmatch "verify:codex-loop") {
     throw "Extracted install.ps1 did not include Codex closed-loop verification"
   }
+  if ($probeText -notmatch "Enable-DinoBrainDataGitHooks" -or $probeText -notmatch "hooks:data:verify") {
+    throw "Extracted install.ps1 did not include DinoBrain data safety hook setup and verification"
+  }
 } finally {
   Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }

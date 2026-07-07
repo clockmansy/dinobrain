@@ -83,6 +83,8 @@ It must report:
 
 Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
 
+The data repo also carries Git hooks under `.githooks`. Install/update must set `core.hooksPath = .githooks`. These hooks block local-only paths and auto-generated accepted memories without review lineage at `pre-commit` and `pre-push` time. This is required because a long-lived stale MCP process may not yet know the newest in-process sync policy.
+
 Required dry-run fields:
 
 - `dry_run: true`

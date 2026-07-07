@@ -66,6 +66,9 @@ function Assert-DinoBrainInstallerClosedLoop {
     if ($probeText -notmatch "verify:codex-loop") {
       throw "Installer install.ps1 does not include verify:codex-loop"
     }
+    if ($probeText -notmatch "Enable-DinoBrainDataGitHooks" -or $probeText -notmatch "hooks:data:verify") {
+      throw "Installer install.ps1 does not include DinoBrain data safety hook setup and verification"
+    }
   } finally {
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
   }

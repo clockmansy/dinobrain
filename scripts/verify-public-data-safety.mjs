@@ -188,7 +188,6 @@ function hasReviewLineage(record) {
     record.source_candidate_path ||
       record.reviewed_by ||
       record.reviewed_at ||
-      record.accepted_at ||
       String(record.review_status || "").toLowerCase().includes("accepted"),
   );
 }

@@ -435,7 +435,6 @@ async function acceptedInstancePolicyFinding(normalizedPath: string, deleted: bo
     parsed.source_candidate_path ||
       parsed.reviewed_by ||
       parsed.reviewed_at ||
-      parsed.accepted_at ||
       String(parsed.review_status ?? "").toLowerCase().includes("accepted"),
   );
   return hasReviewLineage ? null : "auto-generated accepted memory lacks review lineage";
