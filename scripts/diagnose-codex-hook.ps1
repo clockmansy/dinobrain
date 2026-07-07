@@ -96,6 +96,20 @@ function Get-HookCommand {
   return ""
 }
 
+function Get-CodexThreadCreatedAt {
+  param([AllowEmptyString()][string]$ThreadId)
+
+  $match = [regex]::Match($ThreadId, "^([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-")
+  if (-not $match.Success) { return $null }
+
+  try {
+    $millis = [Convert]::ToInt64(($match.Groups[1].Value + $match.Groups[2].Value), 16)
+    return [DateTimeOffset]::FromUnixTimeMilliseconds($millis).UtcDateTime
+  } catch {
+    return $null
+  }
+}
+
 function Invoke-HookProbe {
   param(
     [Parameter(Mandatory = $true)][string]$HookScript,
@@ -249,6 +263,35 @@ try {
   Add-Check $checks "codex_reload" "warn" "Could not inspect Codex process start times" @{ error = $_.Exception.Message }
 }
 
+try {
+  $currentThreadId = [string]$env:CODEX_THREAD_ID
+  $threadCreatedAt = Get-CodexThreadCreatedAt -ThreadId $currentThreadId
+  $hooksWriteTimeUtc = if (Test-Path -LiteralPath $HooksPath) { (Get-Item -LiteralPath $HooksPath).LastWriteTimeUtc } else { $null }
+  if ([string]::IsNullOrWhiteSpace($currentThreadId)) {
+    Add-Check $checks "codex_thread_freshness" "pass" "No CODEX_THREAD_ID is present in this shell; thread freshness check skipped"
+  } elseif ($null -eq $threadCreatedAt -or $null -eq $hooksWriteTimeUtc) {
+    Add-Check $checks "codex_thread_freshness" "warn" "Could not compare the current Codex thread with hooks.json" @{
+      current_thread_id = $currentThreadId
+      current_thread_created_at = if ($threadCreatedAt) { $threadCreatedAt.ToString("o") } else { $null }
+      hooks_write_time = if ($hooksWriteTimeUtc) { $hooksWriteTimeUtc.ToString("o") } else { $null }
+    }
+  } elseif ($threadCreatedAt -lt $hooksWriteTimeUtc) {
+    Add-Check $checks "codex_thread_freshness" "warn" "Current Codex thread was created before hooks.json changed; live proof must use a fresh Codex Desktop thread" @{
+      current_thread_id = $currentThreadId
+      current_thread_created_at = $threadCreatedAt.ToString("o")
+      hooks_write_time = $hooksWriteTimeUtc.ToString("o")
+    }
+  } else {
+    Add-Check $checks "codex_thread_freshness" "pass" "Current Codex thread was created after hooks.json changed" @{
+      current_thread_id = $currentThreadId
+      current_thread_created_at = $threadCreatedAt.ToString("o")
+      hooks_write_time = $hooksWriteTimeUtc.ToString("o")
+    }
+  }
+} catch {
+  Add-Check $checks "codex_thread_freshness" "warn" "Could not inspect current Codex thread freshness" @{ error = $_.Exception.Message }
+}
+
 if ((Test-Path -LiteralPath $hookScript) -and (Test-Path -LiteralPath $VaultPath)) {
   try {
     $probe = Invoke-HookProbe -HookScript $hookScript -Vault $VaultPath -Node $NodeExe
@@ -282,6 +325,7 @@ if ($failCount -eq 0 -and $warnCount -eq 0) {
 } else {
   $nextSteps += "Fix any FAIL rows first."
   $nextSteps += "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again."
+  $nextSteps += "If codex_thread_freshness is WARN, keep Codex open if needed but run the live proof in a new Codex Desktop thread created after hook approval."
   $nextSteps += "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."
 }
 

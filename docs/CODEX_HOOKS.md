@@ -68,6 +68,9 @@ npm run codex:live-proof
 The approval helper restarts processes that were already running before
 `hooks.json` or `dist/index.js` changed, reopens Codex, copies `/hooks` to the
 clipboard, and keeps the final trust decision in the user's hands.
+`codex:hooks:diagnose` also warns when the current `CODEX_THREAD_ID` predates
+`hooks.json`; that case needs a fresh Codex Desktop thread even when no running
+Codex process is stale.
 The live-proof helper then opens a separate proof window, copies a unique proof
 prompt, and keeps polling the real live verifier until a `codex_desktop`
 preflight event appears. The `npm run codex:live-proof` command itself returns

@@ -68,6 +68,41 @@ function Set-ClipboardSafe {
   }
 }
 
+function Get-CodexThreadCreatedAt {
+  param([AllowEmptyString()][string]$ThreadId)
+
+  $match = [regex]::Match($ThreadId, "^([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-")
+  if (-not $match.Success) { return $null }
+
+  try {
+    $millis = [Convert]::ToInt64(($match.Groups[1].Value + $match.Groups[2].Value), 16)
+    return [DateTimeOffset]::FromUnixTimeMilliseconds($millis).UtcDateTime
+  } catch {
+    return $null
+  }
+}
+
+function Get-CodexThreadFreshness {
+  param([Parameter(Mandatory = $true)][string]$UserHooksPath)
+
+  $threadId = [string]$env:CODEX_THREAD_ID
+  $threadCreatedAt = Get-CodexThreadCreatedAt -ThreadId $threadId
+  $hooksWriteTime = if (Test-Path -LiteralPath $UserHooksPath) { (Get-Item -LiteralPath $UserHooksPath).LastWriteTimeUtc } else { $null }
+  $stale = [bool](
+    -not [string]::IsNullOrWhiteSpace($threadId) -and
+    $null -ne $threadCreatedAt -and
+    $null -ne $hooksWriteTime -and
+    $threadCreatedAt -lt $hooksWriteTime
+  )
+
+  return [ordered]@{
+    current_thread_id = if ([string]::IsNullOrWhiteSpace($threadId)) { $null } else { $threadId }
+    current_thread_created_at = if ($threadCreatedAt) { $threadCreatedAt.ToString("o") } else { $null }
+    hooks_write_time = if ($hooksWriteTime) { $hooksWriteTime.ToString("o") } else { $null }
+    current_thread_stale_for_hooks = $stale
+  }
+}
+
 function Join-ProcessArgumentLine {
   param([Parameter(Mandatory = $true)][string[]]$Arguments)
   $quoted = foreach ($argument in $Arguments) {
@@ -125,6 +160,7 @@ $Snippet
 This is a DinoBrain live hook proof prompt. Please reply with one short sentence after the pre-response OS context is loaded.
 "@
 $prompt = $prompt.Trim()
+$threadFreshness = Get-CodexThreadFreshness -UserHooksPath $HooksPath
 
 if ($Detached -and -not $Json) {
   $childArgs = @(
@@ -160,6 +196,9 @@ if ($Detached -and -not $Json) {
   Write-Host "DinoBrain live proof started in a new window."
   Write-Host "Proof snippet: $Snippet"
   Write-Host "Prompt copied to clipboard: $clipboardOk"
+  if ($threadFreshness.current_thread_stale_for_hooks) {
+    Write-Host "Current thread warning: this Codex thread predates hooks.json; paste the proof prompt into a fresh Codex Desktop thread."
+  }
   exit 0
 }
 
@@ -177,6 +216,15 @@ if (-not $SkipApproval) {
 }
 
 $clipboardOk = Set-ClipboardSafe -Text $prompt
+$threadWarning = ""
+if ($threadFreshness.current_thread_stale_for_hooks) {
+  $threadWarning = @"
+
+Important:
+The Codex thread that launched this proof was created before hooks.json changed.
+Use a fresh Codex Desktop thread for the pasted prompt, or the verifier will keep failing without a live UserPromptSubmit event.
+"@
+}
 $instruction = @"
 DinoBrain live proof is waiting.
 
@@ -184,6 +232,7 @@ DinoBrain live proof is waiting.
 2. Start a new Codex thread after any restart or approval.
 3. Paste the proof prompt now copied to your clipboard.
 4. This window will keep checking for the real codex_desktop preflight event.
+$threadWarning
 
 Proof snippet:
 $Snippet
@@ -227,6 +276,7 @@ $report = [ordered]@{
   since = $since
   attempts = $attempts
   timeout_seconds = $TimeoutSeconds
+  thread_freshness = $threadFreshness
   last_verifier_output = $lastOutput
 }
 
