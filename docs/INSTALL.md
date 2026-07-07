@@ -200,6 +200,10 @@ npm run codex:hooks:approval
 npm run codex:live-proof
 ```
 
+`codex:live-proof` opens a separate proof window and then returns. Keep that
+window open while you approve the hook, start a fresh Codex thread, and paste
+the proof prompt copied to your clipboard.
+
 To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
 
 ```powershell

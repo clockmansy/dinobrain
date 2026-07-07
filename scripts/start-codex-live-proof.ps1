@@ -9,6 +9,7 @@ param(
   [string]$Snippet = "",
   [int]$TimeoutSeconds = 600,
   [int]$PollSeconds = 5,
+  [switch]$Detached,
   [switch]$SkipApproval,
   [switch]$Json
 )
@@ -67,6 +68,18 @@ function Set-ClipboardSafe {
   }
 }
 
+function Join-ProcessArgumentLine {
+  param([Parameter(Mandatory = $true)][string[]]$Arguments)
+  $quoted = foreach ($argument in $Arguments) {
+    if ($argument -match '^[A-Za-z0-9_:=/\\.\-]+$') {
+      $argument
+    } else {
+      '"' + ($argument -replace '\\(?=")', '\\' -replace '"', '\"') + '"'
+    }
+  }
+  return ($quoted -join " ")
+}
+
 if ([string]::IsNullOrWhiteSpace($AppPath)) {
   $AppPath = Resolve-DefaultPath (Join-Path $PSScriptRoot "..")
 } else {
@@ -112,6 +125,43 @@ $Snippet
 This is a DinoBrain live hook proof prompt. Please reply with one short sentence after the pre-response OS context is loaded.
 "@
 $prompt = $prompt.Trim()
+
+if ($Detached -and -not $Json) {
+  $childArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-NoExit",
+    "-File",
+    $PSCommandPath,
+    "-AppPath",
+    $AppPath,
+    "-VaultPath",
+    $VaultPath,
+    "-HooksPath",
+    $HooksPath,
+    "-ConfigPath",
+    $ConfigPath,
+    "-NodeExe",
+    $node,
+    "-Snippet",
+    $Snippet,
+    "-TimeoutSeconds",
+    [string]$TimeoutSeconds,
+    "-PollSeconds",
+    [string]$PollSeconds
+  )
+  if ($SkipApproval) {
+    $childArgs += "-SkipApproval"
+  }
+
+  Start-Process -FilePath "powershell.exe" -ArgumentList (Join-ProcessArgumentLine $childArgs) -WindowStyle Normal | Out-Null
+  $clipboardOk = Set-ClipboardSafe -Text $prompt
+  Write-Host "DinoBrain live proof started in a new window."
+  Write-Host "Proof snippet: $Snippet"
+  Write-Host "Prompt copied to clipboard: $clipboardOk"
+  exit 0
+}
 
 if (-not $SkipApproval) {
   & powershell.exe `

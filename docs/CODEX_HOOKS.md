@@ -68,8 +68,10 @@ npm run codex:live-proof
 The approval helper restarts processes that were already running before
 `hooks.json` or `dist/index.js` changed, reopens Codex, copies `/hooks` to the
 clipboard, and keeps the final trust decision in the user's hands.
-The live-proof helper then copies a unique proof prompt and keeps polling the
-real live verifier until a `codex_desktop` preflight event appears.
+The live-proof helper then opens a separate proof window, copies a unique proof
+prompt, and keeps polling the real live verifier until a `codex_desktop`
+preflight event appears. The `npm run codex:live-proof` command itself returns
+after the proof window starts.
 
 Open:
 
