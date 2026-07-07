@@ -69,9 +69,9 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 
 `npm run task:lifecycle:verify` proves the lifecycle gate on clean and dirty temporary vaults.
 
-`npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when auto-close candidates remain. With `-- --apply`, it mutates only stale diagnostic hook/env probe tasks that were classified as `auto_close_candidate`, writes a grounded blocked trace, updates the task record, and leaves manual repair blockers untouched.
+`npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when auto-close or finish-gate repair candidates remain. With `-- --apply`, it mutates only deterministic repair shapes: stale diagnostic hook/env probe tasks are closed as blocked, stale `started` tasks with grounded traces are updated to the trace outcome, blocked tasks missing a trace get a reconstructed blocked trace, and stale no-trace tasks are closed as blocked/abandoned instead of being treated as successful completion evidence.
 
-`npm run task:lifecycle:settle:verify` proves that settlement auto-closes only diagnostic stale tasks and preserves manual stale tasks for repair.
+`npm run task:lifecycle:settle:verify` proves that settlement repairs those deterministic finish-gate cases while preserving recent active work.
 
 `npm run eval:rag` writes `.dino/state/rag_eval_status.json`. It evaluates the current vault against explicit `.dino/evaluations/rag-golden.json` when present, otherwise falls back to behavior/context golden sets. The report records memory-on versus memory-off proxy scores, expected path recall, required context term recall, provenance coverage, retrieval mode, hybrid ratio, failing cases, and caveats. This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet. A healthy report requires dense-vector hybrid retrieval unless a case explicitly disables that requirement.
 
