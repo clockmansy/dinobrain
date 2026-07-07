@@ -66,12 +66,57 @@ function Show-Info {
 
 function Set-ClipboardSafe {
   param([Parameter(Mandatory = $true)][string]$Text)
+  $script:LastClipboardError = ""
   try {
-    Set-Clipboard -Value $Text
+    Set-Clipboard -Value $Text -ErrorAction Stop
     return $true
   } catch {
-    return $false
+    $script:LastClipboardError = $_.Exception.Message
   }
+
+  $clip = Join-Path $env:SystemRoot "System32\clip.exe"
+  if (Test-Path -LiteralPath $clip) {
+    $errorPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-clip-" + [guid]::NewGuid().ToString("N") + ".err")
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      $Text | & $clip 2> $errorPath
+      $exitCode = $LASTEXITCODE
+      if ($exitCode -eq 0) {
+        return $true
+      }
+      $clipError = ""
+      if (Test-Path -LiteralPath $errorPath) {
+        $clipError = ([System.IO.File]::ReadAllText($errorPath)).Trim()
+      }
+      $script:LastClipboardError = (($script:LastClipboardError, "clip.exe exit $exitCode $clipError") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; "
+    } catch {
+      $script:LastClipboardError = (($script:LastClipboardError, ("clip.exe failed: " + $_.Exception.Message)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; "
+    } finally {
+      $ErrorActionPreference = $oldErrorActionPreference
+      Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  return $false
+}
+
+function Write-LiveProofPromptFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$Snippet,
+    [Parameter(Mandatory = $true)][string]$Prompt
+  )
+
+  $reportDir = Join-Path $AppPath "reports\live-hooks"
+  New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+  $safeSnippet = ($Snippet -replace '[^A-Za-z0-9._-]+', '-').Trim("-")
+  if ($safeSnippet.Length -gt 96) {
+    $safeSnippet = $safeSnippet.Substring(0, 96)
+  }
+  $promptPath = Join-Path $reportDir ("pending-" + $safeSnippet + ".txt")
+  Set-Content -LiteralPath $promptPath -Value $Prompt -Encoding ASCII
+  return $promptPath
 }
 
 function Get-CodexThreadCreatedAt {
@@ -181,6 +226,7 @@ $Snippet
 This is a DinoBrain live hook proof prompt. Please reply with one short sentence after the pre-response OS context is loaded.
 "@
 $prompt = $prompt.Trim()
+$promptPath = Write-LiveProofPromptFile -AppPath $AppPath -Snippet $Snippet -Prompt $prompt
 $threadFreshness = Get-CodexThreadFreshness -UserHooksPath $HooksPath -RequirementsConfigPath $RequirementsPath
 
 if ($Detached -and -not $Json) {
@@ -219,6 +265,12 @@ if ($Detached -and -not $Json) {
   Write-Host "DinoBrain live proof started in a new window."
   Write-Host "Proof snippet: $Snippet"
   Write-Host "Prompt copied to clipboard: $clipboardOk"
+  Write-Host "Prompt file: $promptPath"
+  if (-not $clipboardOk) {
+    Write-Host "Clipboard error: $script:LastClipboardError"
+    Write-Host "Prompt text:"
+    Write-Host $prompt
+  }
   if ($threadFreshness.current_thread_stale_for_hooks) {
     Write-Host "Current thread warning: this Codex thread predates hooks.json; paste the proof prompt into a fresh Codex Desktop thread."
   }
@@ -240,6 +292,11 @@ if (-not $SkipApproval) {
 }
 
 $clipboardOk = Set-ClipboardSafe -Text $prompt
+$clipboardInstruction = if ($clipboardOk) {
+  "Paste the proof prompt now copied to your clipboard."
+} else {
+  "Clipboard copy failed. Copy the proof prompt from this file instead: $promptPath"
+}
 $threadWarning = ""
 if ($threadFreshness.current_thread_stale_for_hooks) {
   $threadWarning = @"
@@ -254,7 +311,7 @@ DinoBrain live proof is waiting.
 
 1. If Codex still shows the DinoBrain UserPromptSubmit hook as untrusted, type /hooks and approve it.
 2. Start a new Codex thread after any restart or approval.
-3. Paste the proof prompt now copied to your clipboard.
+3. $clipboardInstruction
 4. This window will keep checking for the real codex_desktop preflight event.
 $threadWarning
 
@@ -298,6 +355,9 @@ $report = [ordered]@{
   requirements_path = $RequirementsPath
   snippet = $Snippet
   prompt_copied_to_clipboard = $clipboardOk
+  clipboard_error = if ($clipboardOk) { "" } else { $script:LastClipboardError }
+  prompt_path = $promptPath
+  prompt_text = $prompt
   since = $since
   attempts = $attempts
   timeout_seconds = $TimeoutSeconds
