@@ -16,6 +16,12 @@ function run(cmd, args, options = {}) {
   });
 }
 
+function runGit(args, options = {}) {
+  const safeDirectory = options.safeDirectory ?? options.cwd;
+  const safeArgs = safeDirectory ? ["-c", `safe.directory=${safeDirectory}`, ...args] : args;
+  return run("git", safeArgs, options);
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -33,11 +39,11 @@ function copyHookFiles(targetRoot) {
 
 function initRepo(name) {
   const dir = mkdtempSync(path.join(tmpdir(), `dinobrain-${name}-`));
-  assert(run("git", ["init"], { cwd: dir }).status === 0, "git init failed");
-  assert(run("git", ["config", "user.email", "dinobrain-hooks@example.local"], { cwd: dir }).status === 0, "git config email failed");
-  assert(run("git", ["config", "user.name", "DinoBrain Hook Verify"], { cwd: dir }).status === 0, "git config name failed");
+  assert(runGit(["init"], { cwd: dir }).status === 0, "git init failed");
+  assert(runGit(["config", "user.email", "dinobrain-hooks@example.local"], { cwd: dir }).status === 0, "git config email failed");
+  assert(runGit(["config", "user.name", "DinoBrain Hook Verify"], { cwd: dir }).status === 0, "git config name failed");
   copyHookFiles(dir);
-  assert(run("git", ["config", "core.hooksPath", ".githooks"], { cwd: dir }).status === 0, "git hooksPath config failed");
+  assert(runGit(["config", "core.hooksPath", ".githooks"], { cwd: dir }).status === 0, "git hooksPath config failed");
   return dir;
 }
 
@@ -47,8 +53,8 @@ function writeJson(filePath, value) {
 }
 
 function commitAll(repo, message) {
-  assert(run("git", ["add", "-A"], { cwd: repo }).status === 0, "git add failed");
-  return run("git", ["commit", "-m", message], { cwd: repo });
+  assert(runGit(["add", "-A"], { cwd: repo }).status === 0, "git add failed");
+  return runGit(["commit", "-m", message], { cwd: repo });
 }
 
 function verifyConfiguredDataRepo() {
@@ -56,8 +62,8 @@ function verifyConfiguredDataRepo() {
   for (const file of [".githooks/pre-commit", ".githooks/pre-push", ".githooks/verify-public-data-guard.ps1"]) {
     assert(existsSync(path.join(dataRoot, file)), `Missing tracked hook file in data repo: ${file}`);
   }
-  const configured = run("git", ["config", "--get", "core.hooksPath"], { cwd: dataRoot });
-  assert(configured.status === 0, "Data repo core.hooksPath is not configured");
+  const configured = runGit(["config", "--get", "core.hooksPath"], { cwd: dataRoot });
+  assert(configured.status === 0, `Data repo core.hooksPath is not configured:\n${configured.stderr}`);
   assert(configured.stdout.trim() === ".githooks", `Data repo core.hooksPath must be .githooks, got: ${configured.stdout.trim()}`);
 }
 

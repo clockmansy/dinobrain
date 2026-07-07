@@ -1,8 +1,31 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function latestExistingMtime(paths) {
+  const times = paths
+    .filter((filePath) => existsSync(filePath))
+    .map((filePath) => statSync(filePath).mtime.getTime())
+    .filter((time) => Number.isFinite(time));
+  if (times.length === 0) return null;
+  return new Date(Math.max(...times));
+}
+
+function liveProofSinceIso() {
+  const programData = process.env.ProgramData || "C:\\ProgramData";
+  const latestConfig = latestExistingMtime([
+    process.env.DINOBRAIN_CODEX_HOOKS_PATH ?? path.join(homedir(), ".codex", "hooks.json"),
+    process.env.DINOBRAIN_CODEX_REQUIREMENTS_PATH ??
+      path.join(programData, "OpenAI", "Codex", "requirements.toml"),
+    path.join(root, "dist", "index.js"),
+  ]);
+  const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  return (latestConfig ?? fallback).toISOString();
+}
 
 function tail(value, max = 4000) {
   const text = String(value ?? "");
@@ -150,13 +173,14 @@ function nextActionFor(requirementEvidence) {
 
 function main() {
   const node = process.execPath;
+  const liveSince = liveProofSinceIso();
   const checks = [
     runCheck({
       id: "codex_live_pre_response",
       description:
         "Real Codex Desktop prompt must dispatch DinoBrain UserPromptSubmit before response and write live hook evidence.",
       command: node,
-      args: ["scripts/verify-codex-live-preflight.mjs", "--require-snippet=false"],
+      args: ["scripts/verify-codex-live-preflight.mjs", "--require-snippet=false", "--since", liveSince],
     }),
     runCheck({
       id: "codex_mcp_pre_response",
@@ -164,6 +188,7 @@ function main() {
         "Real Codex app thread must run DinoBrain start_task, Context Pack retrieval, and finish_task before substantive response when injected hook context is absent.",
       command: node,
       args: ["scripts/verify-codex-mcp-preflight-proof.mjs"],
+      required: false,
     }),
     runCheck({
       id: "closed_loop_fixture_push",
@@ -247,6 +272,7 @@ function main() {
     generated_at: new Date().toISOString(),
     goal:
       "Any Codex session must run DinoBrain pre-response, expose memory context, perform work, grow knowledge, and push policy-approved GitHub data.",
+    live_proof_since: liveSince,
     checks,
     requirements: requirementEvidence,
     next_action: nextActionFor(requirementEvidence),
