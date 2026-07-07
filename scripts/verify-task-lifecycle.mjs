@@ -112,8 +112,22 @@ async function main() {
     assert(result.report.counts.trace_without_task === 1, "orphan trace not detected");
     assert(result.report.counts.ungrounded_finish >= 1, "ungrounded finish not detected");
     assert(result.report.counts.blockers >= 4, "dirty report blocker count too low");
+    assert(result.report.by_decision_class.manual_stale_review_required === 1, "manual stale review decision missing");
+    assert(
+      result.report.by_decision_class.manual_trace_reconstruction_required === 1,
+      "missing-trace reconstruction decision missing",
+    );
+    assert(
+      result.report.by_decision_class.manual_orphan_trace_archive_required === 1,
+      "orphan-trace archive decision missing",
+    );
+    assert(
+      result.report.by_decision_class.finish_grounding_repair_required >= 1,
+      "finish grounding repair decision missing",
+    );
     const persisted = JSON.parse(readFileSync(path.join(dirtyRoot, TASK_LIFECYCLE_STATUS_RELATIVE_PATH), "utf8"));
     assert(persisted.visible_status, "persisted lifecycle report missing visible status");
+    assert(persisted.sessions.every((session) => session.decision_class), "session decision class missing");
 
     console.log("task lifecycle verification ok");
   } finally {

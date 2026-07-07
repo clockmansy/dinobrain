@@ -11,6 +11,15 @@ export const TASK_FINISH_GROUNDING_RELATIVE_PATH = ".dino/state/task_finish_grou
 type JsonObject = Record<string, unknown>;
 
 export type LifecycleState = "active" | "stale_active" | "terminal" | "terminal_missing_trace" | "trace_without_task";
+export type LifecycleDecisionClass =
+  | "no_action_required"
+  | "recent_active"
+  | "auto_close_candidate"
+  | "manual_stale_review_required"
+  | "manual_trace_reconstruction_required"
+  | "manual_trace_binding_repair_required"
+  | "manual_orphan_trace_archive_required"
+  | "finish_grounding_repair_required";
 export type FinishGroundingClassification =
   | "grounded"
   | "partial_grounded"
@@ -38,6 +47,8 @@ export type TaskLifecycleSession = {
   context_pack_count: number;
   evidence_path_count: number;
   issue_codes: string[];
+  decision_class: LifecycleDecisionClass;
+  auto_close_safe: boolean;
   owner: string;
   next_action: string;
 };
@@ -72,7 +83,10 @@ export type TaskLifecycleReport = {
     partial_grounded_finish: number;
     wrong_task_mismatch: number;
     blockers: number;
+    auto_close_candidates: number;
+    manual_repair_required: number;
   };
+  by_decision_class: Record<LifecycleDecisionClass, number>;
   sessions: TaskLifecycleSession[];
   grounding_records: FinishGroundingRecord[];
   warnings: string[];
@@ -198,6 +212,40 @@ function nextActionFor(issueCodes: string[], lifecycleState: LifecycleState): st
   return "No action required.";
 }
 
+function looksLikeDiagnosticProbe(task: JsonObject): boolean {
+  const request = firstString(task.request).toLowerCase();
+  const project = firstString(task.project).toLowerCase();
+  return (
+    request.includes("dinobrain live codex hook diagnostic probe") ||
+    request.includes("manual hook env test") ||
+    project.includes("hook-diagnose")
+  );
+}
+
+function decisionClassFor(task: JsonObject | null, issueCodes: string[], lifecycleState: LifecycleState): LifecycleDecisionClass {
+  if (issueCodes.includes("trace_task_id_mismatch")) return "manual_trace_binding_repair_required";
+  if (issueCodes.includes("terminal_task_missing_trace")) return "manual_trace_reconstruction_required";
+  if (issueCodes.includes("trace_without_task")) return "manual_orphan_trace_archive_required";
+  if (issueCodes.includes("ungrounded_finish") || issueCodes.includes("partial_grounding")) {
+    return "finish_grounding_repair_required";
+  }
+  if (issueCodes.includes("stale_active_task")) {
+    return task && looksLikeDiagnosticProbe(task) ? "auto_close_candidate" : "manual_stale_review_required";
+  }
+  if (lifecycleState === "active") return "recent_active";
+  return "no_action_required";
+}
+
+function isManualRepairDecision(decisionClass: LifecycleDecisionClass): boolean {
+  return [
+    "manual_stale_review_required",
+    "manual_trace_reconstruction_required",
+    "manual_trace_binding_repair_required",
+    "manual_orphan_trace_archive_required",
+    "finish_grounding_repair_required",
+  ].includes(decisionClass);
+}
+
 function visibleStatus(status: TaskLifecycleReport["status"]): string {
   return status === "healthy" ? "작업 세션/완료 게이트 정상" : "작업 세션/완료 게이트 확인 필요";
 }
@@ -246,6 +294,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     const paths = evidencePaths(trace);
     const contextPackCount = trace ? stringArray(trace.context_pack_paths).length : 0;
     const usedMemoryCount = trace ? stringArray(trace.used_memory_paths).length : 0;
+    const decisionClass = decisionClassFor(task.record, issueCodes, lifecycleState);
     sessions.push({
       session_id: taskId,
       task_id: taskId,
@@ -265,6 +314,8 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       context_pack_count: contextPackCount,
       evidence_path_count: paths.length,
       issue_codes: issueCodes,
+      decision_class: decisionClass,
+      auto_close_safe: decisionClass === "auto_close_candidate",
       owner: issueCodes.length > 0 ? "task-lifecycle-reviewer" : "none",
       next_action: nextActionFor(issueCodes, lifecycleState),
     });
@@ -275,6 +326,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     if (taskIds.has(taskId)) continue;
     const grounding = classifyGrounding(trace.record);
     const issueCodes = ["trace_without_task"];
+    const decisionClass = decisionClassFor(null, issueCodes, "trace_without_task");
     sessions.push({
       session_id: taskId,
       task_id: taskId,
@@ -294,6 +346,8 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       context_pack_count: stringArray(trace.record.context_pack_paths).length,
       evidence_path_count: evidencePaths(trace.record).length,
       issue_codes: issueCodes,
+      decision_class: decisionClass,
+      auto_close_safe: false,
       owner: "task-lifecycle-reviewer",
       next_action: nextActionFor(issueCodes, "trace_without_task"),
     });
@@ -318,6 +372,22 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     ),
   );
   const status = blockerSessions.length > 0 ? "needs_attention" : "healthy";
+  const decisionClasses: LifecycleDecisionClass[] = [
+    "no_action_required",
+    "recent_active",
+    "auto_close_candidate",
+    "manual_stale_review_required",
+    "manual_trace_reconstruction_required",
+    "manual_trace_binding_repair_required",
+    "manual_orphan_trace_archive_required",
+    "finish_grounding_repair_required",
+  ];
+  const byDecisionClass = Object.fromEntries(
+    decisionClasses.map((decisionClass) => [
+      decisionClass,
+      sessions.filter((session) => session.decision_class === decisionClass).length,
+    ]),
+  ) as Record<LifecycleDecisionClass, number>;
   return {
     version: TASK_LIFECYCLE_VERSION,
     status,
@@ -336,7 +406,10 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       partial_grounded_finish: sessions.filter((session) => session.grounding_classification === "partial_grounded").length,
       wrong_task_mismatch: sessions.filter((session) => session.issue_codes.includes("trace_task_id_mismatch")).length,
       blockers: blockerSessions.length,
+      auto_close_candidates: byDecisionClass.auto_close_candidate,
+      manual_repair_required: sessions.filter((session) => isManualRepairDecision(session.decision_class)).length,
     },
+    by_decision_class: byDecisionClass,
     sessions: sessions.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.task_id.localeCompare(b.task_id)),
     grounding_records: groundingRecords,
     warnings: status === "healthy" ? [] : ["task_lifecycle_finish_gate_attention_required"],

@@ -9,7 +9,7 @@ const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAn
   buildAndWriteStatusFreshness,
   buildStatusFreshness,
   MONITORING_STATUS_RELATIVE_PATH,
-}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { buildAndWriteReviewSettlements }, { buildAndWriteTaskLifecycleReport }] = await Promise.all([
+}, { buildAndWriteSqliteShards }, { buildAndWriteWikiIndex }, { buildAndWriteReviewSettlements }, { buildAndWriteTaskLifecycleReport }, { buildAndWriteRagEvalReport }] = await Promise.all([
   import(pathToFileURL(path.join(root, "dist", "full-memory-audit.js")).href),
   import(pathToFileURL(path.join(root, "dist", "graph-health.js")).href),
   import(pathToFileURL(path.join(root, "dist", "operations-index.js")).href),
@@ -18,6 +18,7 @@ const [{ buildAndWriteFullMemoryAudit }, { buildAndWriteGraphHealth }, { buildAn
   import(pathToFileURL(path.join(root, "dist", "wiki-index.js")).href),
   import(pathToFileURL(path.join(root, "dist", "review-settlement.js")).href),
   import(pathToFileURL(path.join(root, "dist", "task-lifecycle.js")).href),
+  import(pathToFileURL(path.join(root, "dist", "rag-eval.js")).href),
 ]);
 
 function assert(condition, message) {
@@ -68,6 +69,30 @@ tags: [freshness]
     finished_at: "2026-07-07T00:01:00.000Z",
   });
   text(path.join(dataRoot, ".dino", "events", "2026-07-07.jsonl"), `${JSON.stringify({ event: "task_finished" })}\n`);
+  json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
+    version: 1,
+    description: "Freshness fixture behavior golden.",
+    target_memory_lift: 0,
+    minimum_cases: 1,
+    cases: [
+      {
+        id: "freshness-rag",
+        request: "How should status freshness reports be evaluated?",
+        expected_memory_paths: ["50_Instances/accepted/freshness.json"],
+        required_context_terms: ["Status freshness reports stale proof artifacts"],
+      },
+    ],
+  });
+  json(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), {
+    version: 1,
+    dimensions: 2,
+    records: {
+      "50_Instances/accepted/freshness.json": [1, 0],
+    },
+    queries: {
+      "How should status freshness reports be evaluated?": [1, 0],
+    },
+  });
 }
 
 async function refreshAllRequiredArtifacts(dataRoot) {
@@ -77,6 +102,7 @@ async function refreshAllRequiredArtifacts(dataRoot) {
   await buildAndWriteGraphHealth(dataRoot);
   await buildAndWriteReviewSettlements(dataRoot);
   await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: 24 * 60 * 60 * 1000 });
+  await buildAndWriteRagEvalReport(dataRoot);
   await buildAndWriteFullMemoryAudit(dataRoot);
 }
 

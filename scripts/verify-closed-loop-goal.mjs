@@ -254,6 +254,20 @@ function main() {
       args: ["dist/build-task-lifecycle.js"],
     }),
     runCheck({
+      id: "rag_eval_regression",
+      description:
+        "RAG evaluator must distinguish lexical fallback from dense hybrid retrieval and prove memory-on lift on a fixture.",
+      command: node,
+      args: ["scripts/verify-rag-eval.mjs"],
+    }),
+    runCheck({
+      id: "rag_eval_current",
+      description:
+        "Current data vault must pass RAG canaries with memory-on lift, provenance signals, and active dense hybrid retrieval.",
+      command: node,
+      args: ["dist/build-rag-eval.js"],
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -340,6 +354,15 @@ function main() {
         byId.task_lifecycle_regression.ok === true && byId.task_lifecycle_current.ok === true
           ? null
           : "task_lifecycle_finish_gate_failed",
+    },
+    {
+      requirement: "real_rag_eval_memory_on_off_and_hybrid_quality",
+      ok: byId.rag_eval_regression.ok === true && byId.rag_eval_current.ok === true,
+      evidence: "rag_eval_regression + rag_eval_current",
+      blocker:
+        byId.rag_eval_regression.ok === true && byId.rag_eval_current.ok === true
+          ? null
+          : "real_rag_eval_failed",
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",

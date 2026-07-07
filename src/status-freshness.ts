@@ -5,6 +5,7 @@ import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
+import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
@@ -142,6 +143,24 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: [".dino/tasks", ".dino/traces", ".dino/context-packs", ".dino/events"],
     required: true,
   },
+  {
+    id: "rag_eval",
+    label: "RAG 품질 평가",
+    artifactPath: RAG_EVAL_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/evaluations",
+      ".dino/index/dense-vectors.json",
+      ".dino/index/wiki-index.json",
+      ".dino/index/sqlite/manifest.json",
+      "20_Wiki",
+      "30_Sources",
+      "40_Projects",
+      "50_Instances/accepted",
+      "60_Operations",
+      "70_Error_Book",
+    ],
+    required: true,
+  },
 ];
 
 function nowIso(date: Date): string {
@@ -195,6 +214,23 @@ async function collectLatest(
   excludedPaths: Set<string>,
 ): Promise<void> {
   const rootPath = rootRelativePath === "." ? dataRoot : dataPath(dataRoot, rootRelativePath);
+  const rootRelative = rootRelativePath.replace(/\\/g, "/");
+  try {
+    const rootStat = await fs.stat(rootPath);
+    if (rootStat.isFile()) {
+      if (!excludedPaths.has(rootRelative) && !isGeneratedStatusArtifact(rootRelative)) {
+        accumulator.count += 1;
+        if (!accumulator.latest || rootStat.mtime > accumulator.latest) {
+          accumulator.latest = rootStat.mtime;
+          accumulator.path = rootRelative;
+        }
+      }
+      return;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
   let entries: Array<import("node:fs").Dirent>;
   try {
     entries = await fs.readdir(rootPath, { withFileTypes: true });
