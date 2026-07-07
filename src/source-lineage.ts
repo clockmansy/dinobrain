@@ -38,7 +38,14 @@ export type SourceLineageChunkSummary = {
 export type SourceLineageClaimSummary = {
   path: string;
   title: string;
-  item_class: "behavior_memory" | "project_memory" | "internal_claim" | "verified_claim_support" | "unsupported_factual_claim";
+  item_class:
+    | "behavior_memory"
+    | "project_memory"
+    | "internal_session_evidence"
+    | "source_anchor_unverified"
+    | "internal_claim"
+    | "verified_claim_support"
+    | "unsupported_factual_claim";
   source_status: string | null;
   support_paths: string[];
   anchor_only_paths: string[];
@@ -59,6 +66,8 @@ export type SourceLineageReport = {
     claim_records: number;
     behavior_memory_records: number;
     project_memory_records: number;
+    internal_session_evidence_records: number;
+    source_anchor_unverified_records: number;
     verified_claim_support: number;
     unsupported_factual_claims: number;
     dangling_claim_paths: number;
@@ -78,6 +87,33 @@ type BuildOptions = {
 type JsonObject = Record<string, unknown>;
 
 const CLAIM_ROOTS = ["20_Wiki", "40_Projects", "50_Instances/accepted"] as const;
+const FACTUAL_SOURCE_STATUSES = new Set([
+  "verified",
+  "verified_summary",
+  "verified_chunk",
+  "verified_source_chunk",
+  "source_verified",
+  "reviewed",
+  "reviewed_source_chunk",
+  "mixed_verified",
+  "user_supplied_anchor_summary",
+]);
+const ANCHOR_SOURCE_STATUSES = new Set(["anchor_only_unverified", "anchor-only-unverified", "user_supplied_anchor_summary"]);
+const FACTUAL_TAGS = new Set([
+  "rag",
+  "source-lineage",
+  "verified-knowledge",
+  "retrieval-quality",
+  "provenance",
+  "hybrid-search",
+  "reranking",
+  "evaluation",
+  "graph-rag",
+  "cross-os-learning",
+  "external",
+  "public",
+  "source-backed",
+]);
 const VERIFIED_STATUSES = new Set([
   "verified",
   "verified_summary",
@@ -210,6 +246,15 @@ function claimPathsFrom(record: JsonObject, dataRoot: string): string[] {
   ]);
 }
 
+function supportPathsFrom(record: JsonObject, dataRoot: string): string[] {
+  return unique([
+    ...stringArray(record.source_paths, dataRoot),
+    ...stringArray(record.source_path, dataRoot),
+    ...stringArray(record.provenance_paths, dataRoot),
+    ...stringArray(record.provenance_path, dataRoot),
+  ]);
+}
+
 function tagsFrom(record: JsonObject): string[] {
   return Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.toLowerCase()) : [];
 }
@@ -218,7 +263,7 @@ function isBehaviorMemory(relativePath: string, record: JsonObject): boolean {
   const tags = tagsFrom(record);
   const sourceStatus = lowerString(record.source_status);
   return (
-    sourceStatus === "internal" ||
+    (sourceStatus === "internal" && !relativePath.startsWith("40_Projects/")) ||
     relativePath.startsWith("50_Instances/accepted/codex-session-knowledge-") ||
     tags.includes("codex-session-derived") ||
     tags.includes("user-preference") ||
@@ -227,16 +272,60 @@ function isBehaviorMemory(relativePath: string, record: JsonObject): boolean {
   );
 }
 
+function isInternalSessionEvidence(relativePath: string, record: JsonObject): boolean {
+  const tags = tagsFrom(record);
+  const sourceStatus = lowerString(record.source_status);
+  return (
+    sourceStatus === "internal_session_evidence" ||
+    tags.includes("internal-session-evidence") ||
+    tags.includes("task-trace") ||
+    tags.includes("conversation-derived") ||
+    relativePath.startsWith("50_Instances/accepted/task-memory-")
+  );
+}
+
 function requiresSourceTruth(relativePath: string, record: JsonObject): boolean {
   if (isBehaviorMemory(relativePath, record)) return false;
+  if (isInternalSessionEvidence(relativePath, record)) return false;
   const sourceStatus = lowerString(record.source_status);
   const tags = tagsFrom(record);
+  if (relativePath.startsWith("40_Projects/")) {
+    return (
+      Boolean(sourceStatus && sourceStatus !== "internal") ||
+      tags.some((tag) => FACTUAL_TAGS.has(tag)) ||
+      tags.includes("public") ||
+      tags.includes("external")
+    );
+  }
+  if (relativePath.startsWith("50_Instances/accepted/")) {
+    return (
+      Boolean(sourceStatus && sourceStatus !== "internal") ||
+      tags.some((tag) => FACTUAL_TAGS.has(tag))
+    );
+  }
   return (
     relativePath.startsWith("20_Wiki/") &&
     sourceStatus !== "internal" &&
     (Boolean(sourceStatus) ||
-      tags.some((tag) => ["rag", "source-lineage", "verified-knowledge", "retrieval-quality", "provenance"].includes(tag)))
+      tags.some((tag) => FACTUAL_TAGS.has(tag)))
   );
+}
+
+function isSourceAnchorUnverified(relativePath: string, record: JsonObject): boolean {
+  const sourceStatus = lowerString(record.source_status);
+  const tags = tagsFrom(record);
+  return (
+    Boolean(sourceStatus && ANCHOR_SOURCE_STATUSES.has(sourceStatus)) ||
+    tags.includes("anchor-catalog") ||
+    tags.includes("source-anchor-unverified") ||
+    relativePath.includes("Anchor-Catalog")
+  );
+}
+
+function isProjectMemory(relativePath: string, record: JsonObject): boolean {
+  if (!relativePath.startsWith("40_Projects/")) return false;
+  const sourceStatus = lowerString(record.source_status);
+  return sourceStatus === "internal" && !requiresSourceTruth(relativePath, record);
 }
 
 async function collectSourceChunks(dataRoot: string): Promise<Array<{ path: string; record: JsonObject }>> {
@@ -321,6 +410,8 @@ export async function buildSourceLineageReport(
 
   const verifiedSupport = new Map<string, string[]>();
   const anchorOnlySupport = new Map<string, string[]>();
+  const verifiedDurableArtifacts = new Set<string>();
+  const anchorOnlyDurableArtifacts = new Set<string>();
   const chunkSummaries: SourceLineageChunkSummary[] = [];
 
   for (const chunk of chunks) {
@@ -398,15 +489,30 @@ export async function buildSourceLineageReport(
     });
   }
 
+  for (const claim of claimRecords) {
+    if (isBehaviorMemory(claim.path, claim.record) || isInternalSessionEvidence(claim.path, claim.record)) continue;
+    const sourceStatus = lowerString(claim.record.source_status);
+    if (isVerifiedStatus(sourceStatus) || (sourceStatus && FACTUAL_SOURCE_STATUSES.has(sourceStatus) && !isAnchorOnly(sourceStatus))) {
+      verifiedDurableArtifacts.add(claim.path);
+    } else if (isSourceAnchorUnverified(claim.path, claim.record)) {
+      anchorOnlyDurableArtifacts.add(claim.path);
+    }
+  }
+
   const claimSummaries: SourceLineageClaimSummary[] = [];
   for (const claim of claimRecords) {
     const sourceStatus = lowerString(claim.record.source_status);
-    const supportPaths = verifiedSupport.get(claim.path) ?? [];
-    const anchorPaths = anchorOnlySupport.get(claim.path) ?? [];
+    const directSupportPaths = supportPathsFrom(claim.record, dataRoot);
+    const verifiedDurableSupport = directSupportPaths.filter((supportPath) => verifiedDurableArtifacts.has(supportPath));
+    const anchorDurableSupport = directSupportPaths.filter((supportPath) => anchorOnlyDurableArtifacts.has(supportPath));
+    const supportPaths = unique([...(verifiedSupport.get(claim.path) ?? []), ...verifiedDurableSupport]);
+    const anchorPaths = unique([...(anchorOnlySupport.get(claim.path) ?? []), ...anchorDurableSupport]);
     let itemClass: SourceLineageClaimSummary["item_class"];
     if (isBehaviorMemory(claim.path, claim.record)) itemClass = "behavior_memory";
-    else if (claim.path.startsWith("40_Projects/")) itemClass = "project_memory";
+    else if (isInternalSessionEvidence(claim.path, claim.record)) itemClass = "internal_session_evidence";
+    else if (isSourceAnchorUnverified(claim.path, claim.record) && supportPaths.length === 0) itemClass = "source_anchor_unverified";
     else if (supportPaths.length > 0) itemClass = "verified_claim_support";
+    else if (isProjectMemory(claim.path, claim.record)) itemClass = "project_memory";
     else if (requiresSourceTruth(claim.path, claim.record)) itemClass = "unsupported_factual_claim";
     else itemClass = "internal_claim";
 
@@ -450,6 +556,8 @@ export async function buildSourceLineageReport(
       claim_records: claimRecords.length,
       behavior_memory_records: claimSummaries.filter((claim) => claim.item_class === "behavior_memory").length,
       project_memory_records: claimSummaries.filter((claim) => claim.item_class === "project_memory").length,
+      internal_session_evidence_records: claimSummaries.filter((claim) => claim.item_class === "internal_session_evidence").length,
+      source_anchor_unverified_records: claimSummaries.filter((claim) => claim.item_class === "source_anchor_unverified").length,
       verified_claim_support: claimSummaries.filter((claim) => claim.item_class === "verified_claim_support").length,
       unsupported_factual_claims: claimSummaries.filter((claim) => claim.item_class === "unsupported_factual_claim").length,
       dangling_claim_paths: findings.filter((finding) => finding.signal === "dangling_claim_path").length,
@@ -461,6 +569,9 @@ export async function buildSourceLineageReport(
     warnings: [
       chunkSummaries.some((chunk) => chunk.support_role === "source_anchor_unverified")
         ? "anchor_only_unverified_chunks_do_not_count_as_claim_support"
+        : "",
+      claimSummaries.some((claim) => claim.item_class === "source_anchor_unverified")
+        ? "source_anchor_unverified_claims_do_not_count_as_claim_support"
         : "",
     ].filter(Boolean),
     visible_status: status === "healthy" ? "Source lineage healthy" : "Source lineage needs attention",

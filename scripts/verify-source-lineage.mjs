@@ -53,6 +53,46 @@ function seedBehaviorMemory(dataRoot) {
   });
 }
 
+function seedFactualProject(dataRoot, sourceStatus = "verified_summary") {
+  write(
+    path.join(dataRoot, "40_Projects", "Factual-Project.md"),
+    `---
+title: Factual Project Claim
+source_status: ${sourceStatus}
+tags: [rag, source-lineage, public]
+---
+# Factual Project Claim
+
+This project note makes a source-backed public RAG claim.
+`,
+  );
+}
+
+function seedFactualAcceptedInstance(dataRoot, extra = {}) {
+  write(path.join(dataRoot, "50_Instances", "accepted", "rag-factual-instance.json"), {
+    title: "Accepted factual RAG instance",
+    source_status: "verified_summary",
+    tags: ["rag", "verified-knowledge", "source-lineage"],
+    summary: "Accepted factual RAG knowledge should be source-backed.",
+    ...extra,
+  });
+}
+
+function seedAnchorCatalog(dataRoot) {
+  write(
+    path.join(dataRoot, "20_Wiki", "Anchor-Catalog.md"),
+    `---
+title: Anchor Catalog
+source_status: anchor_only_unverified
+tags: [rag, anchor-catalog]
+---
+# Anchor Catalog
+
+This is only an anchor catalog.
+`,
+  );
+}
+
 function seedSourceChunk(
   dataRoot,
   {
@@ -102,11 +142,20 @@ await withFixture(async (dataRoot) => {
   seedWikiClaim(dataRoot);
   seedBehaviorMemory(dataRoot);
   seedSourceChunk(dataRoot);
+  seedFactualAcceptedInstance(dataRoot, {
+    source_paths: ["20_Wiki/RAG-Knowledge.md"],
+  });
   const report = await buildSourceLineageReport(dataRoot, { now: new Date("2026-07-07T00:00:00.000Z") });
   assert(report.status === "healthy", `clean fixture should be healthy, got ${report.status}`);
   assert(report.counts.verified_source_chunks === 1, "clean fixture should count verified source chunk");
   assert(report.counts.behavior_memory_records === 1, "behavior memory without external source should be allowed");
   assert(report.claim_records.some((claim) => claim.item_class === "verified_claim_support"), "wiki claim was not supported");
+  assert(
+    report.claim_records.some(
+      (claim) => claim.path === "50_Instances/accepted/rag-factual-instance.json" && claim.item_class === "verified_claim_support",
+    ),
+    "accepted factual instance with verified durable source path was not supported",
+  );
   const written = await buildAndWriteSourceLineageReport(dataRoot, {
     now: new Date("2026-07-07T00:00:00.000Z"),
   });
@@ -143,5 +192,20 @@ await expectSignal((dataRoot) => {
   seedWikiClaim(dataRoot);
   seedSourceChunk(dataRoot, { includeUri: false });
 }, "source_chunk_uri_missing");
+
+await expectSignal((dataRoot) => {
+  seedFactualProject(dataRoot);
+}, "unsupported_factual_claim");
+
+await expectSignal((dataRoot) => {
+  seedFactualAcceptedInstance(dataRoot);
+}, "unsupported_factual_claim");
+
+await expectSignal((dataRoot) => {
+  seedFactualAcceptedInstance(dataRoot, {
+    source_paths: ["20_Wiki/Anchor-Catalog.md"],
+  });
+  seedAnchorCatalog(dataRoot);
+}, "anchor_only_used_as_support");
 
 console.log("source lineage verification ok");

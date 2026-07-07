@@ -57,6 +57,7 @@ function runCheck({ id, description, command, args, timeoutMs = 120000, required
     cwd: root,
     encoding: "utf8",
     timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
     env: {
       ...process.env,
