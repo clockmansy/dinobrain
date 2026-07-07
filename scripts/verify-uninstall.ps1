@@ -28,7 +28,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $nodeRoot "node.exe"), "node`n", [System.Text.UTF8Encoding]::new($false))
 
   foreach ($launcherRoot in @($installRoot, $appDir)) {
-    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Uninstall Everything.cmd")) {
+    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Uninstall Everything.cmd")) {
       [System.IO.File]::WriteAllText((Join-Path $launcherRoot $launcherName), "@echo off`r`n", [System.Text.UTF8Encoding]::new($false))
     }
   }

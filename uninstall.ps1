@@ -227,6 +227,7 @@ function Remove-DinoBrainLaunchers {
     "DinoBrain Observatory.cmd",
     "DinoBrain Hook Diagnose.cmd",
     "DinoBrain Codex Hook Approval.cmd",
+    "DinoBrain Codex Live Proof.cmd",
     "DinoBrain Uninstall Everything.cmd"
   )
   $launcherRoots = @($InstallRootPath, $AppPath)

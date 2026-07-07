@@ -26,6 +26,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-dinobrain-observatory.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\diagnose-codex-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "uninstall.ps1"), "# test`n")
 
   $launchers = @(New-DinoBrainObservatoryLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
@@ -64,6 +65,20 @@ try {
     $text = [System.IO.File]::ReadAllText($launcher)
     if ($text -notmatch "start-codex-hook-approval\.ps1" -or $text -notmatch "RestartStaleCodex") {
       throw "Hook approval launcher does not run the approval flow: $launcher"
+    }
+  }
+
+  $liveProofLaunchers = @(New-DinoBrainLiveProofLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json"))
+  if ($liveProofLaunchers.Count -ne 2) {
+    throw "Expected 2 live proof launchers, got $($liveProofLaunchers.Count)"
+  }
+  foreach ($launcher in $liveProofLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "start-codex-live-proof\.ps1" -or $text -notmatch "node\.exe") {
+      throw "Live proof launcher does not run the proof flow: $launcher"
+    }
+    if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath)) {
+      throw "Live proof launcher does not contain expected app/data paths: $launcher"
     }
   }
 

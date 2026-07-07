@@ -31,6 +31,7 @@ npm run verify:codex-loop
 npm run verify:codex-live:recent
 npm run verify:compounding
 npm run installer:verify:approval
+npm run installer:verify:launchers
 npm run installer:win
 npm run release:win -- -Tag v2.2.1 -ReplaceAsset
 ```
@@ -44,6 +45,8 @@ Use the bundled or portable Node runtime if `npm` is not on `PATH`.
 Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging without a GitHub token.
 
 `npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
+
+`npm run installer:verify:launchers` verifies the generated Observatory, hook diagnose, hook approval, Codex live proof, and purge uninstall launchers without touching the real install paths.
 
 `npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
@@ -260,3 +263,5 @@ It verifies:
 `npm run verify:codex-loop` extends this from hook preflight to the complete Codex loop. It creates a temporary data vault and a temporary bare Git remote, runs the hook, writes a proof artifact, calls `finish_task`, and asserts that both the preflight records and the finish/growth records are pushed to the remote under explicit conditional-push opt-in.
 
 `npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths. On Windows it also reports stale Codex and DinoBrain MCP processes whose start time predates `hooks.json` or `dist/index.js`, so a missing live event can be separated from hook registration failures.
+
+`npm run codex:live-proof` wraps the live proof into an operator flow. It restarts stale Codex/MCP processes through the approval helper, copies a unique proof prompt to the clipboard, and polls `verify:codex-live` until a fresh Codex Desktop thread emits the real `codex_desktop` preflight evidence.

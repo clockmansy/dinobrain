@@ -980,6 +980,42 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$approvalScript
   return $launcherPaths
 }
 
+function New-DinoBrainLiveProofLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot,
+    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true)][string]$HooksPath
+  )
+
+  $proofScript = Join-Path $AppPath "scripts\start-codex-live-proof.ps1"
+  if (-not (Test-Path -LiteralPath $proofScript)) {
+    Write-Warning "Live proof script not found: $proofScript"
+    return @()
+  }
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Codex Live Proof.cmd"),
+    (Join-Path $AppPath "DinoBrain Codex Live Proof.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -HooksPath "$HooksPath" -ConfigPath "$ConfigPath" -NodeExe "$nodeExe"
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Codex live proof launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
 function Start-DinoBrainHookApprovalLauncher {
   param([Parameter(Mandatory = $true)][string[]]$LauncherPaths)
 
@@ -1202,6 +1238,7 @@ $hookApprovalLaunchers = @()
 if (-not $SkipCodexHookConfig) {
   $hookApprovalLaunchers = New-DinoBrainHookApprovalLauncher -InstallRoot $InstallRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
 }
+$liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
@@ -1236,6 +1273,9 @@ foreach ($launcher in $hookDiagnoseLaunchers) {
 }
 foreach ($launcher in $hookApprovalLaunchers) {
   Write-Host "Hook approval launcher: $launcher"
+}
+foreach ($launcher in $liveProofLaunchers) {
+  Write-Host "Codex live proof launcher: $launcher"
 }
 foreach ($launcher in $uninstallLaunchers) {
   Write-Host "Uninstall launcher: $launcher"

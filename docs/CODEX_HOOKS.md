@@ -53,6 +53,7 @@ npm run hook:verify
 npm run verify:codex-loop
 npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
+npm run codex:live-proof
 npm run observatory
 ```
 
@@ -61,11 +62,14 @@ If the live verifier reports stale Codex or stale DinoBrain MCP processes, run:
 ```powershell
 npm run codex:hooks:diagnose
 npm run codex:hooks:approval
+npm run codex:live-proof
 ```
 
 The approval helper restarts processes that were already running before
 `hooks.json` or `dist/index.js` changed, reopens Codex, copies `/hooks` to the
 clipboard, and keeps the final trust decision in the user's hands.
+The live-proof helper then copies a unique proof prompt and keeps polling the
+real live verifier until a `codex_desktop` preflight event appears.
 
 Open:
 
