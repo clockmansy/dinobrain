@@ -23,6 +23,7 @@ async function main(): Promise<void> {
         average_required_term_recall: result.report.average_required_term_recall,
         average_memory_lift: result.report.average_memory_lift,
         hybrid_ratio: result.report.hybrid_ratio,
+        generated_answer_eval: result.report.generated_answer_eval,
         failing_cases: result.report.failing_cases,
         warnings: result.report.warnings,
         caveats: result.report.caveats,

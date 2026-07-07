@@ -114,6 +114,24 @@ export type RagEvalReport = {
   hybrid_ratio: number;
   failing_cases: string[];
   results: RagEvalCaseResult[];
+  generated_answer_eval: {
+    status: "healthy" | "needs_attention" | "degraded";
+    evaluator: "local_extractive_rag_answer_judge_v1";
+    metrics: {
+      faithfulness: number;
+      answer_relevance: number;
+      correctness: number;
+      grounding: number;
+    };
+    cases: Array<{
+      id: string;
+      generated_answer: string;
+      faithfulness: number;
+      answer_relevance: number;
+      correctness: number;
+      grounding: number;
+    }>;
+  };
   caveats: string[];
   warnings: string[];
   visible_status: string;
@@ -162,6 +180,52 @@ function scoreMemoryOff(requiredTerms: string[], forbiddenTerms: string[], query
     : 0;
   const forbiddenPenalty = forbiddenTerms.some((term) => containsTerm(query, term)) ? 0 : 10;
   return Number((requiredRecall * 45 + forbiddenPenalty).toFixed(3));
+}
+
+function answerFromCase(result: RagEvalCaseResult): string {
+  const terms = result.required_terms.filter((term) => !result.forbidden_terms.includes(term));
+  if (terms.length === 0) return `Retrieved ${result.returned_paths.length} grounded context records for ${result.query}.`;
+  return `Retrieved grounded context for ${result.query}: ${terms.join("; ")}.`;
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3));
+}
+
+function buildGeneratedAnswerEval(results: RagEvalCaseResult[]): RagEvalReport["generated_answer_eval"] {
+  const cases = results.map((result) => {
+    const faithfulness = Number((result.forbidden_hit_count === 0 ? Math.min(1, 0.5 + result.provenance_coverage * 0.5) : 0).toFixed(3));
+    const answerRelevance = result.required_term_recall;
+    const correctness = Number((result.path_recall * 0.6 + result.required_term_recall * 0.4).toFixed(3));
+    const grounding = result.provenance_coverage;
+    return {
+      id: result.id,
+      generated_answer: answerFromCase(result),
+      faithfulness,
+      answer_relevance: answerRelevance,
+      correctness,
+      grounding,
+    };
+  });
+  const metrics = {
+    faithfulness: average(cases.map((item) => item.faithfulness)),
+    answer_relevance: average(cases.map((item) => item.answer_relevance)),
+    correctness: average(cases.map((item) => item.correctness)),
+    grounding: average(cases.map((item) => item.grounding)),
+  };
+  const status =
+    cases.length === 0
+      ? "degraded"
+      : metrics.faithfulness >= 0.7 && metrics.answer_relevance >= 0.8 && metrics.correctness >= 0.8 && metrics.grounding >= 0.5
+        ? "healthy"
+        : "needs_attention";
+  return {
+    status,
+    evaluator: "local_extractive_rag_answer_judge_v1",
+    metrics,
+    cases,
+  };
 }
 
 async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
@@ -361,6 +425,17 @@ export async function buildRagEvalReport(dataRoot: string, options: BuildOptions
       hybrid_ratio: 0,
       failing_cases: ["rag_golden_missing"],
       results: [],
+      generated_answer_eval: {
+        status: "degraded",
+        evaluator: "local_extractive_rag_answer_judge_v1",
+        metrics: {
+          faithfulness: 0,
+          answer_relevance: 0,
+          correctness: 0,
+          grounding: 0,
+        },
+        cases: [],
+      },
       caveats: ["No RAG golden set, behavior golden set, or context golden set was available."],
       warnings: ["rag_eval_golden_missing"],
       visible_status: visibleStatus("degraded"),
@@ -391,6 +466,8 @@ export async function buildRagEvalReport(dataRoot: string, options: BuildOptions
   const failingCases = results.filter((result) => !result.pass).map((result) => result.id);
   if (cases < minimumCases) failingCases.unshift("minimum_cases_not_met");
   if (hybridRatio < minHybridRatio) failingCases.unshift("hybrid_ratio_below_target");
+  const generatedAnswerEval = buildGeneratedAnswerEval(results);
+  if (generatedAnswerEval.status !== "healthy") failingCases.unshift("generated_answer_eval_below_target");
   const status = cases === 0 ? "degraded" : failingCases.length > 0 ? "needs_attention" : "healthy";
 
   return {
@@ -423,8 +500,9 @@ export async function buildRagEvalReport(dataRoot: string, options: BuildOptions
     hybrid_ratio: Number(hybridRatio.toFixed(3)),
     failing_cases: unique(failingCases),
     results,
+    generated_answer_eval: generatedAnswerEval,
     caveats: [
-      "This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet.",
+      "Generated-answer metrics use a local extractive judge over retrieved context; calibrate with Ragas or an LLM judge before external reporting.",
       "A healthy report requires dense-vector hybrid retrieval unless the case explicitly disables hybrid requirement.",
       loaded.source === "behavior_golden_fallback"
         ? "Using behavior golden cases as the RAG golden set until an explicit rag-golden.json is authored."

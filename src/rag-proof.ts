@@ -3,6 +3,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { DENSE_VECTOR_INDEX_RELATIVE_PATH } from "./hybrid-retrieval.js";
+import {
+  HUGGINGFACE_TRANSFORMERS_PROVIDER,
+  LOCAL_TEXT_HASHING_PROVIDER,
+  tryEmbedTextsWithSemanticProvider,
+} from "./semantic-embeddings.js";
 import type { WikiIndex } from "./wiki-index.js";
 import { buildAndWriteWikiIndex, WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
 
@@ -47,7 +52,7 @@ type RagGolden = {
 
 export type RagProofReport = {
   version: typeof RAG_PROOF_VERSION;
-  status: "healthy" | "degraded";
+  status: "healthy" | "needs_attention" | "degraded";
   generated_at: string;
   data_root: string;
   rag_golden_path: string;
@@ -60,9 +65,11 @@ export type RagProofReport = {
     missing_expected_paths: number;
   };
   dense_vector: {
-    provider: "local_text_hashing_v1";
+    provider: typeof HUGGINGFACE_TRANSFORMERS_PROVIDER | typeof LOCAL_TEXT_HASHING_PROVIDER;
+    model: string | null;
     dimensions: number;
-    semantic_embedding_provider: false;
+    semantic_embedding_provider: boolean;
+    cache_dir?: string | null;
   };
   warnings: string[];
   visible_status: string;
@@ -186,10 +193,53 @@ export async function buildAndWriteRagProof(
   const queries: Record<string, number[]> = {};
 
   for (const record of wiki.records) {
-    records[record.path] = embedText(recordText(record), dimensions);
+    records[record.path] = [];
   }
   for (const item of ragGolden?.cases ?? []) {
-    queries[item.query.toLowerCase().replace(/\s+/g, " ").trim()] = embedText(item.query, dimensions);
+    queries[item.query.toLowerCase().replace(/\s+/g, " ").trim()] = [];
+  }
+
+  const recordEntries = wiki.records.map((record) => ({ path: record.path, text: recordText(record) }));
+  const queryEntries = (ragGolden?.cases ?? []).map((item) => ({
+    key: item.query.toLowerCase().replace(/\s+/g, " ").trim(),
+    text: item.query,
+  }));
+  const semantic = await tryEmbedTextsWithSemanticProvider([
+    ...recordEntries.map((entry) => entry.text),
+    ...queryEntries.map((entry) => entry.text),
+  ]);
+  let vectorProvider: typeof HUGGINGFACE_TRANSFORMERS_PROVIDER | typeof LOCAL_TEXT_HASHING_PROVIDER = LOCAL_TEXT_HASHING_PROVIDER;
+  let vectorModel: string | null = null;
+  let vectorDimensions = dimensions;
+  let semanticProvider = false;
+  let cacheDir: string | null | undefined = undefined;
+  if (semantic) {
+    vectorProvider = semantic.provider;
+    vectorModel = semantic.model;
+    vectorDimensions = semantic.dimensions;
+    semanticProvider = true;
+    cacheDir = semantic.cache_dir;
+    for (let index = 0; index < recordEntries.length; index += 1) {
+      const entry = recordEntries[index];
+      if (entry) records[entry.path] = semantic.vectors[index] ?? [];
+    }
+    const queryOffset = recordEntries.length;
+    for (let index = 0; index < queryEntries.length; index += 1) {
+      const entry = queryEntries[index];
+      if (entry) queries[entry.key] = semantic.vectors[queryOffset + index] ?? [];
+    }
+  } else {
+    vectorProvider = LOCAL_TEXT_HASHING_PROVIDER;
+    vectorModel = null;
+    vectorDimensions = dimensions;
+    semanticProvider = false;
+    cacheDir = null;
+    for (const entry of recordEntries) {
+      records[entry.path] = embedText(entry.text, dimensions);
+    }
+    for (const entry of queryEntries) {
+      queries[entry.key] = embedText(entry.text, dimensions);
+    }
   }
 
   const expectedPaths = new Set((ragGolden?.cases ?? []).flatMap((item) => item.expected_paths));
@@ -197,16 +247,19 @@ export async function buildAndWriteRagProof(
   if (ragGolden) await writeJson(ragGoldenPath, ragGolden);
   await writeJson(denseVectorPath, {
     version: 1,
-    provider: "local_text_hashing_v1",
-    dimensions,
-    semantic_embedding_provider: false,
+    provider: vectorProvider,
+    model: vectorModel,
+    dimensions: vectorDimensions,
+    semantic_embedding_provider: semanticProvider,
+    cache_dir: cacheDir,
     generated_at: generatedAt,
     source_index_path: WIKI_INDEX_RELATIVE_PATH,
     records,
     queries,
   });
 
-  const status = ragGolden && ragGolden.cases.length > 0 && missingExpected.length === 0 ? "healthy" : "degraded";
+  const hasGolden = Boolean(ragGolden && ragGolden.cases.length > 0 && missingExpected.length === 0);
+  const status = !hasGolden ? "degraded" : semanticProvider ? "healthy" : "needs_attention";
   const report: RagProofReport = {
     version: RAG_PROOF_VERSION,
     status,
@@ -222,16 +275,23 @@ export async function buildAndWriteRagProof(
       missing_expected_paths: missingExpected.length,
     },
     dense_vector: {
-      provider: "local_text_hashing_v1",
-      dimensions,
-      semantic_embedding_provider: false,
+      provider: vectorProvider,
+      model: vectorModel,
+      dimensions: vectorDimensions,
+      semantic_embedding_provider: semanticProvider,
+      cache_dir: cacheDir,
     },
     warnings: [
       !ragGolden ? "behavior_golden_missing" : "",
       missingExpected.length > 0 ? "rag_expected_paths_missing_from_wiki_index" : "",
-      "local_text_hashing_vectors_are_not_external_embedding_provider",
+      semanticProvider ? "" : "local_text_hashing_vectors_are_not_external_embedding_provider",
     ].filter(Boolean),
-    visible_status: status === "healthy" ? "RAG proof artifacts ready" : "RAG proof artifacts need repair",
+    visible_status:
+      status === "healthy"
+        ? "RAG proof artifacts ready with semantic embeddings"
+        : status === "needs_attention"
+          ? "RAG proof artifacts use lexical hashing fallback"
+          : "RAG proof artifacts need repair",
   };
   await writeJson(statusPath, report);
   return { report, statusPath };

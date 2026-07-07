@@ -117,6 +117,8 @@ async function main() {
     assert(result.report.hybrid_ratio === 1, "dense vector fixture did not reach full hybrid ratio");
     assert(result.report.average_memory_lift >= 10, "memory-on lift was not proven");
     assert(result.report.results[0]?.retrieval_mode === "hybrid_contextual_v2", "hybrid retrieval mode not reported");
+    assert(result.report.generated_answer_eval?.status === "healthy", "generated answer eval was not healthy");
+    assert(typeof result.report.generated_answer_eval?.metrics?.answer_relevance === "number", "answer relevance metric missing");
 
     console.log("rag eval verification ok");
   } finally {

@@ -102,8 +102,10 @@ async function main() {
     assert(existsSync(path.join(dataRoot, RAG_PROOF_STATUS_RELATIVE_PATH)), "rag proof status missing");
 
     const dense = JSON.parse(readFileSync(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), "utf8"));
-    assert(dense.provider === "local_text_hashing_v1", "dense vector provider metadata missing");
-    assert(dense.semantic_embedding_provider === false, "proof should not pretend to be external semantic embeddings");
+    assert(dense.provider === "huggingface_transformers_feature_extraction_v1", "semantic vector provider metadata missing");
+    assert(dense.model === "Xenova/all-MiniLM-L6-v2", "semantic model metadata missing");
+    assert(dense.semantic_embedding_provider === true, "proof did not use a real semantic embedding provider");
+    assert(dense.dimensions === 384, "semantic embedding dimensions missing");
 
     const evalResult = await buildAndWriteRagEvalReport(dataRoot, {
       now: new Date("2026-07-07T00:01:00.000Z"),
@@ -112,6 +114,8 @@ async function main() {
     assert(evalResult.report.status === "healthy", `eval should be healthy, got ${evalResult.report.status}`);
     assert(evalResult.report.hybrid_ratio === 1, "eval did not prove full hybrid ratio");
     assert(evalResult.report.counts.lexical_fallback === 0, "eval still used lexical fallback");
+    assert(evalResult.report.generated_answer_eval?.status === "healthy", "generated answer eval did not pass");
+    assert(typeof evalResult.report.generated_answer_eval?.metrics?.faithfulness === "number", "faithfulness metric missing");
     assert(!evalResult.report.warnings.includes("rag_eval_using_fallback_golden"), "fallback golden warning remained");
 
     console.log("rag proof verification ok");
