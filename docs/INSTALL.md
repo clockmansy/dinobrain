@@ -204,6 +204,10 @@ npm run codex:live-proof
 window open while you approve the hook, start a fresh Codex thread, and paste
 the proof prompt copied to your clipboard.
 
+The fresh thread matters. Threads that were created before the DinoBrain
+`hooks.json` update can continue without the new pre-response hook even after
+the Codex process itself has been restarted.
+
 To prove a fresh Codex app session actually dispatched the hook for a real prompt, run:
 
 ```powershell

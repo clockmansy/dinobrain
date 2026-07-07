@@ -65,6 +65,7 @@ function classifyLiveBlocker(check) {
   if (parsed.process_diagnostics?.stale_mcp_count > 0) return "stale_dinobrain_mcp_processes";
   if (parsed.user_prompt_hook?.ok !== true) return "user_prompt_hook_not_registered";
   if (parsed.hook_runtime?.ok !== true) return "codex_hooks_runtime_not_enabled";
+  if (parsed.thread_diagnostics?.current_thread_stale_for_hooks) return "current_codex_thread_stale_for_hooks";
   if (!parsed.submitted_event) return "missing_live_codex_desktop_prompt_event";
   if (!parsed.completed_event) return "missing_live_preflight_completion_event";
   if (!parsed.live_report) return "missing_live_hook_report";

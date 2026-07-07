@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +62,53 @@ function includesSnippet(value, snippet) {
 
 function isCodexDesktopLaunch(record) {
   return record?.launch_provenance?.launch_kind === "codex_desktop";
+}
+
+function decodeUuidV7Timestamp(threadId) {
+  const match = String(threadId ?? "").match(/^([0-9a-f]{8})-([0-9a-f]{4})-/i);
+  if (!match) return null;
+  const millis = Number.parseInt(`${match[1]}${match[2]}`, 16);
+  if (!Number.isSafeInteger(millis) || millis <= 0) return null;
+  const createdAt = new Date(millis);
+  return Number.isNaN(createdAt.getTime()) ? null : createdAt;
+}
+
+function loadThreadDiagnostics() {
+  const currentThreadId = process.env.CODEX_THREAD_ID ?? "";
+  const currentThreadCreatedAt = decodeUuidV7Timestamp(currentThreadId);
+  const hooksLastWrite = existsSync(codexHooksPath) ? statSync(codexHooksPath).mtime : null;
+  const sessionIndexPath = path.join(homedir(), ".codex", "session_index.jsonl");
+  const recentThreads = [];
+
+  if (existsSync(sessionIndexPath)) {
+    const lines = readFileSync(sessionIndexPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-200);
+    for (const line of lines) {
+      try {
+        const record = JSON.parse(line);
+        const createdAt = decodeUuidV7Timestamp(record.id);
+        recentThreads.push({
+          id: record.id,
+          thread_name: record.thread_name ?? null,
+          created_at: createdAt?.toISOString() ?? null,
+          updated_at: record.updated_at ?? null,
+          created_after_hooks: Boolean(createdAt && hooksLastWrite && createdAt >= hooksLastWrite),
+        });
+      } catch {
+        // Advisory only: a corrupt local index row should not hide live hook evidence.
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    current_thread_id: currentThreadId || null,
+    current_thread_created_at: currentThreadCreatedAt?.toISOString() ?? null,
+    hooks_last_write: hooksLastWrite?.toISOString() ?? null,
+    current_thread_stale_for_hooks: Boolean(currentThreadCreatedAt && hooksLastWrite && currentThreadCreatedAt < hooksLastWrite),
+    recent_thread_count: recentThreads.length,
+    recent_threads_after_hooks_count: recentThreads.filter((thread) => thread.created_after_hooks).length,
+    recent_threads: recentThreads.slice(-10),
+  };
 }
 
 function parseTomlFeatureHooks() {
@@ -241,6 +288,7 @@ function main() {
   const hookRuntime = parseTomlFeatureHooks();
   const userHook = parseUserHookRegistration();
   const processDiagnostics = loadProcessDiagnostics();
+  const threadDiagnostics = loadThreadDiagnostics();
   const events = loadLiveEvents(since);
   const reports = loadLiveReports(since);
   const submitted = events.find(
@@ -289,6 +337,7 @@ function main() {
     report_count_after_since: reports.length,
     required_launch_kind: "codex_desktop",
     process_diagnostics: processDiagnostics,
+    thread_diagnostics: threadDiagnostics,
   };
 
   console.log(JSON.stringify(result, null, 2));
@@ -297,10 +346,12 @@ function main() {
       ? hookRuntime.reason
       : !userHook.ok
         ? userHook.reason
-        : !submitted
+      : !submitted
         ? processDiagnostics.stale_codex_count > 0
           ? `no live Codex desktop UserPromptSubmit preflight event found; ${processDiagnostics.stale_codex_count} Codex process(es) started before hooks.json was updated. Run: ${processDiagnostics.approval_command}`
-          : `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`
+          : threadDiagnostics.current_thread_stale_for_hooks
+            ? `no live Codex desktop UserPromptSubmit preflight event found; current thread ${threadDiagnostics.current_thread_id} was created before hooks.json was updated. Start a fresh Codex Desktop thread after approving /hooks, paste the proof prompt, then rerun this verifier.`
+            : `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`
           : !completed
             ? "no live codex_preflight_completed event found with matching hook_run_id and prompt_hash"
             : "no matching live hook report with hook_run_id, prompt_hash, context paths, and existing Context Pack trace found";

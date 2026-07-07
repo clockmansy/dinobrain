@@ -73,6 +73,10 @@ prompt, and keeps polling the real live verifier until a `codex_desktop`
 preflight event appears. The `npm run codex:live-proof` command itself returns
 after the proof window starts.
 
+Use a fresh Codex Desktop thread for the proof. A long-running thread that was
+created before `hooks.json` changed can keep running without dispatching the new
+`UserPromptSubmit` hook, even when the current Codex process is not stale.
+
 Open:
 
 ```text

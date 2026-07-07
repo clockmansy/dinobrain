@@ -267,4 +267,6 @@ It verifies:
 
 `npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths. On Windows it also reports stale Codex and DinoBrain MCP processes whose start time predates `hooks.json` or `dist/index.js`, so a missing live event can be separated from hook registration failures.
 
+`npm run verify:codex-live` also reports whether the current `CODEX_THREAD_ID` was created before `hooks.json` was updated. That stale-thread condition means the next proof attempt must happen in a fresh Codex Desktop thread, not the old long-running thread.
+
 `npm run codex:live-proof` wraps the live proof into an operator flow. It opens a separate proof window, restarts stale Codex/MCP processes through the approval helper, copies a unique proof prompt to the clipboard, and polls `verify:codex-live` until a fresh Codex Desktop thread emits the real `codex_desktop` preflight evidence. The npm command returns once the proof window has started.
