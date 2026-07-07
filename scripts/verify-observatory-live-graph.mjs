@@ -63,6 +63,8 @@ try {
   mkdirSync(path.join(dataRoot, ".dino", "index"), { recursive: true });
   mkdirSync(path.join(dataRoot, ".dino", "audits"), { recursive: true });
   mkdirSync(path.join(dataRoot, ".dino", "tasks"), { recursive: true });
+  mkdirSync(path.join(dataRoot, ".dino", "context-packs"), { recursive: true });
+  mkdirSync(path.join(dataRoot, ".dino", "traces"), { recursive: true });
   mkdirSync(path.join(dataRoot, ".dino", "events"), { recursive: true });
   const writeJson = (relativePath, value) => {
     writeFileSync(path.join(dataRoot, ...relativePath.split("/")), `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -121,6 +123,36 @@ tags: [context-pack]
     })}\n`,
     "utf8",
   );
+  writeJson(".dino/context-packs/pack-observatory-memory.json", {
+    pack_id: "pack-observatory-memory",
+    task_id: "task-active-observatory",
+    question: "Verify live graph memory relationships",
+    created_at: "2026-07-01T00:00:01.000Z",
+    item_count: 1,
+    items: [
+      {
+        path: "50_Instances/accepted/observatory-memory-rule.json",
+        kind: "curated_record",
+        title: "Observatory Memory Rule",
+        summary: "The live graph should expose context-pack and trace relationships to used memory.",
+        score: 9.2,
+      },
+    ],
+  });
+  writeJson(".dino/traces/task-active-observatory.json", {
+    task_id: "task-active-observatory",
+    outcome: "completed",
+    summary: "Finished the Observatory graph verification task.",
+    growth_policy: "trace_only",
+    changed_files: ["scripts/dinobrain-observatory.mjs"],
+    decisions: ["Graph edges should reveal context-pack and trace memory use."],
+    next_steps: [],
+    used_memory_paths: ["50_Instances/accepted/observatory-memory-rule.json"],
+    context_pack_paths: [".dino/context-packs/pack-observatory-memory.json"],
+    session_archive_paths: [],
+    candidate_paths: [],
+    finished_at: "2026-07-01T00:00:02.000Z",
+  });
   writeJson(".dino/index/graph-health.json", {
     version: "graph_health_v1",
     status: "healthy",
@@ -279,6 +311,17 @@ tags: [context-pack]
     assert(graph.stats.active_tasks === 1, "Graph did not report active task count");
     assert(graph.nodes.some((node) => node.type === "active_task"), "Graph did not include active task node");
     assert(graph.edges.some((edge) => edge.type === "active_task"), "Graph did not include active task edge");
+    assert(graph.nodes.some((node) => node.type === "context_pack"), "Graph did not include context pack node");
+    assert(graph.nodes.some((node) => node.type === "trace"), "Graph did not include finish trace node");
+    assert(
+      graph.nodes.some((node) => node.type === "memory_ref" && node.path === "50_Instances/accepted/observatory-memory-rule.json"),
+      "Graph did not include referenced memory node",
+    );
+    assert(graph.edges.some((edge) => edge.type === "uses_context"), "Graph did not connect task to context pack");
+    assert(graph.edges.some((edge) => edge.type === "finish_trace"), "Graph did not connect task to trace");
+    assert(graph.edges.some((edge) => edge.type === "retrieves_memory"), "Graph did not connect context pack to memory");
+    assert(graph.edges.some((edge) => edge.type === "used_memory"), "Graph did not connect trace to used memory");
+    assert(graph.stats.memory_edges >= 2, "Graph did not count memory edges");
     const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
     assert(state.ok === true, "State endpoint did not return ok=true");
     assert(state.summary.active_task_count === 1, "State endpoint did not report active task count");
@@ -319,6 +362,9 @@ tags: [context-pack]
     assert(readiness.latest_audit?.provided_memory_paths?.includes("20_Wiki/Graph-Speed.md"), "Audit provided paths missing");
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
     assert(html.includes("Completion Readiness"), "UI does not include readiness block");
+    assert(html.includes("graph-cluster-label"), "UI does not include graph cluster labels");
+    assert(html.includes("Live loop"), "UI does not include live graph cluster label");
+    assert(html.includes("memory links"), "UI does not include memory link statistics");
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
     assert(html.includes("readiness-audit-paths"), "UI does not include audit path container");
     writeFileSync(path.join(dataRoot, ".dino", "state", "native_instruction_authority.json"), "{ bad json\n", "utf8");

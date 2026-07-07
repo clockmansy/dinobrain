@@ -159,6 +159,8 @@ function graphColor(node) {
     task: "#d99a3d",
     context_pack: "#8ac7ff",
     event: "#b99a69",
+    trace: "#c7d2fe",
+    memory_ref: "#f3e7c7",
   };
   return colors[node.type] ?? "#cfc4a6";
 }
@@ -1083,23 +1085,58 @@ function withActivityGraph(wikiGraph, operationState) {
   const nodes = [...wikiGraph.nodes];
   const edges = [...wikiGraph.edges];
   const seen = new Set(nodes.map((node) => node.id));
+  const edgeSeen = new Set(edges.map((edge) => `${edge.source}->${edge.target}:${edge.type}`));
+  const nodeByPath = new Map();
+  for (const node of nodes) {
+    if (node.path) nodeByPath.set(String(node.path).replace(/\\/g, "/"), node.id);
+  }
   const addNode = (node) => {
     if (seen.has(node.id)) return;
     seen.add(node.id);
+    if (node.path) nodeByPath.set(String(node.path).replace(/\\/g, "/"), node.id);
     nodes.push({ count: 1, color: graphColor(node), ...node });
   };
-  const addEdge = (source, target, type) => {
-    if (seen.has(source) && seen.has(target)) edges.push({ source, target, type });
+  const addEdge = (source, target, type, extra = {}) => {
+    const key = `${source}->${target}:${type}`;
+    if (seen.has(source) && seen.has(target) && !edgeSeen.has(key)) {
+      edgeSeen.add(key);
+      edges.push({ source, target, type, ...extra });
+    }
+  };
+  const memoryLabel = (memoryPath, fallback = null) => {
+    const name = path.basename(String(memoryPath ?? ""), ".json").replaceAll("_", " ");
+    return activityNodeLabel(fallback || name || memoryPath, 42);
+  };
+  const ensureMemoryNode = (memoryPath, patch = {}) => {
+    const cleanPath = String(memoryPath ?? "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
+    if (!cleanPath) return null;
+    const existing = nodeByPath.get(cleanPath);
+    if (existing) return existing;
+    const nodeId = `memory:${cleanPath}`;
+    addNode({
+      id: nodeId,
+      type: "memory_ref",
+      label: memoryLabel(cleanPath, patch.title),
+      path: cleanPath,
+      record_id: patch.kind ?? patch.record_id ?? null,
+      count: Math.max(2, Number(patch.score ?? patch.count ?? 2)),
+      updated_at: patch.updated_at ?? null,
+    });
+    return nodeId;
   };
 
   const tasks = Array.isArray(operationState?.tasks) ? operationState.tasks : [];
   const events = Array.isArray(operationState?.events) ? operationState.events : [];
   const packs = Array.isArray(operationState?.context_packs) ? operationState.context_packs : [];
+  const traces = Array.isArray(operationState?.traces) ? operationState.traces : [];
   const activeTasks = tasks.filter((task) => task.status === "started");
   const displayedTasks = [...activeTasks, ...tasks.filter((task) => task.status !== "started")].slice(0, 14);
   const displayedPacks = packs.slice(0, 8);
+  const displayedTraces = traces.slice(0, 8);
   const displayedEvents = events.slice(0, 18);
   const rootId = "activity:root";
+  const taskNodeIds = new Map();
+  const packNodeIds = new Map();
 
   addNode({
     id: rootId,
@@ -1125,6 +1162,7 @@ function withActivityGraph(wikiGraph, operationState) {
       status: task.status,
       updated_at: task.updated_at ?? task.created_at ?? null,
     });
+    taskNodeIds.set(taskId, nodeId);
     addEdge(rootId, nodeId, active ? "active_task" : "recent_task");
   }
 
@@ -1141,7 +1179,44 @@ function withActivityGraph(wikiGraph, operationState) {
       count: Math.max(1, Number(pack.item_count ?? 1)),
       updated_at: pack.created_at ?? null,
     });
-    addEdge(rootId, nodeId, "context_pack");
+    packNodeIds.set(packPath, nodeId);
+    const taskSource = pack.task_id && taskNodeIds.has(String(pack.task_id))
+      ? taskNodeIds.get(String(pack.task_id))
+      : rootId;
+    addEdge(taskSource, nodeId, taskSource === rootId ? "context_pack" : "uses_context");
+    for (const item of (Array.isArray(pack.items) ? pack.items : []).slice(0, 8)) {
+      const memoryNodeId = ensureMemoryNode(item.path, item);
+      if (memoryNodeId) addEdge(nodeId, memoryNodeId, "retrieves_memory", { score: Number(item.score ?? 0) });
+    }
+  }
+
+  for (const trace of displayedTraces) {
+    const tracePath = String(trace._path ?? trace.path ?? trace.trace_path ?? trace.task_id ?? "");
+    if (!tracePath) continue;
+    const nodeId = `trace:${tracePath}`;
+    const usedPaths = Array.isArray(trace.used_memory_paths) ? trace.used_memory_paths : [];
+    addNode({
+      id: nodeId,
+      type: "trace",
+      label: activityNodeLabel(trace.outcome ? `Trace: ${trace.outcome}` : trace.summary || trace.task_id || "Finish trace"),
+      path: trace._path ?? trace.path ?? null,
+      record_id: trace.task_id ?? null,
+      count: Math.max(2, usedPaths.length),
+      status: trace.outcome ?? null,
+      updated_at: trace.finished_at ?? null,
+    });
+    const taskSource = trace.task_id && taskNodeIds.has(String(trace.task_id))
+      ? taskNodeIds.get(String(trace.task_id))
+      : rootId;
+    addEdge(taskSource, nodeId, taskSource === rootId ? "recent_trace" : "finish_trace");
+    for (const packPath of (Array.isArray(trace.context_pack_paths) ? trace.context_pack_paths : []).slice(0, 4)) {
+      const packNodeId = packNodeIds.get(String(packPath));
+      if (packNodeId) addEdge(nodeId, packNodeId, "trace_pack");
+    }
+    for (const memoryPath of usedPaths.slice(0, 10)) {
+      const memoryNodeId = ensureMemoryNode(memoryPath);
+      if (memoryNodeId) addEdge(nodeId, memoryNodeId, "used_memory");
+    }
   }
 
   for (const event of displayedEvents) {
@@ -1165,7 +1240,7 @@ function withActivityGraph(wikiGraph, operationState) {
 
   return {
     ...wikiGraph,
-    index_mode: `${wikiGraph.index_mode}+operations_activity_v1`,
+    index_mode: `${wikiGraph.index_mode}+operations_activity_v2`,
     stats: {
       ...wikiGraph.stats,
       nodes: nodes.length,
@@ -1174,6 +1249,9 @@ function withActivityGraph(wikiGraph, operationState) {
       shown_edges: edges.length,
       operation_nodes: nodes.length - wikiGraph.nodes.length,
       active_tasks: activeTasks.length,
+      trace_nodes: nodes.filter((node) => node.type === "trace").length,
+      memory_reference_nodes: nodes.filter((node) => node.type === "memory_ref").length,
+      memory_edges: edges.filter((edge) => ["retrieves_memory", "used_memory"].includes(edge.type)).length,
     },
     nodes,
     edges,
@@ -1447,6 +1525,7 @@ function html() {
       border: 1px solid #3b452f;
       border-radius: 8px;
       background:
+        radial-gradient(circle at 64% 38%, rgba(79, 182, 164, .08), transparent 24%),
         radial-gradient(circle at 42% 52%, rgba(217, 154, 61, .105), transparent 26%),
         linear-gradient(180deg, rgba(217, 154, 61, .08), transparent 42%),
         var(--panel-2);
@@ -1510,6 +1589,8 @@ function html() {
       position: relative;
       height: clamp(560px, 66vh, 760px);
       min-height: 560px;
+      overflow: hidden;
+      isolation: isolate;
       background:
         radial-gradient(circle at 50% 48%, rgba(240, 168, 58, .06), transparent 24%),
         radial-gradient(circle at 72% 32%, rgba(79, 182, 164, .05), transparent 18%),
@@ -1519,24 +1600,90 @@ function html() {
         linear-gradient(180deg, #070b08 0%, #0d140e 48%, #070907 100%);
       background-size: auto, auto, auto, 44px 44px, 44px 44px, auto;
     }
+    .graph-wrap::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 50% 48%, transparent 0 20%, rgba(255, 204, 102, .07) 20.2%, transparent 20.8%),
+        radial-gradient(ellipse at 50% 48%, transparent 0 35%, rgba(79, 182, 164, .045) 35.2%, transparent 35.8%),
+        radial-gradient(ellipse at 50% 48%, transparent 0 51%, rgba(238, 230, 210, .032) 51.2%, transparent 51.8%);
+      opacity: .78;
+    }
+    .graph-wrap::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(7, 9, 7, .58), transparent 16%, transparent 84%, rgba(7, 9, 7, .58)),
+        linear-gradient(180deg, rgba(7, 9, 7, .52), transparent 18%, transparent 76%, rgba(7, 9, 7, .58));
+    }
     #wiki-graph {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
       display: block;
       width: 100%;
       height: 100%;
       background: transparent;
     }
+    .graph-cluster-label {
+      position: absolute;
+      z-index: 3;
+      pointer-events: none;
+      color: rgba(238, 230, 210, .58);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      text-shadow: 0 1px 7px rgba(0, 0, 0, .85);
+    }
+    .graph-cluster-label.live { left: 48%; top: 41%; color: rgba(255, 204, 102, .72); }
+    .graph-cluster-label.wiki { left: 30%; top: 18%; color: rgba(238, 230, 210, .62); }
+    .graph-cluster-label.sources { left: 13%; top: 33%; color: rgba(243, 231, 199, .56); }
+    .graph-cluster-label.projects { right: 25%; top: 20%; color: rgba(138, 199, 255, .6); }
+    .graph-cluster-label.instances { right: 18%; bottom: 29%; color: rgba(243, 231, 199, .68); }
+    .graph-cluster-label.context { right: 35%; bottom: 26%; color: rgba(138, 199, 255, .62); }
+    .graph-cluster-label.operations { left: 38%; bottom: 22%; color: rgba(217, 154, 61, .62); }
+    .graph-cluster-label.tags { left: 20%; bottom: 30%; color: rgba(124, 198, 106, .62); }
     #graph-focus {
       position: absolute;
-      left: 12px;
-      right: 12px;
-      bottom: 10px;
+      z-index: 4;
+      left: 14px;
+      right: auto;
+      bottom: 12px;
+      width: min(560px, calc(100% - 28px));
       pointer-events: none;
-      color: #d8cdae;
+      color: #eee6d2;
       font-size: 12px;
+      line-height: 1.45;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      white-space: normal;
+      border: 1px solid rgba(238, 230, 210, .14);
+      border-radius: 8px;
+      background: rgba(8, 12, 9, .72);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(238, 230, 210, .06);
+      padding: 9px 10px;
+      backdrop-filter: blur(9px);
       text-shadow: 0 1px 2px rgba(0, 0, 0, .75);
+    }
+    #graph-focus:empty {
+      display: none;
+    }
+    #graph-focus strong {
+      color: #fff1c2;
+      font-size: 12px;
+    }
+    #graph-focus code {
+      color: rgba(238, 230, 210, .72);
+      word-break: break-all;
+    }
+    #graph-focus span {
+      color: rgba(238, 230, 210, .58);
     }
     .event {
       display: grid;
@@ -1668,12 +1815,22 @@ function html() {
               <span class="legend-chip"><span class="legend-dot" style="background:#7cc66a"></span>tag</span>
               <span class="legend-chip"><span class="legend-dot" style="background:#d99a3d"></span>core</span>
               <span class="legend-chip"><span class="legend-dot" style="background:#ffcc66"></span>active</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#c7d2fe"></span>trace</span>
+              <span class="legend-chip"><span class="legend-dot" style="background:#f3e7c7"></span>memory</span>
             </span>
             <input id="graph-search" placeholder="Search">
           </div>
         </div>
         <div class="graph-wrap">
           <canvas id="wiki-graph"></canvas>
+          <div class="graph-cluster-label live">Live loop</div>
+          <div class="graph-cluster-label wiki">Wiki</div>
+          <div class="graph-cluster-label sources">Sources</div>
+          <div class="graph-cluster-label projects">Projects</div>
+          <div class="graph-cluster-label instances">Memory</div>
+          <div class="graph-cluster-label context">Context</div>
+          <div class="graph-cluster-label operations">Operations</div>
+          <div class="graph-cluster-label tags">Tags</div>
           <div id="graph-focus"></div>
         </div>
       </div>
@@ -1790,6 +1947,7 @@ function html() {
     let graphSignature = "";
     let graphMouse = { x: -9999, y: -9999 };
     let graphSearch = "";
+    let graphSelected = null;
     const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const compact = (value, max = 180) => {
@@ -1887,6 +2045,8 @@ function html() {
       if (node.type === "active_task") return 8.9;
       if (node.type === "task") return 6.1;
       if (node.type === "context_pack") return 5.9;
+      if (node.type === "trace") return 5.4;
+      if (node.type === "memory_ref") return 5.8;
       if (node.type === "event") return 3.8;
       if (node.type === "folder") return 8.1;
       if (node.type === "tag") return 5.9;
@@ -1901,6 +2061,8 @@ function html() {
       if (node.type === "activity_root") return "rgba(245, 188, 91, .98)";
       if (node.type === "task") return "rgba(217, 154, 61, .78)";
       if (node.type === "context_pack") return "rgba(138, 199, 255, .74)";
+      if (node.type === "trace") return "rgba(199, 210, 254, .78)";
+      if (node.type === "memory_ref") return "rgba(243, 231, 199, .82)";
       if (node.type === "event") return "rgba(185, 154, 105, .58)";
       if (node.type === "root") return "rgba(245, 188, 91, .95)";
       if (node.type === "tag") return "rgba(138, 216, 119, .78)";
@@ -1910,13 +2072,22 @@ function html() {
     }
     function graphEdgeStyle(edge, active) {
       if (active) {
+        if (edge.type === "used_memory") return { color: "rgba(243, 231, 199, .92)", width: 1.82, bead: true, moving: true };
+        if (edge.type === "retrieves_memory") return { color: "rgba(138, 199, 255, .86)", width: 1.74, bead: true, moving: true };
         return {
           color: edge.type === "has_tag" ? "rgba(124, 198, 106, .82)" : "rgba(255, 204, 102, .9)",
           width: 1.65,
           bead: true,
+          moving: ["active_task", "uses_context", "finish_trace", "used_memory", "retrieves_memory"].includes(edge.type),
         };
       }
       if (edge.type === "active_task") return { color: "rgba(255, 204, 102, .22)", width: 1.12, bead: true, moving: true };
+      if (edge.type === "uses_context") return { color: "rgba(138, 199, 255, .16)", width: .94, bead: true, moving: true };
+      if (edge.type === "finish_trace") return { color: "rgba(199, 210, 254, .15)", width: .9, bead: true, moving: true };
+      if (edge.type === "recent_trace") return { color: "rgba(199, 210, 254, .08)", width: .7, bead: true, moving: false };
+      if (edge.type === "trace_pack") return { color: "rgba(138, 199, 255, .12)", width: .76, bead: true, moving: false };
+      if (edge.type === "retrieves_memory") return { color: "rgba(138, 199, 255, .13)", width: .82, bead: true, moving: true };
+      if (edge.type === "used_memory") return { color: "rgba(243, 231, 199, .14)", width: .88, bead: true, moving: true };
       if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .072)", width: .68, bead: true, moving: true };
       if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .09)", width: .72, bead: true, moving: false };
       if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .082)", width: .72, bead: true };
@@ -1950,6 +2121,8 @@ function html() {
       if (node.type === "activity_root") return "live";
       if (node.type === "active_task") return "live";
       if (node.type === "context_pack") return "context";
+      if (node.type === "trace") return "operations";
+      if (node.type === "memory_ref") return "instances";
       if (node.type === "event") return "operations";
       if (node.type === "task") return node.status === "started" ? "live" : "operations";
       if (node.type === "tag") return "tags";
@@ -2064,12 +2237,96 @@ function html() {
     }
     function matchesGraphSearch(node) {
       if (!graphSearch) return false;
-      const haystack = [node.label, node.path, node.type].filter(Boolean).join(" ").toLowerCase();
+      const haystack = [node.label, node.path, node.type, node.record_id, node.status, node.clusterPart].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(graphSearch);
+    }
+    function graphHoverNode() {
+      let best = null;
+      let bestDistance = Infinity;
+      for (const node of graphNodes) {
+        const distance = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y);
+        const hitRadius = node.r + 8;
+        if (distance <= hitRadius && distance < bestDistance) {
+          best = node;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+    function graphConnectedIds(focus) {
+      if (!focus) return null;
+      const connected = new Set([focus.id]);
+      for (const edge of graphEdges) {
+        if (edge.source === focus.id) connected.add(edge.target);
+        if (edge.target === focus.id) connected.add(edge.source);
+      }
+      return connected;
+    }
+    function graphEdgeActive(edge, focus, connected) {
+      if (matchesGraphSearch(edge.sourceNode) || matchesGraphSearch(edge.targetNode)) return true;
+      if (!focus || !connected) return false;
+      return edge.source === focus.id || edge.target === focus.id;
+    }
+    function graphCurveControl(edge, size) {
+      const a = edge.sourceNode;
+      const b = edge.targetNode;
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const bend = (graphUnit(edge.source + edge.target + edge.type) - .5) * Math.min(82 * size.dpr, distance * .32);
+      return {
+        x: midX + (-dy / distance) * bend,
+        y: midY + (dx / distance) * bend,
+      };
+    }
+    function graphCurvePoint(a, c, b, t) {
+      const mt = 1 - t;
+      return {
+        x: mt * mt * a.x + 2 * mt * t * c.x + t * t * b.x,
+        y: mt * mt * a.y + 2 * mt * t * c.y + t * t * b.y,
+      };
+    }
+    function drawGraphClusterBackdrops(size, now) {
+      const clusters = [
+        ["live", "rgba(255, 204, 102, .11)", .20],
+        ["wiki", "rgba(238, 230, 210, .055)", .18],
+        ["sources", "rgba(243, 231, 199, .045)", .16],
+        ["projects", "rgba(138, 199, 255, .06)", .18],
+        ["instances", "rgba(243, 231, 199, .065)", .18],
+        ["context", "rgba(138, 199, 255, .055)", .15],
+        ["operations", "rgba(217, 154, 61, .055)", .17],
+        ["tags", "rgba(124, 198, 106, .045)", .15],
+      ];
+      graphCtx.save();
+      graphCtx.globalCompositeOperation = "lighter";
+      for (const [part, color, scale] of clusters) {
+        const anchor = graphClusterAnchor(part);
+        const x = anchor.x * size.width;
+        const y = anchor.y * size.height;
+        const pulse = 1 + Math.sin(now / 1500 + graphHash(part) * .001) * .035;
+        const radius = Math.max(size.width, size.height) * scale * pulse;
+        const gradient = graphCtx.createRadialGradient(x, y, 0, x, y, radius);
+        gradient.addColorStop(0, color);
+        gradient.addColorStop(.62, "rgba(0, 0, 0, 0)");
+        graphCtx.fillStyle = gradient;
+        graphCtx.beginPath();
+        graphCtx.arc(x, y, radius, 0, Math.PI * 2);
+        graphCtx.fill();
+      }
+      graphCtx.restore();
+    }
+    function graphFocusHtml(focus, connected) {
+      if (!focus) return "";
+      const connectedCount = connected ? Math.max(0, connected.size - 1) : 0;
+      const label = compact(focus.label || focus.id, 88);
+      const detail = compact(focus.path || focus.record_id || focus.status || focus.type, 140);
+      return \`<strong>\${esc(label)}</strong><br><span>\${esc(focus.type)} / links \${esc(connectedCount)}</span><br><code>\${esc(detail)}</code>\`;
     }
     function renderGraph(graph) {
       graphStatsEl.textContent = graph.ok
-        ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges" + (graph.stats.active_tasks ? " / active " + graph.stats.active_tasks : "")
+        ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges" + (graph.stats.active_tasks ? " / active " + graph.stats.active_tasks : "") + (graph.stats.memory_edges ? " / memory links " + graph.stats.memory_edges : "")
         : "index missing";
       const signature = graph.nodes.map((node) => [node.id, node.type, node.label, node.status, node.updated_at].join(":")).join("\\n") + "\\n---\\n" + graph.edges.map((edge) => edge.source + ">" + edge.target + ":" + edge.type).join("\\n");
       if (signature === graphSignature) return;
@@ -2106,6 +2363,7 @@ function html() {
       graphEdges = graph.edges
         .map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) }))
         .filter((edge) => edge.sourceNode && edge.targetNode);
+      if (graphSelected && !byId.has(graphSelected)) graphSelected = null;
     }
     function stepGraph() {
       const size = graphSize();
@@ -2118,7 +2376,13 @@ function html() {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.max(1, Math.hypot(dx, dy));
-        const target = edge.type === "wiki_link" ? 62 : edge.type === "active_task" ? 76 : 92;
+        const target = edge.type === "wiki_link"
+          ? 62
+          : ["used_memory", "retrieves_memory", "trace_pack"].includes(edge.type)
+            ? 78
+            : edge.type === "active_task"
+              ? 76
+              : 92;
         const force = (distance - target * size.dpr) * 0.000006;
         const fx = dx * force;
         const fy = dy * force;
@@ -2163,56 +2427,85 @@ function html() {
       const size = graphSize();
       const now = performance.now();
       graphCtx.clearRect(0, 0, size.width, size.height);
-      let focus = null;
+      drawGraphClusterBackdrops(size, now);
+      const hoveredNode = graphHoverNode();
+      const selectedNode = graphSelected ? graphNodes.find((node) => node.id === graphSelected) : null;
+      const searchFocus = graphSearch ? graphNodes.find(matchesGraphSearch) : null;
+      const focus = hoveredNode || selectedNode || searchFocus || null;
+      const connected = graphConnectedIds(focus);
       const labelBoxes = [];
       for (let edgeIndex = 0; edgeIndex < graphEdges.length; edgeIndex += 1) {
         const edge = graphEdges[edgeIndex];
         const a = edge.sourceNode;
         const b = edge.targetNode;
-        const highlighted = matchesGraphSearch(a) || matchesGraphSearch(b);
+        const highlighted = graphEdgeActive(edge, focus, connected);
+        const faded = focus && !highlighted;
         const style = graphEdgeStyle(edge, highlighted);
+        const control = graphCurveControl(edge, size);
         graphCtx.lineWidth = Math.max(1, style.width * size.dpr);
         graphCtx.strokeStyle = style.color;
+        graphCtx.globalAlpha = faded ? .16 : 1;
         graphCtx.beginPath();
         graphCtx.moveTo(a.x, a.y);
-        graphCtx.lineTo(b.x, b.y);
+        graphCtx.quadraticCurveTo(control.x, control.y, b.x, b.y);
         graphCtx.stroke();
         if (style.bead) {
           const beadT = style.moving ? ((now / 1150 + edgeIndex * 0.071) % 1) : 0.5;
-          const midX = a.x + (b.x - a.x) * beadT;
-          const midY = a.y + (b.y - a.y) * beadT;
+          const point = graphCurvePoint(a, control, b, beadT);
           graphCtx.beginPath();
-          graphCtx.fillStyle = highlighted ? "rgba(238, 230, 210, .82)" : "rgba(230, 220, 194, .22)";
-          graphCtx.arc(midX, midY, highlighted || style.moving ? 2.2 * size.dpr : 1.4 * size.dpr, 0, Math.PI * 2);
+          graphCtx.fillStyle = highlighted ? "rgba(238, 230, 210, .86)" : "rgba(230, 220, 194, .24)";
+          graphCtx.arc(point.x, point.y, highlighted || style.moving ? 2.2 * size.dpr : 1.4 * size.dpr, 0, Math.PI * 2);
           graphCtx.fill();
         }
       }
+      graphCtx.globalAlpha = 1;
       for (const node of graphNodes) {
         const highlighted = matchesGraphSearch(node);
-        const hovered = Math.hypot(node.x - graphMouse.x, node.y - graphMouse.y) <= node.r + 5;
-        if (hovered || highlighted) focus = node;
-        const active = highlighted || hovered;
-        const livePulse = node.type === "active_task" || node.type === "activity_root";
+        const hovered = hoveredNode?.id === node.id;
+        const selected = graphSelected === node.id;
+        const linked = connected?.has(node.id) ?? false;
+        const faded = focus && !linked && !highlighted && !hovered && !selected;
+        const active = highlighted || hovered || selected || linked;
+        const livePulse = node.type === "active_task" || node.type === "activity_root" || node.type === "trace";
         const pulse = livePulse ? 1.6 + Math.sin(now / 260 + node.x * 0.01) * 1.2 : 0;
         const radius = active ? node.r + 2.4 : node.r + Math.max(0, pulse * 0.35);
         if (active || livePulse) {
           graphCtx.beginPath();
-          graphCtx.fillStyle = node.type === "tag" ? "rgba(124, 198, 106, .14)" : "rgba(217, 154, 61, .16)";
+          graphCtx.globalAlpha = faded ? .18 : 1;
+          graphCtx.fillStyle = node.type === "tag"
+            ? "rgba(124, 198, 106, .14)"
+            : node.type === "context_pack"
+              ? "rgba(138, 199, 255, .14)"
+              : node.type === "memory_ref"
+                ? "rgba(243, 231, 199, .13)"
+                : "rgba(217, 154, 61, .16)";
           graphCtx.arc(node.x, node.y, radius + (6 + pulse) * size.dpr, 0, Math.PI * 2);
           graphCtx.fill();
         }
         graphCtx.beginPath();
         graphCtx.fillStyle = node.color || "#c5d5e8";
-        graphCtx.globalAlpha = graphSearch && !highlighted && !hovered ? 0.35 : 0.95;
+        graphCtx.globalAlpha = faded ? 0.18 : graphSearch && !highlighted && !hovered && !linked ? 0.35 : 0.96;
         graphCtx.arc(node.x, node.y, radius, 0, Math.PI * 2);
         graphCtx.fill();
         graphCtx.lineWidth = Math.max(1, (node.type === "root" ? 2 : 1.25) * size.dpr);
         graphCtx.strokeStyle = graphNodeStroke(node, active);
         graphCtx.stroke();
-        if (node.type === "record" || node.type === "root" || node.type === "activity_root" || node.type === "active_task") {
+        if (selected) {
           graphCtx.beginPath();
-          graphCtx.globalAlpha = graphSearch && !highlighted && !hovered ? 0.28 : 0.9;
-          graphCtx.strokeStyle = node.type === "root" ? "rgba(91, 55, 20, .68)" : "rgba(91, 78, 54, .54)";
+          graphCtx.globalAlpha = .95;
+          graphCtx.strokeStyle = "rgba(255, 241, 194, .88)";
+          graphCtx.lineWidth = Math.max(1, 1.15 * size.dpr);
+          graphCtx.arc(node.x, node.y, radius + 7 * size.dpr, 0, Math.PI * 2);
+          graphCtx.stroke();
+        }
+        if (node.type === "record" || node.type === "root" || node.type === "activity_root" || node.type === "active_task" || node.type === "memory_ref" || node.type === "trace") {
+          graphCtx.beginPath();
+          graphCtx.globalAlpha = faded ? 0.14 : graphSearch && !highlighted && !hovered && !linked ? 0.28 : 0.9;
+          graphCtx.strokeStyle = node.type === "root"
+            ? "rgba(91, 55, 20, .68)"
+            : node.type === "trace"
+              ? "rgba(39, 53, 95, .62)"
+              : "rgba(91, 78, 54, .54)";
           graphCtx.lineWidth = Math.max(1, .8 * size.dpr);
           graphCtx.arc(node.x, node.y, Math.max(2, radius * .52), 0, Math.PI * 2);
           graphCtx.stroke();
@@ -2247,6 +2540,7 @@ function html() {
             box.y + box.height > other.y
           );
           if (active || !overlaps) {
+            graphCtx.globalAlpha = faded ? .28 : 1;
             graphCtx.fillStyle = active ? "#fff1c2" : "#e6dcc2";
             graphCtx.shadowColor = active ? "rgba(255, 204, 102, .42)" : "rgba(0, 0, 0, .75)";
             graphCtx.shadowBlur = active ? 9 * size.dpr : 4 * size.dpr;
@@ -2256,7 +2550,8 @@ function html() {
           }
         }
       }
-      graphFocusEl.textContent = focus ? [focus.type, focus.path || focus.label].filter(Boolean).join(" / ") : "";
+      graphCtx.globalAlpha = 1;
+      graphFocusEl.innerHTML = graphFocusHtml(focus, connected);
     }
     function animateGraph() {
       stepGraph();
@@ -2270,9 +2565,15 @@ function html() {
       const rect = graphCanvas.getBoundingClientRect();
       const dpr = Math.max(1, window.devicePixelRatio || 1);
       graphMouse = { x: (event.clientX - rect.left) * dpr, y: (event.clientY - rect.top) * dpr };
+      graphCanvas.style.cursor = graphHoverNode() ? "pointer" : "default";
     });
     graphCanvas.addEventListener("mouseleave", () => {
       graphMouse = { x: -9999, y: -9999 };
+      graphCanvas.style.cursor = "default";
+    });
+    graphCanvas.addEventListener("click", () => {
+      const hovered = graphHoverNode();
+      graphSelected = hovered ? (graphSelected === hovered.id ? null : hovered.id) : null;
     });
     window.addEventListener("resize", graphSize);
     requestAnimationFrame(animateGraph);
