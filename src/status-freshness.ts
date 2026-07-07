@@ -13,6 +13,7 @@ import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
+import { RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import {
   REVIEW_QUEUE_STATUS_RELATIVE_PATH,
   REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
@@ -134,6 +135,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       RAG_EVAL_STATUS_RELATIVE_PATH,
       LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
       ANSWER_QUALITY_STATUS_RELATIVE_PATH,
+      RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
       GRAPH_HEALTH_RELATIVE_PATH,
     ],
   },
@@ -324,6 +326,13 @@ const ARTIFACTS: ArtifactSpec[] = [
       "60_Operations",
       "70_Error_Book",
     ],
+    required: true,
+  },
+  {
+    id: "release_manifest",
+    label: "release manifest proof",
+    artifactPath: RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
+    sourceRoots: [RELEASE_MANIFEST_STATUS_RELATIVE_PATH],
     required: true,
   },
 ];

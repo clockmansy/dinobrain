@@ -220,6 +220,8 @@ npm run installer:verify:approval
 npm run installer:verify:launchers
 npm run installer:verify:managed-hook
 npm run uninstall:verify
+npm run status:release-manifest
+npm run verify:release-manifest
 npm run installer:win
 npm run release:win -- -SkipUpload
 ```
@@ -228,7 +230,6 @@ Missing named verifiers that must be added or mapped explicitly before final
 completion:
 
 - `verify:install-equivalence`
-- `verify:release-manifest`
 - `verify:review-backlog`
 - `verify:compounding-lifecycle`
 

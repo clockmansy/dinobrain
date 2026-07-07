@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -46,6 +46,8 @@
     "verify:live-semantic-query": "node scripts/verify-live-semantic-query.mjs",
     "status:answer-quality": "node dist/build-answer-quality-status.js",
     "verify:answer-quality": "node scripts/verify-answer-quality.mjs",
+    "status:release-manifest": "node dist/build-release-manifest-status.js",
+    "verify:release-manifest": "node scripts/verify-release-manifest.mjs",
     "graph:health": "node dist/build-graph-health.js",
     "graph:health:verify": "node scripts/verify-graph-health.mjs",
     "graph:vault": "node scripts/export-vault-graph.mjs",

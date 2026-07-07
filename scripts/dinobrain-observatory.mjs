@@ -716,6 +716,7 @@ async function readiness(existingState = null) {
     ragEvalArtifact,
     liveSemanticQueryArtifact,
     answerQualityArtifact,
+    releaseManifestArtifact,
     graphArtifact,
     audits,
   ] = await Promise.all([
@@ -730,6 +731,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
     readStatusArtifact(".dino/state/answer_quality_status.json"),
+    readStatusArtifact(".dino/state/release_manifest_status.json"),
     readStatusArtifact(".dino/index/graph-health.json"),
     existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
   ]);
@@ -811,6 +813,13 @@ async function readiness(existingState = null) {
       proofPath: answerQualityArtifact.artifact_path,
       blockerReason: answerQualityBlocker,
     }),
+    hardGateFromArtifact({
+      id: "release_manifest",
+      label: "Release Manifest",
+      artifact: releaseManifestArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: releaseManifestArtifact.artifact_path,
+    }),
     hardGateFromArtifact({ id: "graph_health", label: "Graph Health", artifact: graphArtifact, expectedStatuses: ["healthy"] }),
   ];
 
@@ -891,6 +900,17 @@ async function readiness(existingState = null) {
       evaluator_class: answerQualityArtifact.value?.evaluator_class ?? null,
       counts: answerQualityArtifact.value?.counts ?? null,
       metrics: answerQualityArtifact.value?.metrics ?? null,
+    },
+    release_manifest_status: {
+      artifact_path: releaseManifestArtifact.artifact_path,
+      artifact_parse_status: releaseManifestArtifact.artifact_parse_status,
+      status: releaseManifestArtifact.value?.status ?? "missing",
+      package_version: releaseManifestArtifact.value?.package_version ?? null,
+      expected_tag: releaseManifestArtifact.value?.expected_tag ?? null,
+      blockers: Array.isArray(releaseManifestArtifact.value?.blockers) ? releaseManifestArtifact.value.blockers : [],
+      warnings: artifactWarnings(releaseManifestArtifact),
+      assets: releaseManifestArtifact.value?.assets ?? null,
+      tag: releaseManifestArtifact.value?.tag ?? null,
     },
     hard_gates: hardGates,
     lanes: {
@@ -1828,6 +1848,8 @@ function html() {
         ["live query blocker", readiness.live_semantic_query_status?.blocker],
         ["answer quality", readiness.answer_quality_status?.status],
         ["answer quality blocker", readiness.answer_quality_status?.blocker],
+        ["release manifest", readiness.release_manifest_status?.status],
+        ["release tag", readiness.release_manifest_status?.expected_tag],
       ]);
       readinessBlockersEl.innerHTML = renderLaneItems(readiness.lanes?.blockers);
       readinessPendingEl.innerHTML = [

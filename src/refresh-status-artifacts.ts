@@ -12,6 +12,7 @@ import { buildAndWriteNativeInstructionAuthorityReport } from "./native-instruct
 import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { buildAndWriteRagProof } from "./rag-proof.js";
+import { buildAndWriteReleaseManifestReport, RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import { settleReviewQueueActions } from "./review-settlement.js";
 import { buildAndWriteSourceLineageReport } from "./source-lineage.js";
 import { buildAndWriteSqliteShards, SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
@@ -90,6 +91,13 @@ export async function refreshStatusArtifacts(
     id: "answer_quality",
     status: answerQuality.report.status,
     path: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
+  });
+
+  const releaseManifest = await buildAndWriteReleaseManifestReport(dataRoot, { appRoot: process.cwd() });
+  steps.push({
+    id: "release_manifest",
+    status: releaseManifest.report.status,
+    path: RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
   });
 
   const sourceLineage = await buildAndWriteSourceLineageReport(dataRoot);

@@ -11,6 +11,7 @@ import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.
 import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
+import { RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
 import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
@@ -142,6 +143,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     id: "answer_quality",
     artifactPath: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
     authorityRank: 75,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "release_manifest",
+    artifactPath: RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
+    authorityRank: 72,
     healthyStatuses: ["healthy"],
   },
   {

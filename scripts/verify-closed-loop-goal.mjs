@@ -176,6 +176,31 @@ function classifyAnswerQualityBlocker(check) {
   return null;
 }
 
+function classifyReleaseManifestBlocker(check) {
+  if (check.ok !== true) return "release_manifest_not_verified";
+  const parsed = check.parsed;
+  if (!parsed) return "release_manifest_unparsed_failure";
+  if (parsed.status !== "healthy") {
+    const blocker = Array.isArray(parsed.blockers) && parsed.blockers.length > 0 ? parsed.blockers[0] : "release_manifest_not_healthy";
+    return blocker;
+  }
+  return null;
+}
+
+function hasReleaseManifestEvidence(check) {
+  const parsed = check.parsed;
+  return Boolean(
+    check.ok === true &&
+      parsed?.status === "healthy" &&
+      parsed?.package_version &&
+      parsed?.expected_tag &&
+      parsed?.app_head &&
+      parsed?.data_head &&
+      parsed?.tag_target &&
+      parsed?.zip_sha256,
+  );
+}
+
 function classifyLiveSemanticQueryBlocker(check) {
   if (check.ok !== true) return "live_semantic_query_not_verified";
   const parsed = check.parsed;
@@ -254,6 +279,24 @@ function nextActionFor(requirementEvidence) {
       return "Run npm run verify:answer-quality and npm run status:answer-quality, then repair the memory-on/off generated-answer quality evidence before rerunning npm run verify:goal.";
     case "installer_new_pc_equivalence_failed":
       return "Run npm run installer:verify:version, npm run installer:verify:approval, npm run installer:verify:launchers, and npm run installer:verify:semantic-rag; repair installer drift, hook merge, launcher, or semantic RAG prewarm failures before rerunning npm run verify:goal.";
+    case "release_manifest_not_verified":
+    case "release_manifest_unparsed_failure":
+    case "release_manifest_not_healthy":
+    case "package_version_missing":
+    case "app_head_missing":
+    case "data_head_missing":
+    case "app_head_not_pushed_to_upstream":
+    case "data_head_not_pushed_to_upstream":
+    case "app_tracked_worktree_dirty":
+    case "data_tracked_worktree_dirty":
+    case "release_tag_missing":
+    case "release_tag_target_mismatch":
+    case "installer_exe_missing":
+    case "release_zip_missing":
+    case "release_sha_missing":
+    case "release_sha_mismatch":
+    case "release_zip_older_than_app_head":
+      return "Run npm run verify:release-manifest and npm run status:release-manifest after rebuilding the installer ZIP/SHA and aligning the version tag with app/data refs, then rerun npm run verify:goal.";
     default:
       return "Fix the failed requirement, then rerun npm run verify:goal.";
   }
@@ -446,6 +489,20 @@ function main() {
         "Installer must rebuild semantic RAG proof/eval on a new PC with a real embedding provider and reject silent hashing fallback.",
       command: powershell,
       args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-semantic-rag.ps1"],
+    }),
+    runCheck({
+      id: "release_manifest_regression",
+      description:
+        "Release manifest verifier must accept local ZIP/SHA/tag parity and reject missing tags, stale packages, and checksum drift.",
+      command: node,
+      args: ["scripts/verify-release-manifest.mjs"],
+    }),
+    runCheck({
+      id: "release_manifest_current",
+      description:
+        "Current app/data checkout must have a durable release manifest proof with app commit, data commit, tag target, ZIP path, and SHA parity.",
+      command: node,
+      args: ["dist/build-release-manifest-status.js"],
     }),
     runCheck({
       id: "rag_proof_regression",
@@ -689,6 +746,19 @@ function main() {
         byId.installer_semantic_rag_prewarm.ok === true
           ? null
           : "installer_new_pc_equivalence_failed",
+    },
+    {
+      requirement: "release_manifest_zip_sha_tag_parity",
+      ok:
+        byId.release_manifest_regression.ok === true &&
+        hasReleaseManifestEvidence(byId.release_manifest_current),
+      evidence: "release_manifest_regression + release_manifest_current ZIP/SHA/tag/app/data proof",
+      blocker:
+        byId.release_manifest_regression.ok !== true
+          ? "release_manifest_not_verified"
+          : hasReleaseManifestEvidence(byId.release_manifest_current)
+            ? null
+            : classifyReleaseManifestBlocker(byId.release_manifest_current),
     },
     {
       requirement: "real_rag_eval_hybrid_retrieval_quality",

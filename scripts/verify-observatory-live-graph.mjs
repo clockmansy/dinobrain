@@ -227,6 +227,16 @@ tags: [context-pack]
     },
     warnings: ["answer_quality_cases_failed"],
   });
+  writeJson(".dino/state/release_manifest_status.json", {
+    status: "healthy",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    package_version: "2.2.1",
+    expected_tag: "v2.2.1",
+    tag: { exists: true, target: "abc", matches_app_head: true },
+    assets: { zip_exists: true, sha_exists: true, sha256_matches: true },
+    blockers: [],
+    warnings: ["github_release_asset_not_checked_without_token"],
+  });
   writeJson(".dino/state/health_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -236,6 +246,7 @@ tags: [context-pack]
       { id: "rag_proof", artifact_path: ".dino/state/rag_proof_status.json", status: "healthy" },
       { id: "live_semantic_query", artifact_path: ".dino/state/live_semantic_query_status.json", status: "needs_attention" },
       { id: "answer_quality", artifact_path: ".dino/state/answer_quality_status.json", status: "needs_attention" },
+      { id: "release_manifest", artifact_path: ".dino/state/release_manifest_status.json", status: "healthy" },
     ],
     warnings: [],
   });
@@ -301,6 +312,7 @@ tags: [context-pack]
     );
     assert(readiness.live_semantic_query_status?.blocker === "live_semantic_query_not_healthy", "Live semantic query readiness status missing");
     assert(readiness.answer_quality_status?.status === "needs_attention", "Answer-quality readiness status missing");
+    assert(readiness.release_manifest_status?.status === "healthy", "Release manifest readiness status missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality"), "Answer-quality pending lane missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");
     assert(readiness.latest_audit?.trust_score === 72, "Readiness did not expose latest audit trust score");
