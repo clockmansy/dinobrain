@@ -172,8 +172,26 @@ function classifyRagCompletionBlocker(proofCheck, evalCheck) {
   return null;
 }
 
+function classifyLiveSemanticQueryBlocker(check) {
+  if (check.ok !== true) return "live_semantic_query_not_verified";
+  const parsed = check.parsed;
+  const proof = parsed?.proof;
+  const retrieval = parsed?.retrieval;
+  if (parsed?.status !== "healthy") return "live_semantic_query_not_healthy";
+  if (proof?.status !== "generated_live_query_vector") return "live_semantic_query_not_on_the_fly";
+  if (proof?.query_vector_preexisting === true) return "live_semantic_query_precomputed_only";
+  if (proof?.on_the_fly_query_embedding !== true) return "live_semantic_query_embedding_missing";
+  if (retrieval?.mode !== "hybrid_contextual_v2") return "live_semantic_query_not_hybrid";
+  if (!(retrieval?.dense_reason_count > 0)) return "live_semantic_dense_topk_missing";
+  return null;
+}
+
 function hasCompletionGradeRagEvidence(proofCheck, evalCheck) {
   return classifyRagCompletionBlocker(proofCheck, evalCheck) === null;
+}
+
+function hasLiveSemanticQueryEvidence(check) {
+  return classifyLiveSemanticQueryBlocker(check) === null;
 }
 
 function nextActionFor(requirementEvidence) {
@@ -218,6 +236,14 @@ function nextActionFor(requirementEvidence) {
     case "rag_deterministic_canary_only":
     case "rag_answer_quality_eval_missing":
       return "Configure a completion-grade semantic embedding provider or documented local multilingual model, add generated-answer RAG evaluation, rerun npm run rag:proof and npm run eval:rag, then rerun npm run verify:goal.";
+    case "live_semantic_query_not_verified":
+    case "live_semantic_query_not_healthy":
+    case "live_semantic_query_not_on_the_fly":
+    case "live_semantic_query_precomputed_only":
+    case "live_semantic_query_embedding_missing":
+    case "live_semantic_query_not_hybrid":
+    case "live_semantic_dense_topk_missing":
+      return "Run npm run verify:live-semantic-query and npm run status:live-semantic-query, then repair live query embedding so non-golden prompts use dense semantic top-K without persisted query-vector cheats.";
     case "installer_new_pc_equivalence_failed":
       return "Run npm run installer:verify:version, npm run installer:verify:approval, npm run installer:verify:launchers, and npm run installer:verify:semantic-rag; repair installer drift, hook merge, launcher, or semantic RAG prewarm failures before rerunning npm run verify:goal.";
     default:
@@ -442,6 +468,22 @@ function main() {
       args: ["dist/build-rag-eval.js"],
     }),
     runCheck({
+      id: "live_semantic_query_regression",
+      description:
+        "A non-golden live prompt must compute an on-the-fly semantic query vector, use dense top-K, and honestly fall back when semantic embeddings are disabled.",
+      command: node,
+      args: ["scripts/verify-live-semantic-query.mjs"],
+      timeoutMs: 180000,
+    }),
+    runCheck({
+      id: "live_semantic_query_current",
+      description:
+        "Current data vault must prove a non-precomputed live prompt uses on-the-fly semantic dense retrieval before final RAG readiness can pass.",
+      command: node,
+      args: ["dist/build-live-semantic-query-status.js"],
+      timeoutMs: 180000,
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -638,6 +680,20 @@ function main() {
         hasCompletionGradeRagEvidence(byId.rag_proof_current, byId.rag_eval_current)
           ? null
           : ragCompletionBlocker,
+    },
+    {
+      requirement: "dynamic_live_semantic_query_retrieval",
+      ok:
+        byId.live_semantic_query_regression.ok === true &&
+        hasLiveSemanticQueryEvidence(byId.live_semantic_query_current),
+      evidence:
+        "live_semantic_query_regression + live_semantic_query_current generated_live_query_vector dense top-K proof",
+      blocker:
+        byId.live_semantic_query_regression.ok !== true
+          ? "live_semantic_query_not_verified"
+          : hasLiveSemanticQueryEvidence(byId.live_semantic_query_current)
+            ? null
+            : classifyLiveSemanticQueryBlocker(byId.live_semantic_query_current),
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",

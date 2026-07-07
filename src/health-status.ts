@@ -6,6 +6,7 @@ import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-stat
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
+import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.js";
 import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
@@ -127,6 +128,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
   {
     id: "rag_eval",
     artifactPath: RAG_EVAL_STATUS_RELATIVE_PATH,
+    authorityRank: 75,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "live_semantic_query",
+    artifactPath: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
     authorityRank: 75,
     healthyStatuses: ["healthy"],
   },

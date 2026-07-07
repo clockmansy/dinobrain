@@ -42,6 +42,8 @@
     "rag:proof:verify": "node scripts/verify-rag-proof.mjs",
     "eval:rag": "node dist/build-rag-eval.js",
     "eval:rag:verify": "node scripts/verify-rag-eval.mjs",
+    "status:live-semantic-query": "node dist/build-live-semantic-query-status.js",
+    "verify:live-semantic-query": "node scripts/verify-live-semantic-query.mjs",
     "graph:health": "node dist/build-graph-health.js",
     "graph:health:verify": "node scripts/verify-graph-health.mjs",
     "graph:vault": "node scripts/export-vault-graph.mjs",

@@ -5,13 +5,14 @@ import path from "node:path";
 import { isDefaultRetrievalExcludedPath, type RankedRecord } from "./context.js";
 import {
   type RetrievalMode,
+  type DenseVectorIndex,
   contextualText,
   denseVectorCandidatePaths,
-  loadDenseVectorIndex,
   rankRecordsHybridV2,
   retrievalModeFor,
   tokenizeHybrid,
 } from "./hybrid-retrieval.js";
+import { loadDenseVectorIndexWithLiveQuery } from "./live-semantic-query.js";
 import {
   collectOperationEntries,
   type OperationContextPackEntry,
@@ -43,6 +44,7 @@ export type SqliteRetrievalStats = {
 type QueryOptions = {
   includeExcerpt?: boolean;
   rankLimit?: number;
+  denseVectorIndex?: DenseVectorIndex | null;
 };
 
 type SqliteManifest = {
@@ -610,7 +612,10 @@ export async function querySqliteWiki(
       .filter((row): row is Record<string, unknown> => Boolean(row))
       .filter((row) => !isDefaultRetrievalExcludedPath(String(row.path ?? "")))
       .map(rowToRecord);
-    const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+    const { index: denseVectorIndex } =
+      options.denseVectorIndex === undefined
+        ? await loadDenseVectorIndexWithLiveQuery(dataRoot, query)
+        : { index: options.denseVectorIndex };
     const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
     if (densePaths.size > 0) {
       const selectedPaths = new Set(records.map((record) => record.path));

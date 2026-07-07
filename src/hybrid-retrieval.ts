@@ -11,7 +11,11 @@ export type RetrievalMode = typeof HYBRID_RETRIEVAL_MODE | typeof LEXICAL_FALLBA
 
 export type DenseVectorIndex = {
   version?: number;
+  provider?: string;
+  model?: string | null;
   dimensions?: number;
+  semantic_embedding_provider?: boolean;
+  cache_dir?: string | null;
   records?: Record<string, number[]>;
   record_vectors?: Record<string, number[]>;
   queries?: Record<string, number[]>;
@@ -149,7 +153,7 @@ function jaccard(left: Set<string>, right: Set<string>): number {
   return intersection / (left.size + right.size - intersection);
 }
 
-function normalizeVectorKey(value: string): string {
+export function normalizeVectorKey(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
@@ -186,6 +190,33 @@ function queryVector(index: DenseVectorIndex | null | undefined, query: string):
   return validVector(queries[normalized]) ? queries[normalized] : validVector(queries[query]) ? queries[query] : null;
 }
 
+export function denseRecordVectorCount(index: DenseVectorIndex | null | undefined): number {
+  return Object.values(vectorMap(index, "records")).filter(validVector).length;
+}
+
+export function denseVectorDimensions(index: DenseVectorIndex | null | undefined): number {
+  const declared = typeof index?.dimensions === "number" && Number.isFinite(index.dimensions) ? index.dimensions : 0;
+  if (declared > 0) return declared;
+  return Object.values(vectorMap(index, "records")).find(validVector)?.length ?? 0;
+}
+
+export function hasDenseQueryVector(index: DenseVectorIndex | null | undefined, query: string): boolean {
+  return Boolean(queryVector(index, query));
+}
+
+export function setDenseQueryVector(index: DenseVectorIndex, query: string, vector: number[]): void {
+  if (!validVector(vector)) return;
+  const key = normalizeVectorKey(query);
+  index.queries = index.queries ?? {};
+  index.query_vectors = index.query_vectors ?? {};
+  index.queries[key] = vector;
+  index.query_vectors[key] = vector;
+}
+
+export function denseIndexUsesSemanticProvider(index: DenseVectorIndex | null | undefined): boolean {
+  return Boolean(index?.semantic_embedding_provider === true && index.provider && index.provider !== "local_text_hashing_v1");
+}
+
 export function loadDenseVectorIndex(dataRoot: string): DenseVectorIndex | null {
   const configuredPath = process.env.DINOBRAIN_DENSE_VECTOR_INDEX?.trim();
   const indexPath = configuredPath
@@ -195,8 +226,7 @@ export function loadDenseVectorIndex(dataRoot: string): DenseVectorIndex | null 
   try {
     const parsed = JSON.parse(readFileSync(indexPath, "utf8")) as DenseVectorIndex;
     const records = vectorMap(parsed, "records");
-    const queries = vectorMap(parsed, "queries");
-    if (Object.keys(records).length === 0 || Object.keys(queries).length === 0) return null;
+    if (Object.keys(records).length === 0) return null;
     return parsed;
   } catch {
     return null;

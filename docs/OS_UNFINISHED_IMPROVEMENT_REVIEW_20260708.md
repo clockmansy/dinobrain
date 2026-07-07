@@ -207,6 +207,8 @@ npm run verify:os
 npm run verify:v2
 npm run verify:compounding
 npm run eval:rag
+npm run status:live-semantic-query
+npm run verify:live-semantic-query
 npm run eval:behavior
 npm run graph:health
 npm run safety:public-data:check
@@ -227,7 +229,6 @@ completion:
 - `verify:observatory-evidence`
 - `verify:install-equivalence`
 - `verify:release-manifest`
-- `verify:live-semantic-query`
 - `verify:review-backlog`
 - `verify:compounding-lifecycle`
 
@@ -337,13 +338,20 @@ Acceptance:
 
 ### P1-D Real Semantic Retrieval And Answer-Quality Eval
 
+Current implementation note:
+
+- `verify:live-semantic-query` and `status:live-semantic-query` now prove that
+  a non-golden prompt can compute an on-the-fly semantic query vector, use dense
+  top-K in the Context Pack path, and honestly fall back when semantic
+  embeddings are disabled.
+- This closes the dynamic live-query proof gap, but does not by itself complete
+  the broader generated-answer quality / memory-on-off evaluation requirement.
+
 Current risk:
 
-- The golden-set RAG proof now reports a real local semantic embedding provider,
-  but a live arbitrary prompt can still fall back to `lexical_fallback_v2` when
-  no stored query vector exists.
-- Completion must not confuse "provider installed" with "live prompt path uses
-  semantic dense retrieval".
+- The golden-set RAG proof and live-query proof now report real semantic
+  embeddings, but completion must still not confuse retrieval proof with a full
+  generated-answer quality loop.
 
 Required work:
 
@@ -550,10 +558,12 @@ not complete. The next implementation order should be:
 3. Strengthen behavior recall, review backlog, active-task, and compounding
    lifecycle gates so green status cannot hide missing trigger coverage or
    unresolved memory debt.
-4. Prove dynamic live-query semantic retrieval and generated-answer quality
-   evaluation, not only golden-set semantic embeddings.
+4. Extend generated-answer quality evaluation beyond the current local
+   extractive judge into representative memory-on/off, Ragas-like or LLM-judge
+   evidence. Dynamic live-query semantic retrieval is now covered by
+   `verify:live-semantic-query`.
 5. Align health and Observatory with `verify:goal` blocker semantics.
 6. Add missing final verifiers for Observatory evidence, answer quality,
-   install equivalence, release manifest, live semantic query, review backlog,
-   and compounding lifecycle.
+   install equivalence, release manifest, review backlog, and compounding
+   lifecycle.
 7. Re-run the ten-agent consensus protocol against this exact revised document.

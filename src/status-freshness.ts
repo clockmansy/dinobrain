@@ -7,6 +7,7 @@ import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { HEALTH_STATUS_RELATIVE_PATH } from "./health-status.js";
+import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.js";
 import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
@@ -130,6 +131,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
       RAG_PROOF_STATUS_RELATIVE_PATH,
       RAG_EVAL_STATUS_RELATIVE_PATH,
+      LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
       GRAPH_HEALTH_RELATIVE_PATH,
     ],
   },
@@ -275,6 +277,23 @@ const ARTIFACTS: ArtifactSpec[] = [
     artifactPath: RAG_EVAL_STATUS_RELATIVE_PATH,
     sourceRoots: [
       ".dino/evaluations",
+      ".dino/index/dense-vectors.json",
+      ".dino/index/wiki-index.json",
+      ".dino/index/sqlite/manifest.json",
+      "20_Wiki",
+      "30_Sources",
+      "40_Projects",
+      "50_Instances/accepted",
+      "60_Operations",
+      "70_Error_Book",
+    ],
+    required: true,
+  },
+  {
+    id: "live_semantic_query",
+    label: "live semantic query proof",
+    artifactPath: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+    sourceRoots: [
       ".dino/index/dense-vectors.json",
       ".dino/index/wiki-index.json",
       ".dino/index/sqlite/manifest.json",

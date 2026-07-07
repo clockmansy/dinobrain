@@ -6,6 +6,7 @@ import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.j
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
 import { buildAndWriteHealthStatus } from "./health-status.js";
+import { buildAndWriteLiveSemanticQueryReport, LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query-status.js";
 import { buildAndWriteNativeInstructionAuthorityReport } from "./native-instruction-authority.js";
 import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
@@ -75,6 +76,13 @@ export async function refreshStatusArtifacts(
 
   const ragEval = await buildAndWriteRagEvalReport(dataRoot);
   steps.push({ id: "rag_eval", status: ragEval.report.status, path: RAG_EVAL_STATUS_RELATIVE_PATH });
+
+  const liveSemanticQuery = await buildAndWriteLiveSemanticQueryReport(dataRoot);
+  steps.push({
+    id: "live_semantic_query",
+    status: liveSemanticQuery.report.status,
+    path: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+  });
 
   const sourceLineage = await buildAndWriteSourceLineageReport(dataRoot);
   steps.push({ id: "source_lineage", status: sourceLineage.report.status, path: sourceLineage.path });

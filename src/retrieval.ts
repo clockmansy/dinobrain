@@ -1,5 +1,6 @@
 import { collectRecentTaskRecords, type RankedRecord } from "./context.js";
-import { loadDenseVectorIndex, rankRecordsHybridV2, retrievalModeFor } from "./hybrid-retrieval.js";
+import { rankRecordsHybridV2, retrievalModeFor } from "./hybrid-retrieval.js";
+import { loadDenseVectorIndexWithLiveQuery } from "./live-semantic-query.js";
 import {
   collectRecentTaskRecordsFromSqlite,
   querySqliteWiki,
@@ -30,14 +31,15 @@ export async function getContextPackItems(
     return await getIndexedPackItems(dataRoot, question, limit);
   }
 
+  const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
   const sqlite = await querySqliteWiki(dataRoot, question, Math.max(limit * 200, 1000), {
     includeExcerpt: false,
     rankLimit: Math.max(limit * 200, 1000),
+    denseVectorIndex,
   });
   const recentTasks =
     (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
   const records = [...sqlite.records, ...recentTasks];
-  const denseVectorIndex = loadDenseVectorIndex(dataRoot);
   const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
 
   return {

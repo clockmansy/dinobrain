@@ -194,6 +194,20 @@ tags: [context-pack]
     caveats: ["This is a deterministic RAG canary, not a full Ragas/LLM-judge answer-quality evaluation yet."],
     warnings: [],
   });
+  writeJson(".dino/state/live_semantic_query_status.json", {
+    status: "needs_attention",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    proof: {
+      status: "existing_query_vector",
+      query_vector_preexisting: true,
+      on_the_fly_query_embedding: false,
+    },
+    retrieval: {
+      mode: "hybrid_contextual_v2",
+      dense_reason_count: 1,
+    },
+    warnings: ["query_vector_was_precomputed_not_live"],
+  });
   writeJson(".dino/state/health_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -201,6 +215,7 @@ tags: [context-pack]
     checks: [
       { id: "client_mcp_direct_status", artifact_path: ".dino/state/client_mcp_direct_status.json", status: "needs_attention" },
       { id: "rag_proof", artifact_path: ".dino/state/rag_proof_status.json", status: "healthy" },
+      { id: "live_semantic_query", artifact_path: ".dino/state/live_semantic_query_status.json", status: "needs_attention" },
     ],
     warnings: [],
   });
@@ -256,7 +271,13 @@ tags: [context-pack]
       readiness.lanes.blockers.some((gate) => gate.id === "rag_completion_grade" && gate.blocker_reason === "rag_semantic_provider_not_configured"),
       "Readiness did not expose semantic RAG blocker",
     );
+    assert(
+      readiness.lanes.blockers.some((gate) => gate.id === "live_semantic_query" && gate.blocker_reason === "live_semantic_query_not_healthy"),
+      "Readiness did not expose live semantic query blocker",
+    );
+    assert(readiness.live_semantic_query_status?.blocker === "live_semantic_query_not_healthy", "Live semantic query readiness status missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality_eval"), "Answer-quality pending lane missing");
+    assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");
     assert(readiness.latest_audit?.trust_score === 72, "Readiness did not expose latest audit trust score");
     assert(readiness.latest_audit?.provided_memory_paths?.includes("20_Wiki/Graph-Speed.md"), "Audit provided paths missing");
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());

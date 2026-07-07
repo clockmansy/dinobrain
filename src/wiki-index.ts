@@ -12,11 +12,12 @@ import {
   type RetrievalMode,
   denseVectorCandidatePaths,
   isHighFrequencyHybridTerm,
-  loadDenseVectorIndex,
   rankRecordsHybridV2,
   retrievalModeFor,
   tokenizeHybrid,
+  type DenseVectorIndex,
 } from "./hybrid-retrieval.js";
+import { loadDenseVectorIndexWithLiveQuery } from "./live-semantic-query.js";
 
 export const WIKI_INDEX_VERSION = 3;
 export const WIKI_INDEX_RELATIVE_PATH = ".dino/index/wiki-index.json";
@@ -342,7 +343,7 @@ function mergeDenseVectorCandidates(
   index: WikiIndex,
   selected: RankedRecord[],
   query: string,
-  denseVectorIndex: ReturnType<typeof loadDenseVectorIndex>,
+  denseVectorIndex: DenseVectorIndex | null,
   limit: number,
 ): RankedRecord[] {
   const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
@@ -449,7 +450,7 @@ export async function queryIndexedWiki(
   const index = await ensureWikiIndex(dataRoot);
   const candidateLimit = Math.max(limit * 25, 100);
   const candidates = selectCandidates(index, query, candidateLimit);
-  const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+  const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, query);
   const records = mergeDenseVectorCandidates(index, candidates.records, query, denseVectorIndex, candidateLimit);
   const ranked = rankRecordsHybridV2(records, query, { limit, denseVectorIndex });
   return {
@@ -476,7 +477,7 @@ export async function getIndexedPackItems(
   const candidateLimit = Math.min(index.record_count, Math.max(limit * 200, 1000));
   const candidates = selectCandidates(index, question, candidateLimit);
   const recentTasks = await collectRecentTaskRecords(dataRoot, 10);
-  const denseVectorIndex = loadDenseVectorIndex(dataRoot);
+  const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
   const selectedRecords = mergeDenseVectorCandidates(index, candidates.records, question, denseVectorIndex, candidateLimit);
   const records = [...selectedRecords, ...recentTasks];
   const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });

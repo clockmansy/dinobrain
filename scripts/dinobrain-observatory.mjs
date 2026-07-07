@@ -642,6 +642,16 @@ function classifyRagCompletionBlocker(proof, evalReport) {
   return null;
 }
 
+function classifyLiveSemanticQueryBlocker(report) {
+  if (report?.status !== "healthy") return "live_semantic_query_not_healthy";
+  if (report?.proof?.status !== "generated_live_query_vector") return "live_semantic_query_not_on_the_fly";
+  if (report?.proof?.query_vector_preexisting === true) return "live_semantic_query_precomputed_only";
+  if (report?.proof?.on_the_fly_query_embedding !== true) return "live_semantic_query_embedding_missing";
+  if (report?.retrieval?.mode !== "hybrid_contextual_v2") return "live_semantic_query_not_hybrid";
+  if (!(report?.retrieval?.dense_reason_count > 0)) return "live_semantic_dense_topk_missing";
+  return null;
+}
+
 function hardGateFromArtifact({ id, label, artifact, expectedStatuses = ["healthy"], proofPath = null, missingTools = [], blockerReason = null }) {
   const value = artifact.value;
   const parseOk = artifact.artifact_parse_status === "ok";
@@ -702,6 +712,7 @@ async function readiness(existingState = null) {
     settlementArtifact,
     ragProofArtifact,
     ragEvalArtifact,
+    liveSemanticQueryArtifact,
     graphArtifact,
     audits,
   ] = await Promise.all([
@@ -714,6 +725,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
     readStatusArtifact(".dino/state/rag_proof_status.json"),
     readStatusArtifact(".dino/state/rag_eval_status.json"),
+    readStatusArtifact(".dino/state/live_semantic_query_status.json"),
     readStatusArtifact(".dino/index/graph-health.json"),
     existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
   ]);
@@ -727,6 +739,10 @@ async function readiness(existingState = null) {
     ragProofArtifact.artifact_parse_status === "ok" && ragEvalArtifact.artifact_parse_status === "ok"
       ? classifyRagCompletionBlocker(ragProofArtifact.value, ragEvalArtifact.value)
       : "rag_status_artifact_unavailable";
+  const liveSemanticBlocker =
+    liveSemanticQueryArtifact.artifact_parse_status === "ok"
+      ? classifyLiveSemanticQueryBlocker(liveSemanticQueryArtifact.value)
+      : "live_semantic_query_status_artifact_unavailable";
 
   const hardGates = [
     hardGateFromArtifact({ id: "health_status", label: "Health Rollup", artifact: healthArtifact, expectedStatuses: ["healthy"] }),
@@ -769,6 +785,14 @@ async function readiness(existingState = null) {
       proofPath: ragEvalArtifact.artifact_path,
       blockerReason: ragBlocker === null ? null : "rag_answer_quality_or_semantic_gate_not_complete",
     }),
+    hardGateFromArtifact({
+      id: "live_semantic_query",
+      label: "Live Semantic Query",
+      artifact: liveSemanticQueryArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: liveSemanticQueryArtifact.artifact_path,
+      blockerReason: liveSemanticBlocker,
+    }),
     hardGateFromArtifact({ id: "graph_health", label: "Graph Health", artifact: graphArtifact, expectedStatuses: ["healthy"] }),
   ];
 
@@ -794,6 +818,11 @@ async function readiness(existingState = null) {
   }
   if (!hasGeneratedAnswerQualityEvidence(ragEval)) {
     verifierPending.push(laneItem("answer_quality_eval", "pending", "generated-answer quality evidence missing", ragEvalArtifact.artifact_path));
+  }
+  if (liveSemanticBlocker) {
+    verifierPending.push(
+      laneItem("live_semantic_query", "pending", liveSemanticBlocker, liveSemanticQueryArtifact.artifact_path),
+    );
   }
   verifierPending.push(laneItem("public_data_safety", "verify", "public-data safety proof is verified by CLI, not yet a dedicated Observatory artifact"));
 
@@ -826,6 +855,14 @@ async function readiness(existingState = null) {
       semantic_embedding_provider: ragProof?.dense_vector?.semantic_embedding_provider === true,
       blocker: ragBlocker,
       eval_caveats: Array.isArray(ragEval?.caveats) ? ragEval.caveats : [],
+    },
+    live_semantic_query_status: {
+      artifact_path: liveSemanticQueryArtifact.artifact_path,
+      artifact_parse_status: liveSemanticQueryArtifact.artifact_parse_status,
+      status: liveSemanticQueryArtifact.value?.status ?? "missing",
+      blocker: liveSemanticBlocker,
+      proof: liveSemanticQueryArtifact.value?.proof ?? null,
+      retrieval: liveSemanticQueryArtifact.value?.retrieval ?? null,
     },
     hard_gates: hardGates,
     lanes: {
@@ -1759,6 +1796,8 @@ function html() {
         ["RAG provider", readiness.rag_status?.provider],
         ["semantic", readiness.rag_status?.semantic_embedding_provider],
         ["RAG blocker", readiness.rag_status?.blocker],
+        ["live semantic query", readiness.live_semantic_query_status?.status],
+        ["live query blocker", readiness.live_semantic_query_status?.blocker],
       ]);
       readinessBlockersEl.innerHTML = renderLaneItems(readiness.lanes?.blockers);
       readinessPendingEl.innerHTML = [
