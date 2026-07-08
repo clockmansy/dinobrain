@@ -59,10 +59,10 @@ async function main() {
 
     initRepo(appRoot, appOrigin);
     writeFileSync(path.join(appRoot, "package.json"), `${JSON.stringify({ version: "9.9.9" }, null, 2)}\n`, "utf8");
-    seedArtifacts(appRoot);
     commitAll(appRoot, "app release fixture");
     runGit(appRoot, ["tag", "v9.9.9"]);
     runGit(appRoot, ["push", "-u", "origin", "main"]);
+    seedArtifacts(appRoot);
 
     initRepo(dataRoot, dataOrigin);
     mkdirSync(path.join(dataRoot, ".dino", "state"), { recursive: true });
