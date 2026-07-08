@@ -98,6 +98,33 @@ function Set-ClipboardSafe {
     }
   }
 
+  $textPath = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-clipboard-" + [guid]::NewGuid().ToString("N") + ".txt")
+  $oldClipboardTextFile = $env:DINOBRAIN_CLIPBOARD_TEXT_FILE
+  try {
+    [System.IO.File]::WriteAllText($textPath, $Text, [System.Text.Encoding]::UTF8)
+    $env:DINOBRAIN_CLIPBOARD_TEXT_FILE = $textPath
+    $staCommand = @"
+Add-Type -AssemblyName System.Windows.Forms
+`$text = [System.IO.File]::ReadAllText(`$env:DINOBRAIN_CLIPBOARD_TEXT_FILE, [System.Text.Encoding]::UTF8)
+[System.Windows.Forms.Clipboard]::SetText(`$text)
+"@
+    $staOutput = & powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -Command $staCommand 2>&1
+    $staExit = $LASTEXITCODE
+    if ($staExit -eq 0) {
+      return $true
+    }
+    $script:LastClipboardError = (($script:LastClipboardError, ("STA clipboard exit $staExit " + (($staOutput | Out-String).Trim()))) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; "
+  } catch {
+    $script:LastClipboardError = (($script:LastClipboardError, ("STA clipboard failed: " + $_.Exception.Message)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; "
+  } finally {
+    if ($null -eq $oldClipboardTextFile) {
+      Remove-Item Env:\DINOBRAIN_CLIPBOARD_TEXT_FILE -ErrorAction SilentlyContinue
+    } else {
+      $env:DINOBRAIN_CLIPBOARD_TEXT_FILE = $oldClipboardTextFile
+    }
+    Remove-Item -LiteralPath $textPath -Force -ErrorAction SilentlyContinue
+  }
+
   return $false
 }
 
