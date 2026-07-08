@@ -39,6 +39,7 @@ internal sealed class SetupForm : Form
     {
         Text = "DinoBrain Setup";
         MinimumSize = new Size(860, 680);
+        Size = new Size(1280, 720);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
         BackColor = Color.White;
