@@ -50,6 +50,8 @@ Recommended path from a release asset:
 
 `DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories and downloads portable Node.js.
 
+You should not need to type install paths by hand. The setup window now pre-fills the install root from, in order: `DINOBRAIN_INSTALL_ROOT`, `DINOBRAIN_DATA_DIR`, an existing Codex `DINOBRAIN_DATA_DIR` config, an already detected `dinobrain`/`dinobrain-data` pair under common locations, or the user's Documents folder. Use **Auto** to restore that recommendation or **Browse** to pick a parent folder. If you accidentally pick the `dinobrain` or `dinobrain-data` folder itself, the installer treats its parent as the install root and previews the final app/data paths before running.
+
 The EXE embeds default refs at build time. By default `npm run installer:win` sets the app ref to `main`, so a release installer updates the local app checkout to the current GitHub `main` instead of pinning the PC to the installer build commit. The data repo also defaults to `main` unless `-DataRef` is passed during build.
 
 After cloning or updating, the installer fetches GitHub again and verifies that each git checkout matches the requested remote ref. If local `dinobrain` or `dinobrain-data` differs from `origin/<ref>`, installation stops instead of leaving Codex connected to a stale app/data pair. Explicit tag or commit refs are still allowed for rollback/recovery, but they are reported as pinned and will not track `origin/main`.
@@ -63,6 +65,8 @@ From a downloaded `install.ps1`:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+When running PowerShell directly, `-InstallRoot` may be a parent folder or an existing `dinobrain` / `dinobrain-data` folder; the script normalizes app/data folders back to their parent install root before creating default paths.
 
 From an already cloned DinoBrain repo:
 

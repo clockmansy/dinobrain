@@ -33,6 +33,24 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Get-DefaultInstallRoot {
+  if (-not [string]::IsNullOrWhiteSpace($env:DINOBRAIN_INSTALL_ROOT)) {
+    return (Resolve-DinoBrainInstallRoot $env:DINOBRAIN_INSTALL_ROOT)
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:DINOBRAIN_DATA_DIR)) {
+    return (Resolve-DinoBrainInstallRoot $env:DINOBRAIN_DATA_DIR)
+  }
+
+  $codexDataDir = Get-DinoBrainConfiguredDataDir
+  if (-not [string]::IsNullOrWhiteSpace($codexDataDir)) {
+    return (Resolve-DinoBrainInstallRoot $codexDataDir)
+  }
+
+  foreach ($candidate in Get-DinoBrainInstallRootCandidates) {
+    if (Test-DinoBrainInstallRoot $candidate) {
+      return (Get-FullPath $candidate)
+    }
+  }
+
   $documents = [Environment]::GetFolderPath("MyDocuments")
   if ([string]::IsNullOrWhiteSpace($documents)) {
     return (Join-Path $HOME "Documents")
@@ -61,6 +79,63 @@ function Get-FullPath {
     return [System.IO.Path]::GetFullPath($expanded)
   }
   return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $expanded))
+}
+
+function Resolve-DinoBrainInstallRoot {
+  param([Parameter(Mandatory = $true)][string]$PathValue)
+
+  $full = Get-FullPath $PathValue.Trim().Trim('"')
+  $trimmed = $full.TrimEnd([char[]]@('\', '/'))
+  $leaf = Split-Path -Leaf $trimmed
+  if ($leaf -ieq "dinobrain" -or $leaf -ieq "dinobrain-data") {
+    $parent = Split-Path -Parent $trimmed
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+      return $parent
+    }
+  }
+  return $full
+}
+
+function Test-DinoBrainInstallRoot {
+  param([Parameter(Mandatory = $true)][string]$PathValue)
+  $root = Get-FullPath $PathValue
+  return (Test-Path -LiteralPath (Join-Path $root "dinobrain")) -or (Test-Path -LiteralPath (Join-Path $root "dinobrain-data"))
+}
+
+function Get-DinoBrainConfiguredDataDir {
+  $configPath = Join-Path $HOME ".codex\config.toml"
+  if (-not (Test-Path -LiteralPath $configPath)) {
+    return ""
+  }
+  try {
+    $text = [System.IO.File]::ReadAllText($configPath)
+    $match = [regex]::Match($text, 'DINOBRAIN_DATA_DIR\s*=\s*[''"]([^''"]+)[''"]', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($match.Success) {
+      return [Environment]::ExpandEnvironmentVariables($match.Groups[1].Value)
+    }
+  } catch {
+    return ""
+  }
+  return ""
+}
+
+function Get-DinoBrainInstallRootCandidates {
+  $items = New-Object System.Collections.Generic.List[string]
+  $documents = [Environment]::GetFolderPath("MyDocuments")
+  if ([string]::IsNullOrWhiteSpace($documents)) {
+    $documents = Join-Path $HOME "Documents"
+  }
+  $items.Add($documents)
+  $items.Add((Join-Path $documents "DinoBrain"))
+  $items.Add($HOME)
+
+  foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
+    if (-not $drive.IsReady) { continue }
+    $items.Add((Join-Path $drive.RootDirectory.FullName "dino"))
+    $items.Add((Join-Path $drive.RootDirectory.FullName "DinoBrain"))
+  }
+
+  return $items | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 }
 
 function Assert-Command {
@@ -1328,6 +1403,13 @@ if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path
 if ([string]::IsNullOrWhiteSpace($CodexRequirementsPath)) { $CodexRequirementsPath = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml" }
 if ([string]::IsNullOrWhiteSpace($CodexManagedHookDir)) { $CodexManagedHookDir = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\DinoBrainHooks" }
 if ([string]::IsNullOrWhiteSpace($ClaudeSettingsPath)) { $ClaudeSettingsPath = Join-Path $HOME ".claude\settings.json" }
+
+$rawInstallRoot = $InstallRoot
+$InstallRoot = Resolve-DinoBrainInstallRoot $InstallRoot
+if ($InstallRoot -ne (Get-FullPath $rawInstallRoot)) {
+  Write-Host "DinoBrain install root normalized: $rawInstallRoot -> $InstallRoot"
+}
+
 if ([string]::IsNullOrWhiteSpace($AppDir)) { $AppDir = Join-Path $InstallRoot "dinobrain" }
 if ([string]::IsNullOrWhiteSpace($DataDir)) { $DataDir = Join-Path $InstallRoot "dinobrain-data" }
 

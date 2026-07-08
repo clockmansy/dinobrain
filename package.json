@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.7",
+  "version": "2.2.8",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -54,6 +54,7 @@
     "hook:verify": "node scripts/verify-codex-hook.mjs",
     "installer:win": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1",
     "installer:verify:version": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-version-alignment.ps1",
+    "installer:verify:path-ux": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-path-ux.ps1",
     "installer:verify:approval": "powershell -ExecutionPolicy Bypass -File scripts/verify-codex-hook-approval.ps1",
     "installer:verify:launchers": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-observatory-launcher.ps1",
     "installer:verify:managed-hook": "powershell -ExecutionPolicy Bypass -File scripts/verify-codex-managed-hook.ps1",

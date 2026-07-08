@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Text.RegularExpressions;
 
 namespace DinoBrainSetup;
 
@@ -15,9 +16,12 @@ internal sealed class SetupForm : Form
     private readonly TextBox _logBox = new();
     private readonly Label _statusLabel = new();
     private readonly Label _checksLabel = new();
+    private readonly Label _installPreviewLabel = new();
     private readonly ProgressBar _progressBar = new();
     private readonly Button _installButton = new();
     private readonly Button _cancelButton = new();
+    private readonly Button _browseInstallRootButton = new();
+    private readonly Button _autoInstallRootButton = new();
     private readonly Button _openFolderButton = new();
     private readonly Button _openCodexFolderButton = new();
     private readonly Button _openObservatoryButton = new();
@@ -141,7 +145,8 @@ internal sealed class SetupForm : Form
             panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
 
-        _installRootBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        _installRootBox.Text = GetRecommendedInstallRoot();
+        _installRootBox.TextChanged += (_, _) => UpdateInstallPathPreview();
         _appRepoBox.Text = "https://github.com/clockmansy/dinobrain.git";
         _dataRepoBox.Text = "https://github.com/clockmansy/dinobrain-data.git";
         _appRefBox.Text = Program.DefaultAppRef;
@@ -154,8 +159,14 @@ internal sealed class SetupForm : Form
         }
 
         AddLabel(panel, "Install root");
-        panel.Controls.Add(WithButton(_installRootBox, "Browse", BrowseInstallRoot));
-        AddHint(panel, "Creates dinobrain and dinobrain-data folders under this path.");
+        panel.Controls.Add(BuildInstallRootPicker());
+        AddHint(panel, "No typing needed: use Auto for an existing install or Browse to choose a parent folder.");
+        _installPreviewLabel.Dock = DockStyle.Top;
+        _installPreviewLabel.AutoSize = true;
+        _installPreviewLabel.ForeColor = Color.FromArgb(62, 82, 116);
+        _installPreviewLabel.Padding = new Padding(0, 4, 0, 0);
+        panel.Controls.Add(_installPreviewLabel);
+        UpdateInstallPathPreview();
 
         AddLabel(panel, "App repository");
         panel.Controls.Add(_appRepoBox);
@@ -274,30 +285,179 @@ internal sealed class SetupForm : Form
         panel.Controls.Add(new Panel { Height = height, Dock = DockStyle.Top });
     }
 
-    private static Control WithButton(TextBox textBox, string buttonText, EventHandler click)
+    private Control BuildInstallRootPicker()
     {
-        textBox.Dock = DockStyle.Fill;
+        _installRootBox.Dock = DockStyle.Fill;
 
         var layout = new TableLayoutPanel
         {
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Dock = DockStyle.Top,
             Height = 30,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.Controls.Add(textBox, 0, 0);
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.Controls.Add(_installRootBox, 0, 0);
 
-        var button = new Button
-        {
-            Text = buttonText,
-            Width = 82,
-            Dock = DockStyle.Right,
-        };
-        button.Click += click;
-        layout.Controls.Add(button, 1, 0);
+        _browseInstallRootButton.Text = "Browse";
+        _browseInstallRootButton.Width = 82;
+        _browseInstallRootButton.Dock = DockStyle.Right;
+        _browseInstallRootButton.Click += BrowseInstallRoot;
+        layout.Controls.Add(_browseInstallRootButton, 1, 0);
+
+        _autoInstallRootButton.Text = "Auto";
+        _autoInstallRootButton.Width = 70;
+        _autoInstallRootButton.Dock = DockStyle.Right;
+        _autoInstallRootButton.Click += UseRecommendedInstallRoot;
+        layout.Controls.Add(_autoInstallRootButton, 2, 0);
+
         return layout;
+    }
+
+    private void UseRecommendedInstallRoot(object? sender, EventArgs eventArgs)
+    {
+        _installRootBox.Text = GetRecommendedInstallRoot();
+    }
+
+    private static string GetRecommendedInstallRoot()
+    {
+        foreach (var explicitPath in new[] { Environment.GetEnvironmentVariable("DINOBRAIN_INSTALL_ROOT") })
+        {
+            if (!string.IsNullOrWhiteSpace(explicitPath))
+            {
+                return NormalizeInstallRootInput(explicitPath);
+            }
+        }
+
+        var configuredDataDir = Environment.GetEnvironmentVariable("DINOBRAIN_DATA_DIR");
+        if (!string.IsNullOrWhiteSpace(configuredDataDir))
+        {
+            return NormalizeInstallRootInput(configuredDataDir);
+        }
+
+        var codexDataDir = TryReadCodexDataDir();
+        if (!string.IsNullOrWhiteSpace(codexDataDir))
+        {
+            return NormalizeInstallRootInput(codexDataDir);
+        }
+
+        foreach (var candidate in InstallRootCandidates())
+        {
+            if (LooksLikeInstallRoot(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return DefaultDocumentsPath();
+    }
+
+    private static IEnumerable<string> InstallRootCandidates()
+    {
+        var documents = DefaultDocumentsPath();
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var candidate in new[] { documents, Path.Combine(documents, "DinoBrain"), profile })
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                yield return NormalizeInstallRootInput(candidate);
+            }
+        }
+
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            if (!drive.IsReady)
+            {
+                continue;
+            }
+            yield return NormalizeInstallRootInput(Path.Combine(drive.RootDirectory.FullName, "dino"));
+            yield return NormalizeInstallRootInput(Path.Combine(drive.RootDirectory.FullName, "DinoBrain"));
+        }
+    }
+
+    private static string DefaultDocumentsPath()
+    {
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        if (!string.IsNullOrWhiteSpace(documents))
+        {
+            return documents;
+        }
+
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrWhiteSpace(profile) ? Environment.CurrentDirectory : Path.Combine(profile, "Documents");
+    }
+
+    private static string? TryReadCodexDataDir()
+    {
+        try
+        {
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrWhiteSpace(profile))
+            {
+                return null;
+            }
+
+            var configPath = Path.Combine(profile, ".codex", "config.toml");
+            if (!File.Exists(configPath))
+            {
+                return null;
+            }
+
+            var text = File.ReadAllText(configPath);
+            var match = Regex.Match(text, @"DINOBRAIN_DATA_DIR\s*=\s*['""]([^'""]+)['""]", RegexOptions.IgnoreCase);
+            return match.Success ? Environment.ExpandEnvironmentVariables(match.Groups[1].Value) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool LooksLikeInstallRoot(string path)
+    {
+        return Directory.Exists(Path.Combine(path, "dinobrain")) || Directory.Exists(Path.Combine(path, "dinobrain-data"));
+    }
+
+    private static string NormalizeInstallRootInput(string path)
+    {
+        var expanded = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+        var fullPath = Path.GetFullPath(expanded);
+        var trimmed = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var leaf = Path.GetFileName(trimmed);
+        if (string.Equals(leaf, "dinobrain", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(leaf, "dinobrain-data", StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.GetDirectoryName(trimmed) ?? fullPath;
+        }
+        return fullPath;
+    }
+
+    private void UpdateInstallPathPreview()
+    {
+        try
+        {
+            var text = _installRootBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _installPreviewLabel.Text = "Choose a folder. DinoBrain will create app and data folders inside it.";
+                return;
+            }
+
+            var root = NormalizeInstallRootInput(text);
+            var appPath = Path.Combine(root, "dinobrain");
+            var dataPath = Path.Combine(root, "dinobrain-data");
+            var mode = LooksLikeInstallRoot(root) ? "Existing install detected; installer will update/repair it." : "New install root; installer will create the folders.";
+            var normalized = string.Equals(root, Path.GetFullPath(Environment.ExpandEnvironmentVariables(text.Trim().Trim('"'))), StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : $"{Environment.NewLine}Selected app/data folder will be treated as root: {root}";
+            _installPreviewLabel.Text = $"App: {appPath}{Environment.NewLine}Data: {dataPath}{Environment.NewLine}{mode}{normalized}";
+        }
+        catch (Exception ex)
+        {
+            _installPreviewLabel.Text = $"Path needs attention: {ex.Message}";
+        }
     }
 
     private void BrowseInstallRoot(object? sender, EventArgs eventArgs)
@@ -306,13 +466,13 @@ internal sealed class SetupForm : Form
         {
             Description = "Choose the DinoBrain install root",
             SelectedPath = Directory.Exists(_installRootBox.Text)
-                ? _installRootBox.Text
-                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                ? NormalizeInstallRootInput(_installRootBox.Text)
+                : GetRecommendedInstallRoot(),
             UseDescriptionForTitle = true,
         };
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            _installRootBox.Text = dialog.SelectedPath;
+            _installRootBox.Text = NormalizeInstallRootInput(dialog.SelectedPath);
         }
     }
 
@@ -377,12 +537,14 @@ internal sealed class SetupForm : Form
             return;
         }
 
-        var installRoot = Path.GetFullPath(Environment.ExpandEnvironmentVariables(_installRootBox.Text.Trim()));
-        if (string.IsNullOrWhiteSpace(installRoot))
+        var installRootText = _installRootBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(installRootText))
         {
             MessageBox.Show(this, "Choose an install root first.", "DinoBrain Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        var installRoot = NormalizeInstallRootInput(installRootText);
+        _installRootBox.Text = installRoot;
 
         SetInstallingState(true);
         _logBox.Clear();
@@ -550,7 +712,7 @@ internal sealed class SetupForm : Form
         _progressBar.Style = installing ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
         _progressBar.MarqueeAnimationSpeed = installing ? 30 : 0;
 
-        foreach (var control in new Control[] { _installRootBox, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _codexRestartFlowCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
+        foreach (var control in new Control[] { _installRootBox, _browseInstallRootButton, _autoInstallRootButton, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _codexRestartFlowCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
         {
             control.Enabled = !installing;
         }
