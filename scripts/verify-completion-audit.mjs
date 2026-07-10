@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [{ COMPLETION_COMMANDS, COMPLETION_GATES, HARD_GATE_IDS }, { runCompletionAudit, verifyCompletionEvidencePack }] =
+const [{ COMPLETION_ARTIFACTS, COMPLETION_COMMANDS, COMPLETION_GATES, HARD_GATE_IDS }, { runCompletionAudit, verifyCompletionEvidencePack }] =
   await Promise.all([
     import(pathToFileURL(path.join(root, "dist", "completion-registry.js")).href),
     import(pathToFileURL(path.join(root, "dist", "completion-evidence.js")).href),
@@ -34,6 +34,16 @@ async function main() {
   assert(COMPLETION_COMMANDS.length === concurrencyStart + 5, "completion registry must end with three concurrency runs, status refresh, and final goal verification");
   assert(COMPLETION_GATES.every((gate) => gate.command_ids.length > 0), "gate without commands found");
   assert(COMPLETION_GATES.every((gate) => gate.artifact_ids.length > 0), "gate without artifacts found");
+  const fullMemoryArtifact = COMPLETION_ARTIFACTS.find((entry) => entry.id === "full_memory_audit");
+  assert(
+    JSON.stringify(fullMemoryArtifact?.accepted_statuses) === JSON.stringify(["healthy", "drift_classified"]),
+    "completion registry must accept classified OS drift while rejecting unclassified drift and parse errors",
+  );
+  const nativeAuthorityArtifact = COMPLETION_ARTIFACTS.find((entry) => entry.id === "native_instruction_authority");
+  assert(
+    JSON.stringify(nativeAuthorityArtifact?.accepted_statuses) === JSON.stringify(["healthy"]),
+    "native instruction authority must not accept drift-classified status",
+  );
   const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
   for (const entry of COMPLETION_COMMANDS) {
     assert(packageJson.scripts?.[entry.npm_script], `registry references missing npm script: ${entry.npm_script}`);
@@ -132,6 +142,7 @@ async function main() {
             "registry_matches_normative_runner",
             "registry_scripts_exist_in_package",
             "local_repo_paths_are_not_persisted",
+            "classified_full_memory_drift_is_accepted",
           ],
         },
         null,

@@ -296,7 +296,7 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     relative_path: ".dino/state/full_memory_audit_status.json",
     kind: "json",
     gates: ["HG-09", "HG-10"],
-    accepted_statuses: ["healthy"],
+    accepted_statuses: ["healthy", "drift_classified"],
   },
   {
     id: "operations_index",
