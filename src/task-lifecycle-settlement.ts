@@ -999,7 +999,7 @@ async function createMigrationManifest(
     status: "planned",
     created_at: generatedAt,
     updated_at: generatedAt,
-    data_root: path.resolve(dataRoot),
+    data_root: ".",
     manifest_path: paths.manifestRelativePath,
     ledger_root: paths.ledgerRelativeRoot,
     local_backup_root: paths.backupRelativeRoot,
