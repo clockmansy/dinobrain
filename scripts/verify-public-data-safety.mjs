@@ -136,8 +136,10 @@ const conditionalPathRules = [
   { id: "operation_gate_path", pattern: /^\.dino\/gates\// },
   { id: "operation_audit_path", pattern: /^\.dino\/audits\// },
   { id: "operation_evaluation_path", pattern: /^\.dino\/evaluations\// },
+  { id: "operation_lifecycle_path", pattern: /^\.dino\/lifecycle\// },
   { id: "operation_quarantine_path", pattern: /^\.dino\/quarantine\// },
   { id: "operation_compounding_path", pattern: /^\.dino\/compounding\// },
+  { id: "node_lifecycle_status_path", pattern: /^\.dino\/state\/node_lifecycle\.json$/ },
 ];
 
 const syncablePathRules = [
