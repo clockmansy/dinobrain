@@ -276,7 +276,12 @@ function hookOutput(additionalContext, blockReason = "") {
 function parseTool(result) {
   const text = result.content?.find((part) => part.type === "text")?.text;
   if (!text) throw new Error("MCP tool returned no text content");
-  return JSON.parse(text);
+  if (result.isError) throw new Error(`MCP tool failed: ${text}`);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`MCP tool returned invalid JSON: ${text.slice(0, 240)}`, { cause: error });
+  }
 }
 
 function safeError(error) {

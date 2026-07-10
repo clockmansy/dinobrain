@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { isDefaultRetrievalExcludedPath, type RankedRecord } from "./context.js";
 import {
   type RetrievalMode,
@@ -21,11 +22,14 @@ import {
   type OperationTaskEntry,
   type OperationTraceEntry,
 } from "./operations-index.js";
+import { withOperationsWriteLock } from "./operation-lock.js";
 import { buildWikiIndex, type WikiIndex, type WikiIndexEdge, type WikiIndexNode, type WikiIndexRecord } from "./wiki-index.js";
 
 export const SQLITE_SHARD_VERSION = 3;
 export const SQLITE_INDEX_DIR = ".dino/index/sqlite";
 export const SQLITE_MANIFEST_RELATIVE_PATH = `${SQLITE_INDEX_DIR}/manifest.json`;
+const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+const SQLITE_BUSY_RETRY_ATTEMPTS = 6;
 
 type ShardName = "wiki" | "operations";
 type SqlValue = string | number | null;
@@ -113,14 +117,15 @@ export async function sqliteShardExists(dataRoot: string, shard: ShardName): Pro
   const shardPath = getSqliteShardPath(dataRoot, shard);
   if (!(await exists(shardPath))) return false;
   try {
-    const db = new DatabaseSync(shardPath, { readOnly: true });
+    const db = openReadableDatabase(shardPath);
     try {
       const row = db.prepare("SELECT value FROM metadata WHERE key = 'version'").get() as { value?: string } | undefined;
       return Number(row?.value ?? 0) === SQLITE_SHARD_VERSION;
     } finally {
       db.close();
     }
-  } catch {
+  } catch (error) {
+    if (isSqliteBusyError(error)) throw error;
     return false;
   }
 }
@@ -146,6 +151,18 @@ async function removeSqliteFiles(basePath: string): Promise<void> {
   );
 }
 
+async function removeSqliteSidecars(basePath: string): Promise<void> {
+  await Promise.all(
+    [`${basePath}-shm`, `${basePath}-wal`, `${basePath}-journal`].map(async (filePath) => {
+      try {
+        await fs.rm(filePath, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }),
+  );
+}
+
 function tempShardPath(dataRoot: string, shard: ShardName): string {
   const shardPath = getSqliteShardPath(dataRoot, shard);
   return `${shardPath}.${process.pid}.${Date.now()}.tmp`;
@@ -160,7 +177,7 @@ async function replaceShardWithRetry(dataRoot: string, shard: ShardName, tempPat
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      await removeSqliteFiles(shardPath);
+      await removeSqliteSidecars(shardPath);
       await fs.rename(tempPath, shardPath);
       await removeSqliteFiles(tempPath);
       return shardPath;
@@ -173,14 +190,58 @@ async function replaceShardWithRetry(dataRoot: string, shard: ShardName, tempPat
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-function openWritableDatabase(filePath: string): DatabaseSync {
-  const db = new DatabaseSync(filePath);
+function openReadableDatabase(filePath: string): DatabaseSync {
+  const db = new DatabaseSync(filePath, { readOnly: true, timeout: SQLITE_BUSY_TIMEOUT_MS });
+  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`);
+  return db;
+}
+
+function openWritableDatabase(filePath: string, journalMode: "DELETE" | "WAL" = "DELETE"): DatabaseSync {
+  const db = new DatabaseSync(filePath, { timeout: SQLITE_BUSY_TIMEOUT_MS });
   db.exec(`
-    PRAGMA journal_mode = DELETE;
+    PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};
+    PRAGMA journal_mode = ${journalMode};
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
   `);
   return db;
+}
+
+function isSqliteBusyError(error: unknown): boolean {
+  const code = String((error as { code?: unknown }).code ?? "");
+  const message = error instanceof Error ? error.message : String(error);
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED" || /database (?:is )?locked|database is busy/i.test(message);
+}
+
+async function withSqliteBusyRetry<T>(operation: () => Promise<T> | T): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < SQLITE_BUSY_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isSqliteBusyError(error) || attempt === SQLITE_BUSY_RETRY_ATTEMPTS - 1) throw error;
+      await sleep(100 * (attempt + 1));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("SQLite operation failed after retries");
+}
+
+async function updateOperationsShard(
+  dataRoot: string,
+  update: (db: DatabaseSync) => void,
+): Promise<void> {
+  await withOperationsWriteLock(dataRoot, async () => {
+    await withSqliteBusyRetry(async () => {
+      if (!(await sqliteShardExists(dataRoot, "operations"))) return;
+      const db = openWritableDatabase(getSqliteShardPath(dataRoot, "operations"), "WAL");
+      try {
+        update(db);
+      } finally {
+        db.close();
+      }
+    });
+  });
 }
 
 function run(stmt: ReturnType<DatabaseSync["prepare"]>, ...values: SqlValue[]): void {
@@ -312,7 +373,7 @@ async function writeOperationsShard(
 ): Promise<string> {
   const tempPath = tempShardPath(dataRoot, "operations");
   await removeSqliteFiles(tempPath);
-  const db = openWritableDatabase(tempPath);
+  const db = openWritableDatabase(tempPath, "WAL");
   db.exec(`
     CREATE TABLE tasks (
       path TEXT PRIMARY KEY,
@@ -510,9 +571,13 @@ async function shardSize(filePath: string): Promise<number> {
 export async function buildAndWriteSqliteShards(dataRoot: string): Promise<SqliteManifest> {
   await fs.mkdir(dataPath(dataRoot, ...SQLITE_INDEX_DIR.split("/")), { recursive: true });
 
-  const [wiki, operations] = await Promise.all([buildWikiIndex(dataRoot), collectOperationEntries(dataRoot)]);
+  const wiki = await buildWikiIndex(dataRoot);
   const wikiPath = await writeWikiShard(dataRoot, wiki);
-  const operationsPath = await writeOperationsShard(dataRoot, operations);
+  const { operations, operationsPath } = await withOperationsWriteLock(dataRoot, async () => {
+    const operations = await collectOperationEntries(dataRoot);
+    const operationsPath = await withSqliteBusyRetry(async () => await writeOperationsShard(dataRoot, operations));
+    return { operations, operationsPath };
+  });
   const manifest: SqliteManifest = {
     version: SQLITE_SHARD_VERSION,
     generated_at: nowIso(),
@@ -536,7 +601,7 @@ export async function buildAndWriteSqliteShards(dataRoot: string): Promise<Sqlit
       },
     },
   };
-  await fs.writeFile(getSqliteManifestPath(dataRoot), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await atomicWriteJson(getSqliteManifestPath(dataRoot), manifest);
   return manifest;
 }
 
@@ -587,7 +652,7 @@ export async function querySqliteWiki(
   options: QueryOptions = {},
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: SqliteRetrievalStats }> {
   const shardPath = getSqliteShardPath(dataRoot, "wiki");
-  const db = new DatabaseSync(shardPath, { readOnly: true });
+  const db = openReadableDatabase(shardPath);
   try {
     const queryTerms = tokenize(query);
     const scoreByRecordId = new Map<string, number>();
@@ -661,7 +726,7 @@ export async function collectRecentTaskRecordsFromSqlite(
   limit = 10,
 ): Promise<RankedRecord[] | null> {
   if (!(await sqliteShardExists(dataRoot, "operations"))) return null;
-  const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"), { readOnly: true });
+  const db = openReadableDatabase(getSqliteShardPath(dataRoot, "operations"));
   try {
     const rows = db
       .prepare(
@@ -700,9 +765,7 @@ export async function upsertSqliteOperationTask(
   dataRoot: string,
   task: OperationTaskEntry,
 ): Promise<void> {
-  if (!(await sqliteShardExists(dataRoot, "operations"))) return;
-  const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"));
-  try {
+  await updateOperationsShard(dataRoot, (db) => {
     insertOperationTask(
       db.prepare(`
         INSERT OR REPLACE INTO tasks
@@ -711,18 +774,14 @@ export async function upsertSqliteOperationTask(
       `),
       task,
     );
-  } finally {
-    db.close();
-  }
+  });
 }
 
 export async function upsertSqliteOperationTrace(
   dataRoot: string,
   trace: OperationTraceEntry,
 ): Promise<void> {
-  if (!(await sqliteShardExists(dataRoot, "operations"))) return;
-  const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"));
-  try {
+  await updateOperationsShard(dataRoot, (db) => {
     ensureTraceMemoryColumns(db);
     insertOperationTrace(
       db.prepare(`
@@ -732,18 +791,14 @@ export async function upsertSqliteOperationTrace(
       `),
       trace,
     );
-  } finally {
-    db.close();
-  }
+  });
 }
 
 export async function upsertSqliteOperationContextPack(
   dataRoot: string,
   pack: OperationContextPackEntry,
 ): Promise<void> {
-  if (!(await sqliteShardExists(dataRoot, "operations"))) return;
-  const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"));
-  try {
+  await updateOperationsShard(dataRoot, (db) => {
     const insertPack = db.prepare(`
       INSERT OR REPLACE INTO context_packs
         (path, pack_id, question, created_at, item_count, retrieval_mode)
@@ -764,23 +819,17 @@ export async function upsertSqliteOperationContextPack(
       db.exec("ROLLBACK");
       throw error;
     }
-  } finally {
-    db.close();
-  }
+  });
 }
 
 export async function appendSqliteOperationEvent(
   dataRoot: string,
   event: OperationEventEntry,
 ): Promise<void> {
-  if (!(await sqliteShardExists(dataRoot, "operations"))) return;
-  const db = new DatabaseSync(getSqliteShardPath(dataRoot, "operations"));
-  try {
+  await updateOperationsShard(dataRoot, (db) => {
     insertOperationEvent(
       db.prepare("INSERT OR IGNORE INTO events (event_key, event, at, path, payload_json) VALUES (?, ?, ?, ?, ?)"),
       event,
     );
-  } finally {
-    db.close();
-  }
+  });
 }

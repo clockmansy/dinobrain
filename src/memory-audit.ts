@@ -46,7 +46,7 @@ function safeSlug(value: string): string {
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 72);
+    .slice(0, 160);
   return slug || "audit";
 }
 

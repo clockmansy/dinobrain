@@ -13,10 +13,12 @@ import {
   buildFinishBehaviorRecallEntry,
   recordFeedbackCorrectionRecall,
 } from "./behavior-recall.js";
+import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import { runCompoundingCycle } from "./compounding.js";
 import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
 import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
+import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
 import {
@@ -66,28 +68,24 @@ function safeSlug(value: string): string {
     .trim()
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 72);
+    .slice(0, 160);
   return slug || "task";
 }
 
 function makeTaskId(request: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `task-${stamp}-${safeSlug(request).slice(0, 28)}`;
+  return makeUniqueId("task", request, 28);
 }
 
 function makePackId(question: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `pack-${stamp}-${safeSlug(question).slice(0, 28)}`;
+  return makeUniqueId("pack", question, 28);
 }
 
 function makeCandidateId(claim: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `candidate-${stamp}-${safeSlug(claim).slice(0, 28)}`;
+  return makeUniqueId("candidate", claim, 28);
 }
 
 function makeQuarantineId(targetPath: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `quarantine-${stamp}-${safeSlug(targetPath).slice(0, 36)}`;
+  return makeUniqueId("quarantine", targetPath, 36);
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -139,8 +137,7 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(filePath, value);
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {
@@ -153,8 +150,7 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 }
 
 async function appendJsonLine(filePath: string, value: unknown): Promise<void> {
-  await ensureDir(path.dirname(filePath));
-  await fs.appendFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
+  await appendFileWithLock(filePath, `${JSON.stringify(value)}\n`);
 }
 
 async function appendEvent(value: Record<string, unknown>): Promise<string> {
@@ -766,8 +762,7 @@ function parseGitStatus(stdout: string): Array<{ status: string; path: string }>
 }
 
 function makeGateId(taskId: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `gate-${stamp}-${safeSlug(taskId).slice(0, 36)}`;
+  return makeUniqueId("gate", taskId, 36);
 }
 
 type GateContextEvidence = {
@@ -786,8 +781,7 @@ function makeSourceChunkId(sourceTitle: string): string {
 }
 
 function makeFeedbackId(feedback: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `feedback-${stamp}-${safeSlug(feedback).slice(0, 36)}`;
+  return makeUniqueId("feedback", feedback, 36);
 }
 
 async function writeFinishGrowthRecords(params: {

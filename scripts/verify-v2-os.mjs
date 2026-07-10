@@ -416,6 +416,7 @@ try {
       },
     }),
   );
+  assert(audit.ok !== false, `audit_memory_use failed: ${audit.error ?? "unknown error"}`);
   assert(audit.observed_artifacts_verified.includes(finish.trace_path), "audit did not verify event-observed trace artifact");
   assert(audit.observed_artifacts_unverified.includes("20_Wiki/Unobserved-Fake.md"), "audit did not flag unverified observed artifact");
 

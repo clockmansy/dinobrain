@@ -1,7 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson, withFileLock } from "./concurrency.js";
 import type { RankedRecord } from "./context.js";
+import { withOperationsWriteLock } from "./operation-lock.js";
 
 export const OPERATIONS_INDEX_VERSION = 1;
 export const OPERATIONS_INDEX_RELATIVE_PATH = ".dino/index/operations-index.json";
@@ -293,7 +295,7 @@ async function collectEvents(dataRoot: string): Promise<OperationEventEntry[]> {
   const records: OperationEventEntry[] = [];
   for (const file of files) {
     const relativePath = relDataPath(dataRoot, file);
-    const text = await fs.readFile(file, "utf8");
+    const text = await withFileLock(`${file}.append.lock`, async () => await fs.readFile(file, "utf8"));
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
       try {
@@ -323,6 +325,7 @@ export async function readOperationsIndex(dataRoot: string): Promise<OperationsI
     return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return null;
     throw error;
   }
 }
@@ -358,21 +361,30 @@ export async function buildOperationsIndex(dataRoot: string): Promise<Operations
   };
 }
 
-export async function writeOperationsIndex(dataRoot: string, index: OperationsIndex): Promise<string> {
+async function writeOperationsIndexUnlocked(dataRoot: string, index: OperationsIndex): Promise<string> {
   const indexPath = getOperationsIndexPath(dataRoot);
-  await fs.mkdir(path.dirname(indexPath), { recursive: true });
-  await fs.writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await atomicWriteJson(indexPath, index);
   return indexPath;
 }
 
-export async function buildAndWriteOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
-  const index = await buildOperationsIndex(dataRoot);
-  await writeOperationsIndex(dataRoot, index);
-  return index;
+export async function writeOperationsIndex(dataRoot: string, index: OperationsIndex): Promise<string> {
+  return await withOperationsWriteLock(dataRoot, async () => await writeOperationsIndexUnlocked(dataRoot, index));
 }
 
-async function readOrBuildOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
-  return (await readOperationsIndex(dataRoot)) ?? (await buildAndWriteOperationsIndex(dataRoot));
+export async function buildAndWriteOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
+  return await withOperationsWriteLock(dataRoot, async () => {
+    const index = await buildOperationsIndex(dataRoot);
+    await writeOperationsIndexUnlocked(dataRoot, index);
+    return index;
+  });
+}
+
+async function readOrBuildOperationsIndexUnlocked(dataRoot: string): Promise<OperationsIndex> {
+  const existing = await readOperationsIndex(dataRoot);
+  if (existing) return existing;
+  const index = await buildOperationsIndex(dataRoot);
+  await writeOperationsIndexUnlocked(dataRoot, index);
+  return index;
 }
 
 export async function upsertOperationTask(
@@ -380,19 +392,21 @@ export async function upsertOperationTask(
   taskPath: string,
   task: JsonObject,
 ): Promise<OperationsIndex> {
-  const index = await readOrBuildOperationsIndex(dataRoot);
-  const absolutePath = dataPath(dataRoot, taskPath);
-  const entry = normalizeTaskEntry(dataRoot, absolutePath, task);
-  const existed = index.recent_tasks.some((taskEntry) => taskEntry.path === entry.path);
-  index.recent_tasks = dedupeByPath([entry, ...index.recent_tasks]).sort(byTaskTime).slice(0, RECENT_TASK_LIMIT);
-  index.active_tasks =
-    entry.status === "started"
-      ? dedupeByPath([entry, ...index.active_tasks]).sort(byTaskTime)
-      : index.active_tasks.filter((taskEntry) => taskEntry.path !== entry.path);
-  if (!existed && entry.status === "started") index.counts.tasks += 1;
-  index.generated_at = nowIso();
-  await writeOperationsIndex(dataRoot, index);
-  return index;
+  return await withOperationsWriteLock(dataRoot, async () => {
+    const index = await readOrBuildOperationsIndexUnlocked(dataRoot);
+    const absolutePath = dataPath(dataRoot, taskPath);
+    const entry = normalizeTaskEntry(dataRoot, absolutePath, task);
+    const existed = index.recent_tasks.some((taskEntry) => taskEntry.path === entry.path);
+    index.recent_tasks = dedupeByPath([entry, ...index.recent_tasks]).sort(byTaskTime).slice(0, RECENT_TASK_LIMIT);
+    index.active_tasks =
+      entry.status === "started"
+        ? dedupeByPath([entry, ...index.active_tasks]).sort(byTaskTime)
+        : index.active_tasks.filter((taskEntry) => taskEntry.path !== entry.path);
+    if (!existed && entry.status === "started") index.counts.tasks += 1;
+    index.generated_at = nowIso();
+    await writeOperationsIndexUnlocked(dataRoot, index);
+    return index;
+  });
 }
 
 export async function upsertOperationTrace(
@@ -400,15 +414,17 @@ export async function upsertOperationTrace(
   tracePath: string,
   trace: JsonObject,
 ): Promise<OperationsIndex> {
-  const index = await readOrBuildOperationsIndex(dataRoot);
-  const absolutePath = dataPath(dataRoot, tracePath);
-  const entry = normalizeTraceEntry(dataRoot, absolutePath, trace);
-  const existed = index.recent_traces.some((traceEntry) => traceEntry.path === entry.path);
-  index.recent_traces = dedupeByPath([entry, ...index.recent_traces]).sort(byTraceTime).slice(0, RECENT_TRACE_LIMIT);
-  if (!existed) index.counts.traces += 1;
-  index.generated_at = nowIso();
-  await writeOperationsIndex(dataRoot, index);
-  return index;
+  return await withOperationsWriteLock(dataRoot, async () => {
+    const index = await readOrBuildOperationsIndexUnlocked(dataRoot);
+    const absolutePath = dataPath(dataRoot, tracePath);
+    const entry = normalizeTraceEntry(dataRoot, absolutePath, trace);
+    const existed = index.recent_traces.some((traceEntry) => traceEntry.path === entry.path);
+    index.recent_traces = dedupeByPath([entry, ...index.recent_traces]).sort(byTraceTime).slice(0, RECENT_TRACE_LIMIT);
+    if (!existed) index.counts.traces += 1;
+    index.generated_at = nowIso();
+    await writeOperationsIndexUnlocked(dataRoot, index);
+    return index;
+  });
 }
 
 export async function upsertOperationContextPack(
@@ -416,17 +432,19 @@ export async function upsertOperationContextPack(
   packPath: string,
   pack: JsonObject,
 ): Promise<OperationsIndex> {
-  const index = await readOrBuildOperationsIndex(dataRoot);
-  const absolutePath = dataPath(dataRoot, packPath);
-  const entry = normalizePackEntry(dataRoot, absolutePath, pack);
-  const existed = index.recent_context_packs.some((packEntry) => packEntry.path === entry.path);
-  index.recent_context_packs = dedupeByPath([entry, ...index.recent_context_packs])
-    .sort(byPackTime)
-    .slice(0, RECENT_PACK_LIMIT);
-  if (!existed) index.counts.context_packs += 1;
-  index.generated_at = nowIso();
-  await writeOperationsIndex(dataRoot, index);
-  return index;
+  return await withOperationsWriteLock(dataRoot, async () => {
+    const index = await readOrBuildOperationsIndexUnlocked(dataRoot);
+    const absolutePath = dataPath(dataRoot, packPath);
+    const entry = normalizePackEntry(dataRoot, absolutePath, pack);
+    const existed = index.recent_context_packs.some((packEntry) => packEntry.path === entry.path);
+    index.recent_context_packs = dedupeByPath([entry, ...index.recent_context_packs])
+      .sort(byPackTime)
+      .slice(0, RECENT_PACK_LIMIT);
+    if (!existed) index.counts.context_packs += 1;
+    index.generated_at = nowIso();
+    await writeOperationsIndexUnlocked(dataRoot, index);
+    return index;
+  });
 }
 
 export async function appendOperationEvent(
@@ -434,14 +452,16 @@ export async function appendOperationEvent(
   eventPath: string,
   event: JsonObject,
 ): Promise<OperationsIndex> {
-  const index = await readOrBuildOperationsIndex(dataRoot);
-  const entry = normalizeEventEntry(eventPath, event);
-  const existed = index.recent_events.some((existing) => eventKey(existing) === eventKey(entry));
-  index.recent_events = dedupeEvents([entry, ...index.recent_events]).sort(byEventTime).slice(0, RECENT_EVENT_LIMIT);
-  if (!existed) index.counts.events += 1;
-  index.generated_at = nowIso();
-  await writeOperationsIndex(dataRoot, index);
-  return index;
+  return await withOperationsWriteLock(dataRoot, async () => {
+    const index = await readOrBuildOperationsIndexUnlocked(dataRoot);
+    const entry = normalizeEventEntry(eventPath, event);
+    const existed = index.recent_events.some((existing) => eventKey(existing) === eventKey(entry));
+    index.recent_events = dedupeEvents([entry, ...index.recent_events]).sort(byEventTime).slice(0, RECENT_EVENT_LIMIT);
+    if (!existed) index.counts.events += 1;
+    index.generated_at = nowIso();
+    await writeOperationsIndexUnlocked(dataRoot, index);
+    return index;
+  });
 }
 
 export async function collectRecentTaskRecordsFromIndex(

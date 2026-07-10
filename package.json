@@ -77,6 +77,7 @@
     "index:sqlite": "node dist/build-sqlite-shards.js",
     "index:verify:sqlite": "node scripts/verify-sqlite-shards.mjs",
     "index:verify:operations": "node scripts/verify-operations-index.mjs",
+    "index:verify:concurrency": "node scripts/verify-operations-concurrency.mjs",
     "index:verify": "node scripts/verify-wiki-index.mjs",
     "index:wiki": "node dist/build-wiki-index.js",
     "observatory": "node scripts/dinobrain-observatory.mjs",
