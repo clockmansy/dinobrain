@@ -4,6 +4,7 @@ Status: normative completion contract
 Revision: 2026-07-10
 Authority: this document defines the only valid `COMPLETE` verdict
 Review history: `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`
+Execution plan: `docs/OS_COMPLETION_EXECUTION_PLAN_20260710.md`
 
 ## Completion Rule
 
