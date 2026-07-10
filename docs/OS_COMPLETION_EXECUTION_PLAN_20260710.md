@@ -1,6 +1,6 @@
 # DinoBrain OS Completion Execution Plan
 
-Status: proposed implementation plan
+Status: active implementation plan
 Revision: 2026-07-10
 Normative authority: `docs/OS_COMPLETION_CONDITIONS.md`
 Review history: `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`
@@ -31,7 +31,8 @@ and rollback behavior all pass.
 
 ## 2. Planning Baseline
 
-The baseline was refreshed on 2026-07-10 before writing this plan.
+The table below is the frozen 2026-07-10 planning baseline. Current execution
+evidence is recorded in the progress section and must not rewrite this snapshot.
 
 | Area | Observed state | Planning consequence |
 | --- | --- | --- |
@@ -114,16 +115,24 @@ The first foundation slice is implemented and remains intentionally
 - `pre-response:gate:verify` proves forged, missing, stale, missing-tool,
   sensitive-persistence, destructive, and blocked-sync failures plus safe
   sensitive assistance and strict hook event ordering in independent fixtures.
-- The post-prevention lifecycle migration remains dry-run only. On the current
-  546-task vault it classifies 118 stale non-user auto-close candidates (93
-  title-generation, 18 diagnostic, four internal-service, and three ambient)
-  plus 78 evidence-preserving finish-gate repairs. Every proposed action binds
-  the original task/trace SHA-256; no source task or trace was changed.
-- The latest canonical plan-only audit is
-  `completion-20260710-160911954-e92f07bf-dc24-4798-b046-2a9497453a59`.
-  It ledgered all 61 mandatory commands and truthfully returned `NOT_COMPLETE`;
-  all 12 hard gates remain closed until their executable evidence is run and
-  passes in a release-candidate audit.
+- LOOP-04 was applied to a recomputed 548-task/271-trace vault. The 199-action
+  migration reached zero blockers, an actual rollback restored 199 files and
+  removed 177 generated traces with zero conflicts, and a second migration
+  reapplied the classification. A hash-chained ledger, exact local backup, Git
+  recovery ref, shared mutation lock, terminal task/trace transaction, and
+  tamper/conflict regressions now prevent the same debt pattern from recurring.
+- The latest full executable audit is
+  `completion-20260710-170538330-91239ab7-e2a7-4e77-b75d-bd94834d0a2e`.
+  It ran all 61 mandatory command instances, returned `NOT_COMPLETE`, and now
+  records HG-03 as `PASS`; HG-10 is blocked only by the external 50k-scale
+  evidence requirement.
+- LOOP-03 now uses a one-time challenge rather than trusting hand-authored proof
+  JSON. The server binds five required calls (`os_begin_task`,
+  `get_context_pack`, `wiki_search`, `search_memory`, `finish_task`) to one task,
+  MCP initialize client name/version, the direct parent Codex/Claude executable,
+  a server instance, a local identity key, and a hash-chained receipt ledger.
+  Claude `not_configured` remains visible for local diagnosis but can no longer
+  satisfy release parity.
 - `verify:codex-live:recent` correctly remains non-passing after this code
   change: the current long-running task predates the hook requirements and all
   three observed MCP processes predate the rebuilt server. A restarted client,
@@ -136,7 +145,10 @@ pass. FND-02 now meets its local and current-vault implementation acceptance;
 release-level HG-10 still requires the final release-candidate audit. LOOP-01
 still requires a 24-hour real-client soak before its release acceptance can be
 claimed. LOOP-02 meets fixture acceptance, while its release claim still
-requires a fresh trusted Codex prompt and Claude-equivalent live proof.
+requires a fresh trusted Codex prompt and Claude-equivalent live proof. LOOP-03
+meets its adversarial fixture acceptance, but remains release-pending until a
+fresh, fully restarted Codex Desktop and a real Claude Code process each produce
+a v2 challenge proof within the 24-hour window.
 
 ## 3. Implementation Principles
 
@@ -320,6 +332,17 @@ destructive path, and blocked sync all fail closed in live and fixture tests.
 
 **Acceptance:** `status:mcp-direct` reports both clients verified from fresh
 proofs, and removing one tool or replaying a stale proof fails the gate.
+
+**Implementation evidence (2026-07-11):** v2 proof challenges are one-use and
+machine-local-key authenticated. The MCP server records result hashes and a
+hash-chained receipt for all five canonical tool names, verifies one task binding
+and call order, captures MCP `clientInfo`, and requires Codex/Claude to be the
+server's direct parent process. Regression tests reject legacy/self-authored
+JSON, missing `get_context_pack`, process spoofing, challenge replay, stale proof,
+foreign local identity, and receipt/proof tampering. Installer-generated Codex
+and Claude proof launchers issue the challenge and wait for the real client;
+fresh live proofs remain pending and are not replaced by fixtures.
+See `docs/DIRECT_MCP_PROOF.md` for the artifact contract and trust boundary.
 
 #### LOOP-04: Task debt settlement and prevention
 

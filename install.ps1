@@ -1105,6 +1105,41 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -
   return $launcherPaths
 }
 
+function New-DinoBrainDirectMcpProofLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot
+  )
+
+  $proofScript = Join-Path $AppPath "scripts\start-client-mcp-proof.ps1"
+  if (-not (Test-Path -LiteralPath $proofScript)) {
+    Write-Warning "Direct MCP proof script not found: $proofScript"
+    return @()
+  }
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  $launcherPaths = @()
+  foreach ($agent in @("codex", "claude")) {
+    $displayName = if ($agent -eq "codex") { "Codex" } else { "Claude" }
+    $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -Agent $agent -AppPath "$AppPath" -VaultPath "$VaultPath" -NodeExe "$nodeExe"
+"@
+    foreach ($basePath in @($InstallRoot, $AppPath)) {
+      $launcherPath = Join-Path $basePath ("DinoBrain {0} MCP Proof.cmd" -f $displayName)
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+      $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+      [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+      Write-Host "$displayName direct MCP proof launcher created: $launcherPath"
+      $launcherPaths += $launcherPath
+    }
+  }
+  return $launcherPaths
+}
+
 function Invoke-DinoBrainCodexManagedHookInstall {
   param(
     [Parameter(Mandatory = $true)][string]$AppPath,
@@ -1489,6 +1524,7 @@ if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig -and -not $c
   $managedHookLaunchers = New-DinoBrainManagedHookLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -RequirementsPath $CodexRequirementsPath -ManagedDir $CodexManagedHookDir
 }
 $liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
+$directMcpProofLaunchers = New-DinoBrainDirectMcpProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -ManagedHookDir $CodexManagedHookDir -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
@@ -1531,6 +1567,9 @@ foreach ($launcher in $managedHookLaunchers) {
 }
 foreach ($launcher in $liveProofLaunchers) {
   Write-Host "Codex live proof launcher: $launcher"
+}
+foreach ($launcher in $directMcpProofLaunchers) {
+  Write-Host "Direct MCP proof launcher: $launcher"
 }
 foreach ($launcher in $uninstallLaunchers) {
   Write-Host "Uninstall launcher: $launcher"

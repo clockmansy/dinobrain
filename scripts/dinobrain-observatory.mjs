@@ -813,6 +813,18 @@ async function readiness(existingState = null) {
     Array.isArray(agent.missing_tools) ? agent.missing_tools.map((tool) => `${agent.agent}:${tool}`) : [],
   );
   const clientProofPath = clientAgents.map((agent) => agent.proof_path).filter(Boolean).join(" | ") || null;
+  const clientV2Parity =
+    clientArtifact.value?.release_parity_verified === true &&
+    ["codex", "claude"].every((agent) =>
+      clientAgents.some(
+        (entry) =>
+          entry?.agent === agent &&
+          entry?.status === "verified" &&
+          entry?.proof_version === "client_mcp_direct_proof_v2" &&
+          typeof entry?.challenge_id === "string" &&
+          typeof entry?.proof_sha256 === "string",
+      ),
+    );
   const ragBlocker =
     ragProofArtifact.artifact_parse_status === "ok" &&
     ragEvalArtifact.artifact_parse_status === "ok" &&
@@ -844,6 +856,7 @@ async function readiness(existingState = null) {
       expectedStatuses: ["verified"],
       proofPath: clientProofPath,
       missingTools: clientMissingTools,
+      blockerReason: clientV2Parity ? null : "direct_mcp_v2_parity_not_verified",
     }),
     hardGateFromArtifact({
       id: "native_instruction_authority",
@@ -959,6 +972,7 @@ async function readiness(existingState = null) {
       artifact_path: clientArtifact.artifact_path,
       artifact_parse_status: clientArtifact.artifact_parse_status,
       status: clientArtifact.value?.status ?? "missing",
+      release_parity_verified: clientArtifact.value?.release_parity_verified === true,
       agents: clientAgents,
       warnings: artifactWarnings(clientArtifact),
     },

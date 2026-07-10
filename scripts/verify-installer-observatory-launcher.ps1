@@ -27,6 +27,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\diagnose-codex-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-client-mcp-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\install-codex-managed-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "uninstall.ps1"), "# test`n")
 
@@ -80,6 +81,20 @@ try {
     }
     if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath)) {
       throw "Live proof launcher does not contain expected app/data paths: $launcher"
+    }
+  }
+
+  $directMcpProofLaunchers = @(New-DinoBrainDirectMcpProofLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
+  if ($directMcpProofLaunchers.Count -ne 4) {
+    throw "Expected 4 direct MCP proof launchers, got $($directMcpProofLaunchers.Count)"
+  }
+  foreach ($launcher in $directMcpProofLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "start-client-mcp-proof\.ps1" -or $text -notmatch " -Agent (codex|claude)") {
+      throw "Direct MCP proof launcher does not run the challenge flow: $launcher"
+    }
+    if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath) -or -not $text.Contains($nodeRoot)) {
+      throw "Direct MCP proof launcher does not contain expected app/data/node paths: $launcher"
     }
   }
 

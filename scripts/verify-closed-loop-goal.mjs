@@ -597,6 +597,22 @@ function main() {
     byId.rag_proof_regression.ok === true && byId.rag_eval_regression.ok === true
       ? classifyRagCompletionBlocker(byId.rag_proof_current, byId.rag_eval_current)
       : "real_rag_eval_failed";
+  const directMcpAgents = Array.isArray(byId.mcp_direct_current.parsed?.agents)
+    ? byId.mcp_direct_current.parsed.agents
+    : [];
+  const directMcpV2Parity =
+    byId.mcp_direct_current.parsed?.status === "verified" &&
+    byId.mcp_direct_current.parsed?.release_parity_verified === true &&
+    ["codex", "claude"].every((agent) =>
+      directMcpAgents.some(
+        (entry) =>
+          entry?.agent === agent &&
+          entry?.status === "verified" &&
+          entry?.proof_version === "client_mcp_direct_proof_v2" &&
+          typeof entry?.challenge_id === "string" &&
+          typeof entry?.proof_sha256 === "string",
+      ),
+    );
   const requirementEvidence = [
     {
       requirement: "pre_response_os_for_real_codex_desktop_hook",
@@ -648,12 +664,12 @@ function main() {
       ok:
         byId.mcp_direct_regression.ok === true &&
         byId.mcp_direct_current.ok === true &&
-        byId.mcp_direct_current.parsed?.status === "verified",
-      evidence: "mcp_direct_regression + mcp_direct_current.status",
+        directMcpV2Parity,
+      evidence: "mcp_direct_regression + mcp_direct_current.release_parity_verified + v2 agent proofs",
       blocker:
         byId.mcp_direct_regression.ok === true &&
         byId.mcp_direct_current.ok === true &&
-        byId.mcp_direct_current.parsed?.status === "verified"
+        directMcpV2Parity
           ? null
           : "direct_mcp_parity_not_verified",
     },

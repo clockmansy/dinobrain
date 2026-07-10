@@ -14,6 +14,7 @@ import {
   buildFinishBehaviorRecallEntry,
   recordFeedbackCorrectionRecall,
 } from "./behavior-recall.js";
+import { ClientMcpProofRuntime } from "./client-mcp-proof.js";
 import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import { runCompoundingCycle } from "./compounding.js";
@@ -569,6 +570,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/context-packs/",
     ".dino/compounding/",
     ".dino/audits/",
+    ".dino/proofs/",
     ".dino/quarantine/",
   ];
   const syncablePrefixes = [
@@ -987,6 +989,7 @@ function isAutoSyncConditionalPath(normalizedPath: string): boolean {
     ".dino/gates/",
     ".dino/lifecycle/",
     ".dino/provenance/",
+    ".dino/proofs/",
     ".dino/quarantine/",
     ".dino/tasks/",
     ".dino/traces/",
@@ -1753,6 +1756,13 @@ const server = new McpServer({
   version: DINOBRAIN_OS_VERSION,
 });
 
+const clientMcpProofRuntime = new ClientMcpProofRuntime(DATA_ROOT, {
+  getClientInfo: () => {
+    const value = server.server.getClientVersion();
+    return value ? { name: value.name, version: value.version } : undefined;
+  },
+});
+
 const disabledOsTools = new Set(
   envString("DINOBRAIN_DISABLED_OS_TOOLS", "")
     .split(",")
@@ -1761,9 +1771,16 @@ const disabledOsTools = new Set(
 );
 const registeredToolNames = new Set<string>();
 const registerTool = ((name: string, config: unknown, callback: unknown) => {
-  const protectedEntrypoint = name === "os_begin_task" || name === "os_gate";
+  const protectedEntrypoint =
+    name === "os_begin_task" ||
+    name === "os_gate" ||
+    name === "begin_client_mcp_proof" ||
+    name === "finalize_client_mcp_proof";
   if (disabledOsTools.has(name) && !protectedEntrypoint) return undefined;
-  const registered = server.registerTool(name, config as never, callback as never);
+  const handler = callback as (...args: unknown[]) => Promise<CallToolResult>;
+  const wrapped = (...args: unknown[]) =>
+    clientMcpProofRuntime.captureToolCall(name, args[0], () => handler(...args));
+  const registered = server.registerTool(name, config as never, wrapped as never);
   registeredToolNames.add(name);
   return registered;
 }) as McpServer["registerTool"];
@@ -1771,6 +1788,30 @@ const registerTool = ((name: string, config: unknown, callback: unknown) => {
 function observedOsTools(): string[] {
   return Array.from(registeredToolNames).sort((a, b) => a.localeCompare(b));
 }
+
+registerTool(
+  "begin_client_mcp_proof",
+  {
+    title: "Begin Direct Client MCP Proof",
+    description: "Activate a one-time server-observed direct MCP proof challenge for this real client process.",
+    inputSchema: {
+      challenge_id: z.string().min(1),
+    },
+  },
+  async ({ challenge_id }) => jsonResult(await clientMcpProofRuntime.begin(challenge_id)),
+);
+
+registerTool(
+  "finalize_client_mcp_proof",
+  {
+    title: "Finalize Direct Client MCP Proof",
+    description: "Verify the challenge-bound tool receipt chain and publish a signed direct-client MCP proof.",
+    inputSchema: {
+      challenge_id: z.string().min(1),
+    },
+  },
+  async ({ challenge_id }) => jsonResult(await clientMcpProofRuntime.finalize(challenge_id)),
+);
 
 registerTool(
   "os_begin_task",

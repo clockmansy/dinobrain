@@ -137,6 +137,10 @@ PASS requires:
   `finish_task`, `get_context_pack`, `wiki_search`, and `search_memory`;
 - CLI, hook, bootstrap, or synthetic server fallback is not counted as direct
   client MCP proof;
+- each client proof is bound to a fresh one-time challenge, MCP initialize
+  name/version, the direct parent client executable, one server instance, one
+  task id, and server-computed receipts for all five canonical tool calls;
+- `not_configured` is a local diagnostic only and cannot satisfy release parity;
 - native Codex and Claude instruction surfaces are scanned without storing raw
   private instruction text;
 - unresolved `native_memory_drift`, wrong-memory references, or instruction
@@ -144,7 +148,8 @@ PASS requires:
 
 Required evidence:
 
-- `.dino/state/client_mcp_direct_status.json` with both clients verified;
+- `.dino/state/client_mcp_direct_status.json` with both clients verified by v2
+  challenge proofs;
 - `.dino/state/native_instruction_authority.json` with no blocking drift;
 - `npm run verify:mcp-direct` and `npm run verify:native-authority`.
 

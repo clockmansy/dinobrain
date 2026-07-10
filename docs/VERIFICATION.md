@@ -164,7 +164,7 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run installer:verify:approval` verifies the post-install hook approval helper without opening or restarting Codex.
 
-`npm run installer:verify:launchers` verifies the generated Observatory, hook diagnose, hook approval, Codex live proof, and purge uninstall launchers without touching the real install paths.
+`npm run installer:verify:launchers` verifies the generated Observatory, hook diagnose, hook approval, Codex live proof, Codex/Claude direct MCP proof, and purge uninstall launchers without touching the real install paths.
 
 `npm run installer:verify:managed-hook` verifies the ProgramData managed-hook writer on temporary files: it preserves existing requirements content, installs DinoBrain exactly once, keeps an existing managed hook directory when present, and writes the wrapper script expected by Codex.
 
@@ -176,9 +176,11 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run status:health` writes `.dino/state/health_status.json`, a higher-level OS health rollup. It treats full-memory audit, direct Codex/Claude MCP canary status, review/semantic settlement, task lifecycle settlement, RAG proof/eval, and graph health as separate evidence sources with explicit authority ranks. If direct client MCP proof is missing, health remains `needs_attention` even when the freshness monitor is green.
 
-`npm run status:mcp-direct` writes `.dino/state/client_mcp_direct_status.json`. This is intentionally conservative: it only reports verified after exact single-name client proof has recorded the required OS tools for Codex and Claude. A configured MCP block or synthetic server start is not counted as direct client proof.
+`npm run status:mcp-direct` writes `.dino/state/client_mcp_direct_status.json`. It reports `verified` only when both Codex Desktop and Claude Code have fresh v2 challenge proofs. Each proof binds a one-time nonce, MCP initialize client name/version, the direct parent client executable, one MCP server instance, one task id, and server-computed hash-chain receipts for `os_begin_task`, `get_context_pack`, `wiki_search`, `search_memory`, and `finish_task`. Configuration, hooks, hand-authored JSON, a synthetic stdio client, or a deeper Codex/Claude ancestor behind a shell does not count.
 
-`npm run verify:mcp-direct` proves the direct MCP status gate with fixtures. It accepts real-style exact single-name Codex/Claude proof artifacts, accepts explicit Claude `not_configured` evidence, and rejects config-only, hook-only, stale, alias-only, missing-tool, Codex-only, and Claude-only cases.
+`npm run verify:mcp-direct` proves the challenge protocol and status gate. It accepts only server-authenticated Codex/Claude v2 proofs and rejects legacy/self-authored JSON, missing `get_context_pack`, client process mismatch, replayed challenges, stale proofs, foreign local identities, proof tampering, receipt tampering, and one-client-only evidence. Explicit Claude `not_configured` remains visible as a low-authority local diagnostic and never satisfies release parity.
+
+Run `npm run proof:mcp:codex` or `npm run proof:mcp:claude` after rebuilding/installing and fully restarting the target client. The corresponding installed `DinoBrain Codex MCP Proof.cmd` and `DinoBrain Claude MCP Proof.cmd` launchers do the same without requiring manual paths: they issue the challenge, copy the exact prompt, and wait until the named real client finalizes a valid receipt chain.
 
 `npm run status:native-authority` writes `.dino/state/native_instruction_authority.json`. It scans native instruction surfaces such as `AGENTS.md`, repo `.codex` hook files, Codex config/hooks, Codex native rules/custom instruction files under `C:\Users\<you>\.codex\rules`, `instructions*`, and `custom-instructions*`, Claude settings and safe-readable Claude custom instruction/rules files when present, installer hooks, and hook approval/live-proof scripts. It stores file hashes, mtimes, line numbers, rule ids, and findings without storing raw instruction text.
 

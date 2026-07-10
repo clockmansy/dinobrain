@@ -126,7 +126,7 @@ Required implementation:
   - `agent`: `codex` or `claude`
   - `client_surface`: the real client surface used
   - `tool_discovery_mode`: must be `exact_single_name`
-  - `required_tools`: `os_begin_task`, `search_memory`, `wiki_search`, `finish_task`
+  - `required_tools`: `os_begin_task`, `get_context_pack`, `search_memory`, `wiki_search`, `finish_task`
   - `verified_tools`
   - `missing_tools`
   - successful call evidence for each required tool

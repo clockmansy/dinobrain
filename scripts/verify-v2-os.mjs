@@ -14,8 +14,10 @@ const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-v2-os-"));
 const expectedTools = [
   "auto_sync",
   "apply_node_lifecycle",
+  "begin_client_mcp_proof",
   "create_source_chunk",
   "evaluate_behavior",
+  "finalize_client_mcp_proof",
   "os_begin_task",
   "os_gate",
   "record_feedback_correction",

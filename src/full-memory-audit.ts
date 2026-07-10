@@ -290,6 +290,7 @@ function classifyDrift(vaultPath: string): DriftClass {
     normalized.startsWith(".dino/migrations/") ||
     normalized.startsWith(".dino/index/") ||
     normalized.startsWith(".dino/provenance/") ||
+    normalized.startsWith(".dino/proofs/") ||
     normalized.startsWith(".dino/quarantine/") ||
     normalized.startsWith(".dino/tmp/") ||
     normalized.startsWith(".dino/locks/") ||

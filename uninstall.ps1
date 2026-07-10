@@ -6,6 +6,7 @@ param(
   [string]$DataDir = "",
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
+  [string]$IdentityDir = "",
   [string]$CodexConfigPath = "",
   [string]$CodexHooksPath = "",
   [string]$CodexRequirementsPath = "",
@@ -40,6 +41,13 @@ function Get-DefaultToolsDir {
     return (Join-Path $env:LOCALAPPDATA "DinoBrain\tools")
   }
   return (Join-Path $HOME "AppData\Local\DinoBrain\tools")
+}
+
+function Get-DefaultIdentityDir {
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    return (Join-Path $env:LOCALAPPDATA "DinoBrain\identity")
+  }
+  return (Join-Path $HOME "AppData\Local\DinoBrain\identity")
 }
 
 function Get-DefaultProgramData {
@@ -280,6 +288,8 @@ function Remove-DinoBrainLaunchers {
     "DinoBrain Codex Hook Approval.cmd",
     "DinoBrain Codex Managed Hook Admin.cmd",
     "DinoBrain Codex Live Proof.cmd",
+    "DinoBrain Codex MCP Proof.cmd",
+    "DinoBrain Claude MCP Proof.cmd",
     "DinoBrain Uninstall Everything.cmd"
   )
   $launcherRoots = @($InstallRootPath, $AppPath)
@@ -332,7 +342,8 @@ function Confirm-DinoBrainPurge {
   param(
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$DataPath,
-    [Parameter(Mandatory = $true)][string]$NodePath
+    [Parameter(Mandatory = $true)][string]$NodePath,
+    [Parameter(Mandatory = $true)][string]$IdentityPath
   )
 
   if ($Yes) { return }
@@ -342,6 +353,7 @@ function Confirm-DinoBrainPurge {
   Write-Host "- App repo: $AppPath"
   Write-Host "- Data vault: $DataPath"
   Write-Host "- Portable Node: $NodePath"
+  Write-Host "- Local proof identity: $IdentityPath"
   Write-Host "- DinoBrain launchers and DinoBrain config backups"
   Write-Host ""
   Write-Host "Codex/Claude registrations will be removed first. This cannot be undone from this machine unless your data repo has been pushed/backed up."
@@ -353,6 +365,7 @@ function Confirm-DinoBrainPurge {
 
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
+if ([string]::IsNullOrWhiteSpace($IdentityDir)) { $IdentityDir = Get-DefaultIdentityDir }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
 if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
 if ([string]::IsNullOrWhiteSpace($CodexRequirementsPath)) { $CodexRequirementsPath = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml" }
@@ -364,6 +377,7 @@ $InstallRoot = Get-FullPath $InstallRoot
 $AppDir = Get-FullPath $AppDir
 $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
+$IdentityDir = Get-FullPath $IdentityDir
 $CodexConfigPath = Get-FullPath $CodexConfigPath
 $CodexHooksPath = Get-FullPath $CodexHooksPath
 $CodexRequirementsPath = Get-FullPath $CodexRequirementsPath
@@ -395,7 +409,7 @@ if (($RemoveAppRepo -or $RemoveDataRepo -or $RemovePortableNode -or $RemoveLaunc
 }
 
 if ($Purge) {
-  Confirm-DinoBrainPurge -AppPath $AppDir -DataPath $DataDir -NodePath $nodeRoot
+  Confirm-DinoBrainPurge -AppPath $AppDir -DataPath $DataDir -NodePath $nodeRoot -IdentityPath $IdentityDir
 }
 
 if ($RemoveLaunchers) { Remove-DinoBrainLaunchers -InstallRootPath $InstallRoot -AppPath $AppDir }
@@ -404,6 +418,8 @@ if ($RemoveAppRepo) { Remove-InstallPath -TargetPath $AppDir -Label "DinoBrain a
 if ($RemoveDataRepo) { Remove-InstallPath -TargetPath $DataDir -Label "DinoBrain data repo" }
 if ($RemovePortableNode) { Remove-InstallPath -TargetPath $nodeRoot -Label "DinoBrain portable Node" }
 if ($RemovePortableNode) { Remove-EmptyDirectory -TargetPath $ToolsDir -Label "DinoBrain tools folder" }
+if ($Purge) { Remove-InstallPath -TargetPath $IdentityDir -Label "DinoBrain local proof identity" }
+if ($Purge) { Remove-EmptyDirectory -TargetPath (Split-Path -Parent $ToolsDir) -Label "DinoBrain local app folder" }
 if ($Purge) { Remove-EmptyDirectory -TargetPath $InstallRoot -Label "DinoBrain install root" }
 
 Write-Host "DinoBrain uninstall complete."

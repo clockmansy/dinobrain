@@ -18,19 +18,21 @@ try {
   $dataDir = Join-Path $installRoot "dinobrain-data"
   $toolsDir = Join-Path $temp "tools"
   $nodeRoot = Join-Path $toolsDir "node-v24.18.0-win-x64"
+  $identityDir = Join-Path $temp "identity"
   $codexDir = Join-Path $temp ".codex"
   $configPath = Join-Path $codexDir "config.toml"
   $hooksPath = Join-Path $codexDir "hooks.json"
   $requirementsPath = Join-Path $codexDir "requirements.toml"
   $managedHookDir = Join-Path $temp "managed-hooks"
 
-  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $codexDir, $managedHookDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $identityDir, $codexDir, $managedHookDir | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $appDir "app.txt"), "app`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $dataDir "data.txt"), "data`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $nodeRoot "node.exe"), "node`n", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText((Join-Path $identityDir "client-mcp-proof-hmac.key"), "test`n", [System.Text.UTF8Encoding]::new($false))
 
   foreach ($launcherRoot in @($installRoot, $appDir)) {
-    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Uninstall Everything.cmd")) {
+    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Codex MCP Proof.cmd", "DinoBrain Claude MCP Proof.cmd", "DinoBrain Uninstall Everything.cmd")) {
       [System.IO.File]::WriteAllText((Join-Path $launcherRoot $launcherName), "@echo off`r`n", [System.Text.UTF8Encoding]::new($false))
     }
   }
@@ -109,6 +111,7 @@ statusMessage = "Loading DinoBrain context"
     -AppDir $appDir `
     -DataDir $dataDir `
     -ToolsDir $toolsDir `
+    -IdentityDir $identityDir `
     -CodexConfigPath $configPath `
     -CodexHooksPath $hooksPath `
     -CodexRequirementsPath $requirementsPath `
@@ -120,7 +123,7 @@ statusMessage = "Loading DinoBrain context"
     throw "uninstall.ps1 exited with $LASTEXITCODE"
   }
 
-  foreach ($removedPath in @($appDir, $dataDir, $nodeRoot, $toolsDir, $installRoot)) {
+  foreach ($removedPath in @($appDir, $dataDir, $nodeRoot, $toolsDir, $identityDir, $installRoot)) {
     if (Test-Path -LiteralPath $removedPath) {
       throw "Expected path to be removed: $removedPath"
     }
