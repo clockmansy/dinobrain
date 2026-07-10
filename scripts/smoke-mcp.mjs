@@ -317,6 +317,7 @@ try {
       name: "finish_task",
       arguments: {
         task_id: start.task_id,
+        lease_id: start.lease?.lease_id,
         summary: "Smoke test completed.",
         outcome: "completed",
         changed_files: ["src/index.ts", "scripts/smoke-mcp.mjs"],

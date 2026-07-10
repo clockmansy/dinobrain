@@ -444,6 +444,7 @@ async function verifyCompoundingLoop() {
           name: "finish_task",
           arguments: {
             task_id: start.task_id,
+            lease_id: start.lease?.lease_id,
             summary: "The verifier produced an evidence-backed memory candidate for later retrieval.",
             outcome: "completed",
             changed_files: ["scripts/verify-dinobrain-os.mjs", "src/context.ts"],

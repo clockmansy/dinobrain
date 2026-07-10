@@ -1,5 +1,6 @@
 ﻿import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -21,6 +22,7 @@ import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
+import { classifyPromptLaunch } from "./prompt-eligibility.js";
 import {
   type OperationContextPackEntry,
   type OperationEventEntry,
@@ -130,6 +132,215 @@ function envString(name: string, defaultValue: string): string {
   const value = process.env[name];
   if (value === undefined || value.trim() === "") return defaultValue;
   return value.trim();
+}
+
+const promptLaunchInputSchema = {
+  launch_kind: z.string().max(80).optional(),
+  prompt_surface: z.string().max(120).optional(),
+  task_type: z.string().max(120).optional(),
+  launch_source: z.string().max(120).optional(),
+  hook_run_id: z.string().max(200).optional(),
+  client_session_id: z.string().max(300).optional(),
+  prompt_hash: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  dedupe_key: z.string().regex(/^[a-f0-9]{32,64}$/i).optional(),
+  owner_id: z.string().max(240).optional(),
+  lease_seconds: z.number().int().min(60).max(7 * 24 * 60 * 60).optional(),
+};
+
+type TaskLaunchMetadata = {
+  launch_kind?: string;
+  prompt_surface?: string;
+  task_type?: string;
+  launch_source?: string;
+  hook_run_id?: string;
+  client_session_id?: string;
+  prompt_hash?: string;
+  dedupe_key?: string;
+  owner_id?: string;
+  lease_seconds?: number;
+};
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function classifyTaskLaunch(request: string, metadata: TaskLaunchMetadata) {
+  return classifyPromptLaunch({
+    request,
+    launchKind: metadata.launch_kind ?? "direct_mcp",
+    surface: metadata.prompt_surface,
+    taskType: metadata.task_type,
+    source: metadata.launch_source,
+    promptPresent: request.trim().length > 0,
+  });
+}
+
+function taskLease(request: string, metadata: TaskLaunchMetadata, acquiredAt: string) {
+  const leaseSeconds = metadata.lease_seconds ?? 24 * 60 * 60;
+  const ownerId = firstString(
+    metadata.owner_id,
+    metadata.dedupe_key,
+    metadata.hook_run_id,
+    `mcp-${sha256(request).slice(0, 16)}`,
+  );
+  return {
+    lease_id: makeUniqueId("lease", ownerId, 20),
+    owner_id: ownerId,
+    acquired_at: acquiredAt,
+    heartbeat_at: acquiredAt,
+    expires_at: new Date(Date.parse(acquiredAt) + leaseSeconds * 1000).toISOString(),
+    lease_seconds: leaseSeconds,
+    state: "active",
+  };
+}
+
+function taskLaunchEvidence(
+  request: string,
+  metadata: TaskLaunchMetadata,
+  eligibility: ReturnType<typeof classifyTaskLaunch>,
+) {
+  const derivedPromptHash = sha256(request);
+  return {
+    prompt_hash: derivedPromptHash,
+    supplied_prompt_hash_matches: metadata.prompt_hash
+      ? metadata.prompt_hash.toLowerCase() === derivedPromptHash
+      : null,
+    prompt_classification: eligibility.classification,
+    prompt_eligibility_version: eligibility.version,
+    prompt_eligibility_confidence: eligibility.confidence,
+    prompt_eligibility_reasons: eligibility.reason_codes,
+    launch_kind: metadata.launch_kind ?? "direct_mcp",
+    prompt_surface: metadata.prompt_surface ?? null,
+    task_type: metadata.task_type ?? null,
+    launch_source: metadata.launch_source ?? null,
+    hook_run_id: metadata.hook_run_id ?? null,
+    client_session_hash: metadata.client_session_id ? sha256(metadata.client_session_id) : null,
+    dedupe_key: metadata.dedupe_key ?? null,
+  };
+}
+
+async function filteredTaskLaunch(request: string, metadata: TaskLaunchMetadata, toolName: string) {
+  const eligibility = classifyTaskLaunch(request, metadata);
+  if (eligibility.durable_task_eligible) return null;
+  const at = nowIso();
+  const promptHash = sha256(request);
+  const eventLog = await appendEvent({
+    event: "task_launch_filtered",
+    source: toolName,
+    at,
+    prompt_hash: promptHash,
+    prompt_classification: eligibility.classification,
+    prompt_eligibility_version: eligibility.version,
+    prompt_eligibility_reasons: eligibility.reason_codes,
+    launch_kind: metadata.launch_kind ?? "direct_mcp",
+    hook_run_id: metadata.hook_run_id ?? null,
+    client_session_hash: metadata.client_session_id ? sha256(metadata.client_session_id) : null,
+  });
+  return {
+    ok: true,
+    skipped: true,
+    durable_task_created: false,
+    prompt_hash: promptHash,
+    prompt_classification: eligibility.classification,
+    prompt_eligibility: eligibility,
+    event_log: eventLog,
+    safe_action: "Do not create a durable task, Context Pack, session archive, candidate memory, or sync action for this launch.",
+  };
+}
+
+type TaskStartDedupeClaim = {
+  enabled: boolean;
+  acquired: boolean;
+  key: string | null;
+  path: string | null;
+  owner: string | null;
+  response: Record<string, unknown> | null;
+};
+
+function hasStableTaskIdentity(metadata: TaskLaunchMetadata, request: string): boolean {
+  return Boolean(
+    metadata.dedupe_key &&
+      metadata.hook_run_id &&
+      metadata.client_session_id &&
+      metadata.prompt_hash &&
+      metadata.prompt_hash.toLowerCase() === sha256(request),
+  );
+}
+
+async function claimTaskStart(metadata: TaskLaunchMetadata, request: string): Promise<TaskStartDedupeClaim> {
+  if (!hasStableTaskIdentity(metadata, request)) {
+    return { enabled: false, acquired: true, key: null, path: null, owner: null, response: null };
+  }
+  const key = metadata.dedupe_key!.toLowerCase();
+  const receiptPath = dataPath(".dino", "tmp", "task-start-receipts", `${key}.json`);
+  const owner = makeUniqueId("task-start-owner", key, 16);
+  const deadline = Date.now() + 30_000;
+  await ensureDir(path.dirname(receiptPath));
+  while (Date.now() < deadline) {
+    try {
+      const handle = await fs.open(receiptPath, "wx");
+      try {
+        await handle.writeFile(
+          `${JSON.stringify({
+            version: "task_start_receipt_v1",
+            status: "pending",
+            key,
+            owner,
+            created_at: nowIso(),
+            prompt_hash: sha256(request),
+          }, null, 2)}\n`,
+          "utf8",
+        );
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return { enabled: true, acquired: true, key, path: receiptPath, owner, response: null };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = await readJson<Record<string, unknown>>(receiptPath).catch(() => null);
+      if (existing?.status === "completed" && existing.key === key && existing.response) {
+        return {
+          enabled: true,
+          acquired: false,
+          key,
+          path: receiptPath,
+          owner: firstString(existing.owner) || null,
+          response: existing.response as Record<string, unknown>,
+        };
+      }
+      const createdMs = Date.parse(firstString(existing?.created_at));
+      if (Number.isFinite(createdMs) && Date.now() - createdMs > 60_000) {
+        await fs.rm(receiptPath, { force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 75));
+    }
+  }
+  return { enabled: true, acquired: false, key, path: receiptPath, owner: null, response: null };
+}
+
+async function completeTaskStart(claim: TaskStartDedupeClaim, response: Record<string, unknown>): Promise<void> {
+  if (!claim.enabled || !claim.acquired || !claim.path || !claim.key || !claim.owner) return;
+  await atomicWriteJson(claim.path, {
+    version: "task_start_receipt_v1",
+    status: "completed",
+    key: claim.key,
+    owner: claim.owner,
+    completed_at: nowIso(),
+    response,
+  });
+  const receiptDir = path.dirname(claim.path);
+  const entries = await fs.readdir(receiptDir, { withFileTypes: true });
+  const receipts: Array<{ path: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const receiptPath = path.join(receiptDir, entry.name);
+    const stat = await fs.stat(receiptPath);
+    receipts.push({ path: receiptPath, mtimeMs: stat.mtimeMs });
+  }
+  receipts.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  await Promise.all(receipts.slice(512).map((entry) => fs.rm(entry.path, { force: true })));
 }
 
 async function ensureDir(dir: string): Promise<void> {
@@ -1155,12 +1366,34 @@ server.registerTool(
       mode: z.enum(["standard", "deep"]).default("standard"),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
       limit: z.number().int().min(1).max(20).default(7),
+      ...promptLaunchInputSchema,
     },
   },
-  async ({ request, project, mode, sensitivity, limit }) => {
+  async ({ request, project, mode, sensitivity, limit, ...launchMetadata }) => {
+    const metadata = launchMetadata as TaskLaunchMetadata;
+    const filtered = await filteredTaskLaunch(request, metadata, "os_begin_task");
+    if (filtered) return jsonResult(filtered);
+    const eligibility = classifyTaskLaunch(request, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, request);
+    if (!dedupeClaim.acquired) {
+      if (dedupeClaim.response) {
+        return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
+      }
+      return jsonResult({
+        ok: false,
+        fail_closed: true,
+        gate_status: "block",
+        skipped: true,
+        durable_task_created: false,
+        prompt_classification: eligibility.classification,
+        error: "task_start_dedupe_timeout",
+        safe_action: "Do not perform substantial work; retry from the same trusted client session after the first preflight completes.",
+      });
+    }
     const taskId = makeTaskId(request);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
     const createdAt = nowIso();
+    const lease = taskLease(request, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
@@ -1174,6 +1407,9 @@ server.registerTool(
       updated_at: createdAt,
       data_root: DATA_ROOT,
       sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
+      ...taskLaunchEvidence(request, metadata, eligibility),
+      lease,
+      terminal_owner_id: null,
     };
     await writeJson(taskPath, record);
     const taskRelativePath = relDataPath(taskPath);
@@ -1185,6 +1421,10 @@ server.registerTool(
       at: record.created_at,
       path: taskRelativePath,
       os_version: DINOBRAIN_OS_VERSION,
+      prompt_hash: record.prompt_hash,
+      prompt_classification: record.prompt_classification,
+      lease_id: lease.lease_id,
+      owner_id: lease.owner_id,
     });
 
     let contextPack: Record<string, unknown>;
@@ -1229,7 +1469,7 @@ server.registerTool(
         error: errorMessage,
         os_version: DINOBRAIN_OS_VERSION,
       });
-      return jsonResult({
+      const response = {
         ok: false,
         os_version: DINOBRAIN_OS_VERSION,
         contract: DINOBRAIN_OS_CONTRACT,
@@ -1238,13 +1478,16 @@ server.registerTool(
         gates: gates.gates,
         task_id: taskId,
         task_path: taskRelativePath,
+        lease,
         event_log: taskEventLog,
         gate_event_log: gateEventLog,
         gate_report_path: gateReportPath,
         record: blockedRecord,
         context_pack: null,
         error: errorMessage,
-      });
+      };
+      await completeTaskStart(dedupeClaim, response);
+      return jsonResult(response);
     }
     const gates = evaluateActionGates({
       request,
@@ -1273,7 +1516,7 @@ server.registerTool(
       os_version: DINOBRAIN_OS_VERSION,
     });
 
-    return jsonResult({
+    const response = {
       ok: !gates.fail_closed,
       os_version: DINOBRAIN_OS_VERSION,
       contract: DINOBRAIN_OS_CONTRACT,
@@ -1282,12 +1525,15 @@ server.registerTool(
       gates: gates.gates,
       task_id: taskId,
       task_path: taskRelativePath,
+      lease,
       event_log: taskEventLog,
       gate_event_log: gateEventLog,
       gate_report_path: gateReportPath,
       record,
       context_pack: contextPack,
-    });
+    };
+    await completeTaskStart(dedupeClaim, response);
+    return jsonResult(response);
   },
 );
 
@@ -1301,11 +1547,32 @@ server.registerTool(
       project: z.string().optional(),
       mode: z.enum(["standard", "deep"]).default("standard"),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
+      ...promptLaunchInputSchema,
     },
   },
-  async ({ request, project, mode, sensitivity }) => {
+  async ({ request, project, mode, sensitivity, ...launchMetadata }) => {
+    const metadata = launchMetadata as TaskLaunchMetadata;
+    const filtered = await filteredTaskLaunch(request, metadata, "start_task");
+    if (filtered) return jsonResult(filtered);
+    const eligibility = classifyTaskLaunch(request, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, request);
+    if (!dedupeClaim.acquired) {
+      if (dedupeClaim.response) {
+        return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
+      }
+      return jsonResult({
+        ok: false,
+        fail_closed: true,
+        skipped: true,
+        durable_task_created: false,
+        prompt_classification: eligibility.classification,
+        error: "task_start_dedupe_timeout",
+      });
+    }
     const taskId = makeTaskId(request);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
+    const createdAt = nowIso();
+    const lease = taskLease(request, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
@@ -1315,10 +1582,13 @@ server.registerTool(
       sensitivity,
       os_version: DINOBRAIN_OS_VERSION,
       contract: DINOBRAIN_OS_CONTRACT,
-      created_at: nowIso(),
-      updated_at: nowIso(),
+      created_at: createdAt,
+      updated_at: createdAt,
       data_root: DATA_ROOT,
       sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
+      ...taskLaunchEvidence(request, metadata, eligibility),
+      lease,
+      terminal_owner_id: null,
     };
     await writeJson(taskPath, record);
     const taskRelativePath = relDataPath(taskPath);
@@ -1329,13 +1599,73 @@ server.registerTool(
       task_id: taskId,
       at: record.created_at,
       path: relDataPath(taskPath),
+      prompt_hash: record.prompt_hash,
+      prompt_classification: record.prompt_classification,
+      lease_id: lease.lease_id,
+      owner_id: lease.owner_id,
     });
-    return jsonResult({
+    const response = {
       ok: true,
       task_id: taskId,
       task_path: taskRelativePath,
+      lease,
       event_log: eventLog,
       record,
+    };
+    await completeTaskStart(dedupeClaim, response);
+    return jsonResult(response);
+  },
+);
+
+server.registerTool(
+  "heartbeat_task",
+  {
+    title: "Heartbeat Task",
+    description: "Renew the lease for an active DinoBrain task owned by the current prompt.",
+    inputSchema: {
+      task_id: z.string().min(1),
+      lease_id: z.string().min(1),
+      extend_seconds: z.number().int().min(60).max(24 * 60 * 60).default(60 * 60),
+    },
+  },
+  async ({ task_id, lease_id, extend_seconds }) => {
+    const taskPath = dataPath(".dino", "tasks", `${safeSlug(task_id)}.json`);
+    const existing = await readJson<Record<string, unknown>>(taskPath);
+    if (!existing) throw new Error(`Task does not exist: ${task_id}`);
+    if (firstString(existing.status) !== "started") throw new Error(`Task is not active: ${task_id}`);
+    const lease = existing.lease as Record<string, unknown> | undefined;
+    if (!lease || firstString(lease.lease_id) !== lease_id) throw new Error(`Task lease ownership mismatch: ${task_id}`);
+    const heartbeatAt = nowIso();
+    const renewedLease = {
+      ...lease,
+      heartbeat_at: heartbeatAt,
+      expires_at: new Date(Date.parse(heartbeatAt) + extend_seconds * 1000).toISOString(),
+      lease_seconds: extend_seconds,
+      state: "active",
+    };
+    const updated = {
+      ...existing,
+      lease: renewedLease,
+      updated_at: heartbeatAt,
+    };
+    await writeJson(taskPath, updated);
+    const taskRelativePath = relDataPath(taskPath);
+    await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
+    await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
+    const eventLog = await appendEvent({
+      event: "task_lease_heartbeat",
+      task_id,
+      at: heartbeatAt,
+      lease_id,
+      owner_id: firstString(lease.owner_id),
+      expires_at: renewedLease.expires_at,
+    });
+    return jsonResult({
+      ok: true,
+      task_id,
+      task_path: taskRelativePath,
+      lease: renewedLease,
+      event_log: eventLog,
     });
   },
 );
@@ -1347,6 +1677,8 @@ server.registerTool(
     description: "Finish a DinoBrain task and write a trace/event log entry.",
     inputSchema: {
       task_id: z.string().min(1),
+      lease_id: z.string().min(1).optional(),
+      terminal_owner_id: z.string().max(240).optional(),
       summary: z.string().min(1),
       outcome: z.enum(["completed", "partial", "blocked"]).default("completed"),
       growth_policy: z.enum(["auto", "trace_only"]).default("auto"),
@@ -1362,6 +1694,8 @@ server.registerTool(
   },
   async ({
     task_id,
+    lease_id,
+    terminal_owner_id,
     summary,
     outcome,
     growth_policy,
@@ -1375,11 +1709,43 @@ server.registerTool(
     search_queries,
   }) => {
     const taskPath = dataPath(".dino", "tasks", `${safeSlug(task_id)}.json`);
-    const existing = (await readJson<Record<string, unknown>>(taskPath)) ?? {
-      task_id,
-      status: "missing_start_record",
-      created_at: null,
-    };
+    const existing = await readJson<Record<string, unknown>>(taskPath);
+    if (!existing) throw new Error(`Task does not exist: ${task_id}`);
+    const existingLease = existing.lease as Record<string, unknown> | undefined;
+    const expectedLeaseId = firstString(existingLease?.lease_id);
+    if (expectedLeaseId && lease_id !== expectedLeaseId) {
+      throw new Error(`Task lease ownership mismatch: ${task_id}`);
+    }
+    const leaseExpiresAt = firstString(existingLease?.expires_at);
+    if (
+      expectedLeaseId &&
+      firstString(existingLease?.state, "active") === "active" &&
+      leaseExpiresAt &&
+      Number.isFinite(Date.parse(leaseExpiresAt)) &&
+      Date.now() > Date.parse(leaseExpiresAt)
+    ) {
+      throw new Error(`Task lease expired; renew it with heartbeat_task before finishing: ${task_id}`);
+    }
+    const terminalOwnerId = firstString(terminal_owner_id, existingLease?.owner_id, "legacy-unleased-owner");
+    const existingTerminalOwner = firstString(existing.terminal_owner_id);
+    if (existingTerminalOwner && existingTerminalOwner !== terminalOwnerId) {
+      throw new Error(`Task terminal owner mismatch: ${task_id}`);
+    }
+    const existingStatus = firstString(existing.status).toLowerCase();
+    if (["completed", "partial", "blocked"].includes(existingStatus)) {
+      const existingTracePath = firstString(existing.trace_path, `.dino/traces/${safeSlug(task_id)}.json`);
+      const existingTrace = await readJson<Record<string, unknown>>(dataPath(existingTracePath));
+      if (!existingTrace) throw new Error(`Terminal task is missing its trace: ${task_id}`);
+      return jsonResult({
+        ok: true,
+        idempotent: true,
+        task_id,
+        task_path: relDataPath(taskPath),
+        trace_path: existingTracePath,
+        terminal_owner_id: terminalOwnerId,
+        outcome: existingStatus,
+      });
+    }
     const finishedAt = nowIso();
     const normalizedUsedMemoryPaths = normalizeVaultPaths(used_memory_paths);
     const normalizedContextPackPaths = normalizeVaultPaths(context_pack_paths);
@@ -1399,6 +1765,8 @@ server.registerTool(
       session_archive_paths: normalizedSessionArchivePaths,
       candidate_paths: normalizedCandidatePaths,
       search_queries: normalizedSearchQueries,
+      lease_id: expectedLeaseId || null,
+      terminal_owner_id: terminalOwnerId,
       memory_use: {
         used_memory_count: normalizedUsedMemoryPaths.length,
         context_pack_count: normalizedContextPackPaths.length,
@@ -1408,12 +1776,22 @@ server.registerTool(
       },
       finished_at: finishedAt,
     };
+    const terminalLease = existingLease
+      ? {
+          ...existingLease,
+          heartbeat_at: finishedAt,
+          state: "terminal",
+          terminal_at: finishedAt,
+        }
+      : null;
     const updated = {
       ...existing,
       status: outcome,
       updated_at: finishedAt,
       finished_at: finishedAt,
       trace_path: `.dino/traces/${safeSlug(task_id)}.json`,
+      lease: terminalLease,
+      terminal_owner_id: terminalOwnerId,
     };
     const tracePath = dataPath(".dino", "traces", `${safeSlug(task_id)}.json`);
     await writeJson(taskPath, updated);
@@ -1453,6 +1831,8 @@ server.registerTool(
       session_archive_paths: normalizedSessionArchivePaths,
       candidate_paths: normalizedCandidatePaths,
       search_query_count: normalizedSearchQueries.length,
+      lease_id: expectedLeaseId || null,
+      terminal_owner_id: terminalOwnerId,
     });
     const effectiveGrowthPolicy = growth_policy === "auto" ? envString("DINOBRAIN_FINISH_GROWTH_POLICY", "auto") : growth_policy;
     const traceOnly = effectiveGrowthPolicy === "trace_only";
@@ -1516,6 +1896,8 @@ server.registerTool(
       task_id,
       task_path: taskRelativePath,
       trace_path: traceRelativePath,
+      lease_id: expectedLeaseId || null,
+      terminal_owner_id: terminalOwnerId,
       event_log: eventLog,
       behavior_recall: {
         ledger_path: behaviorRecall.ledger_path,

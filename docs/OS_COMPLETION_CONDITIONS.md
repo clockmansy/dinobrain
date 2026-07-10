@@ -91,7 +91,7 @@ strictly decoded, parsed, hashed, or mapped to the recorded audit run.
 
 `npm run completion:audit` executes the mandatory command registry and writes
 the three evidence-pack files above. The typed registry must match the command
-order in the Canonical PowerShell Runner: 52 base commands, three independent
+order in the Canonical PowerShell Runner: 56 base commands, three independent
 24-client concurrency runs, and `verify:goal` last. The audit runner is not a
 row in its own command ledger.
 
@@ -380,6 +380,10 @@ the current-vault artifacts named above.
 | Build | `npm run build` | Blocks every gate on failure |
 | Current evidence | `npm run status:refresh` | Rebuilds the current-vault evidence generation |
 | Full vault | `npm run audit:full-memory` | HG-10 requires zero missing/hash/parse/integrity blockers |
+| Completion runner | `npm run completion:audit:verify` | HG-08/HG-10/HG-12 require ledger, manifest, verdict, and tamper-detection integrity |
+| Atomic writers | `npm run atomic:writers:verify` | HG-03/HG-10 require zero direct production state writers and valid concurrent publication |
+| Status generation | `npm run status:generation:verify` | HG-08/HG-10/HG-12 require crash-safe pointer publication and zero mixed-generation reads |
+| Prompt eligibility | `npm run prompt:eligibility:verify` | HG-01/HG-03/HG-06 require zero durable internal jobs, idempotent duplicate hooks, lease ownership, and visible timeout blocking |
 | Freshness | `npm run status:freshness:verify` | HG-08/HG-12 require fresh coherent evidence |
 | JSON index | `npm run index:verify:operations` | HG-10 requires valid incremental and self-recovery behavior |
 | SQLite | `npm run index:verify:sqlite` | HG-04/HG-10 require valid shards and incremental rows |
@@ -442,7 +446,10 @@ release evidence required by HG-01, HG-09, HG-11, and HG-12.
 $ErrorActionPreference = 'Stop'
 $commands = @(
   'npm run build',
-  'npm run status:refresh',
+  'npm run completion:audit:verify',
+  'npm run atomic:writers:verify',
+  'npm run status:generation:verify',
+  'npm run prompt:eligibility:verify',
   'npm run audit:full-memory',
   'npm run status:freshness:verify',
   'npm run index:verify:operations',
@@ -506,9 +513,17 @@ foreach ($command in $commands) {
   if ($LASTEXITCODE -ne 0) { throw "Concurrency gate failed on run $_" }
 }
 
+npm run status:refresh
+if ($LASTEXITCODE -ne 0) { throw 'Final status generation failed: status:refresh' }
+
 npm run verify:goal
 if ($LASTEXITCODE -ne 0) { throw 'Final aggregate gate failed: verify:goal' }
 ```
+
+The completion audit runner performs one internal status refresh after its
+command ledger is durably written. This finalization refresh is not a substitute
+for the mandatory `status:refresh` command; it prevents the audit's own ledger
+from making the published generation stale before artifact inspection.
 
 ## Automatic Disqualifiers
 

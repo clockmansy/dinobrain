@@ -128,6 +128,7 @@ try {
           name: "finish_task",
           arguments: {
             task_id: begins[index].task_id,
+            lease_id: begins[index].lease?.lease_id,
             summary: `Parallel concurrency proof ${index} completed.`,
             outcome: "completed",
             growth_policy: "trace_only",

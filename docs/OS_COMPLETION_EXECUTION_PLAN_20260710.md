@@ -62,12 +62,12 @@ Passing current fixture checks is useful regression evidence, but it is not a
 substitute for the stronger current-vault, scale, live-client, recovery, and
 release evidence required by the normative contract.
 
-### Implementation Progress - 2026-07-10
+### Implementation Progress - 2026-07-11
 
 The first foundation slice is implemented and remains intentionally
 `NOT_COMPLETE`:
 
-- FND-01 now has a typed 12-gate registry, 56 mandatory command instances,
+- FND-01 now has a typed 12-gate registry, 60 mandatory command instances,
   bounded command-result ledger, hashed artifact manifest, verdict-last atomic
   publication, post-write integrity verification, and tamper regression tests;
 - the first current-vault plan-only evidence pack is
@@ -84,16 +84,43 @@ The first foundation slice is implemented and remains intentionally
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
   drift from version `2.2.9` and data contract version `3`.
-- FND-02 has migrated all production TypeScript state/index JSON and JSONL
-  publication away from direct `fs.writeFile` calls to the common atomic
-  writer. Its regression test preserves the previous file after validation
-  failure, completes 24 concurrent replacements with valid JSON, and leaks no
-  temporary files.
+- FND-02 now covers production TypeScript and operational script state writers
+  with common atomic helpers. Status/index output is staged under an immutable
+  generation, validated by hash and format, then exposed through one atomic
+  `.dino/state/current-status-generation.json` pointer. `status:refresh`, the
+  completion audit, and Observatory enforce that same generation. Executable
+  regressions reject source drift and snapshot tampering, preserve the prior
+  pointer on pre-publication failure, and prove that mixed generations are not
+  exposed.
+- FND-02 strict readers now reject invalid UTF-8, bare carriage returns, unsafe
+  relative paths, malformed JSON/JSONL, SQLite page/header corruption,
+  `quick_check`, `integrity_check`, and foreign-key failures. The real vault was
+  published as one 29-artifact generation, and the 24-client task/trace/pack/
+  event plus JSON/SQLite overlap test passed three consecutive runs with no
+  collisions, lost rows, active-task residue, or leaked lock.
+- LOOP-01 now shares one prompt classifier between the hook and MCP server.
+  Title generation, ambient suggestions, internal Codex service work, and
+  diagnostic probes create zero durable tasks or Context Packs. Stable
+  session-turn replays use a local receipt and return the original preflight;
+  user tasks carry a lease, heartbeat, and terminal owner; duplicate finishes
+  are idempotent; hook timeout produces a visible fail-closed response.
+- The post-prevention lifecycle migration remains dry-run only. On the current
+  546-task vault it classifies 118 stale non-user auto-close candidates (93
+  title-generation, 18 diagnostic, four internal-service, and three ambient)
+  plus 78 evidence-preserving finish-gate repairs. Every proposed action binds
+  the original task/trace SHA-256; no source task or trace was changed.
+- The latest canonical plan-only audit is
+  `completion-20260710-153742683-fe6dacf7-f694-4ff7-bc4b-072da10f1339`.
+  It ledgered all 60 mandatory commands and truthfully returned `NOT_COMPLETE`;
+  all 12 hard gates remain closed until their executable evidence is run and
+  passes in a release-candidate audit.
 
 FND-01 is not fully closed until a full current-vault audit, fresh external
 proof imports, final-generation publication, and release-candidate evidence all
-pass. FND-02 is not fully closed until production script writers and multi-file
-generation pointer publication are migrated and fault-injected.
+pass. FND-02 now meets its local and current-vault implementation acceptance;
+release-level HG-10 still requires the final release-candidate audit. LOOP-01
+still requires a 24-hour real-client soak before its release acceptance can be
+claimed.
 
 ## 3. Implementation Principles
 

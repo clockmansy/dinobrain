@@ -154,6 +154,33 @@ function runPowerShellHookWithoutNode(input, dataRoot, reportRoot) {
   );
 }
 
+function runPowerShellHookTimeout(input, dataRoot, reportRoot) {
+  assert(process.platform === "win32", "PowerShell wrapper timeout verification is Windows-only.");
+  const env = {
+    ...process.env,
+    DINOBRAIN_DATA_DIR: dataRoot,
+    DINOBRAIN_HOOK_REPORT_DIR: reportRoot,
+    DINOBRAIN_HOOK_PROJECT: "dinobrain-hook-timeout-verify",
+    DINOBRAIN_NODE_EXE: process.execPath,
+    DINOBRAIN_HOOK_LAUNCH_KIND: "verification_fixture",
+    DINOBRAIN_HOOK_IMPORT_SESSION: "0",
+    DINOBRAIN_HOOK_AUTO_SYNC: "0",
+    DINOBRAIN_HOOK_TIMEOUT_SECONDS: "1",
+    DINOBRAIN_HOOK_TEST_DELAY_MS: "2500",
+  };
+  return spawnSync(
+    powershellCommand(),
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psHookPath],
+    {
+      cwd: root,
+      env,
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+}
+
 function hookDedupeKey(input, request) {
   const source = JSON.stringify({
     hookEventName: input.hookEventName ?? input.hook_event_name ?? "UserPromptSubmit",
@@ -324,6 +351,27 @@ async function verifyHook() {
     assert(noNodeOutput.decision === "block", "No-node PowerShell wrapper did not emit a blocking hook decision.");
     assert(noNodeContext.includes("FAIL-CLOSED"), "No-node PowerShell wrapper did not fail closed.");
     assert(!/Continue with the current user request/i.test(noNodeContext), "No-node wrapper still allowed fail-open continuation.");
+
+    const timeoutDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-timeout-"));
+    const timeoutReportRoot = path.join(timeoutDataRoot, "hook-reports");
+    seedVault(timeoutDataRoot);
+    const timeoutRun = runPowerShellHookTimeout(
+      JSON.stringify({
+        hookEventName: "UserPromptSubmit",
+        prompt: "This hook run must fail closed when preflight exceeds the wrapper timeout.",
+        cwd: root,
+      }),
+      timeoutDataRoot,
+      timeoutReportRoot,
+    );
+    assert(timeoutRun.status === 0, `Timeout wrapper exited with ${timeoutRun.status}: ${timeoutRun.stderr}`);
+    const timeoutOutput = parseHookOutput(timeoutRun.stdout);
+    const timeoutContext = timeoutOutput.hookSpecificOutput?.additionalContext ?? "";
+    assert(timeoutOutput.decision === "block", "Timed-out PowerShell wrapper did not emit a blocking decision.");
+    assert(timeoutContext.includes("timed out after 1 seconds"), "Timed-out wrapper did not expose its timeout reason.");
+    assert(timeoutContext.includes("FAIL-CLOSED"), "Timed-out wrapper did not fail closed.");
+    const timeoutTaskDir = path.join(timeoutDataRoot, ".dino", "tasks");
+    assert(!existsSync(timeoutTaskDir) || readdirSync(timeoutTaskDir).length === 0, "Timed-out hook created a durable task.");
   }
 
   return {

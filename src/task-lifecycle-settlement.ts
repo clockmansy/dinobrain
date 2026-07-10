@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { atomicWriteJson } from "./concurrency.js";
@@ -21,7 +22,7 @@ export type TaskLifecycleSettlementAction = {
   trace_path: string | null;
   decision_class: string;
   action:
-    | "auto_close_stale_diagnostic"
+    | "auto_close_stale_non_user_service"
     | "repair_started_from_grounded_trace"
     | "reconstruct_blocked_missing_trace"
     | "block_stale_without_trace"
@@ -31,6 +32,11 @@ export type TaskLifecycleSettlementAction = {
   reason_code: string;
   previous_status: string;
   previous_updated_at: string | null;
+  prompt_classification: string | null;
+  task_sha256_before: string | null;
+  trace_sha256_before: string | null;
+  task_sha256_after: string | null;
+  trace_sha256_after: string | null;
 };
 
 export type TaskLifecycleSettlementReport = {
@@ -44,12 +50,14 @@ export type TaskLifecycleSettlementReport = {
     status: TaskLifecycleReport["status"];
     counts: TaskLifecycleReport["counts"];
     by_decision_class: TaskLifecycleReport["by_decision_class"];
+    by_prompt_classification: TaskLifecycleReport["by_prompt_classification"];
   };
   lifecycle_after: {
     generated_at: string;
     status: TaskLifecycleReport["status"];
     counts: TaskLifecycleReport["counts"];
     by_decision_class: TaskLifecycleReport["by_decision_class"];
+    by_prompt_classification: TaskLifecycleReport["by_prompt_classification"];
   } | null;
   counts: {
     auto_close_candidates_before: number;
@@ -85,6 +93,41 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await atomicWriteJson(filePath, value);
 }
 
+async function fileSha256(filePath: string): Promise<string | null> {
+  try {
+    return createHash("sha256").update(await fs.readFile(filePath)).digest("hex");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function assertActionSourceHashes(dataRoot: string, action: TaskLifecycleSettlementAction): Promise<void> {
+  if (action.task_path) {
+    const actual = await fileSha256(dataPath(dataRoot, action.task_path));
+    if (actual !== action.task_sha256_before) {
+      throw new Error(`Task changed after dry-run classification: ${action.task_path}`);
+    }
+  }
+  if (action.trace_sha256_before && action.trace_path) {
+    const actual = await fileSha256(dataPath(dataRoot, action.trace_path));
+    if (actual !== action.trace_sha256_before) {
+      throw new Error(`Trace changed after dry-run classification: ${action.trace_path}`);
+    }
+  }
+}
+
+async function withAfterHashes(
+  dataRoot: string,
+  action: TaskLifecycleSettlementAction,
+): Promise<TaskLifecycleSettlementAction> {
+  return {
+    ...action,
+    task_sha256_after: action.task_path ? await fileSha256(dataPath(dataRoot, action.task_path)) : null,
+    trace_sha256_after: action.trace_path ? await fileSha256(dataPath(dataRoot, action.trace_path)) : null,
+  };
+}
+
 function tracePathFor(session: TaskLifecycleSession): string {
   return session.trace_path ?? `.dino/traces/${session.task_id}.json`;
 }
@@ -111,21 +154,30 @@ function isRepairableManualSession(session: TaskLifecycleSession): boolean {
 }
 
 function actionFor(session: TaskLifecycleSession): TaskLifecycleSettlementAction {
+  const evidence = {
+    prompt_classification: session.prompt_classification,
+    task_sha256_before: session.task_sha256,
+    trace_sha256_before: session.trace_sha256,
+    task_sha256_after: null,
+    trace_sha256_after: null,
+  };
   if (session.auto_close_safe) {
     return {
+      ...evidence,
       task_id: session.task_id,
       task_path: session.task_path,
       trace_path: tracePathFor(session),
       decision_class: session.decision_class,
-      action: "auto_close_stale_diagnostic",
+      action: "auto_close_stale_non_user_service",
       applied: false,
-      reason_code: "stale_diagnostic_auto_close_candidate",
+      reason_code: "stale_non_user_service_auto_close_candidate",
       previous_status: session.status,
       previous_updated_at: session.updated_at,
     };
   }
   if (session.decision_class === "manual_stale_review_required" && session.trace_path) {
     return {
+      ...evidence,
       task_id: session.task_id,
       task_path: session.task_path,
       trace_path: session.trace_path,
@@ -139,6 +191,7 @@ function actionFor(session: TaskLifecycleSession): TaskLifecycleSettlementAction
   }
   if (session.decision_class === "manual_trace_reconstruction_required" && session.status === "blocked") {
     return {
+      ...evidence,
       task_id: session.task_id,
       task_path: session.task_path,
       trace_path: tracePathFor(session),
@@ -152,6 +205,7 @@ function actionFor(session: TaskLifecycleSession): TaskLifecycleSettlementAction
   }
   if (session.decision_class === "manual_stale_review_required" && !session.trace_path) {
     return {
+      ...evidence,
       task_id: session.task_id,
       task_path: session.task_path,
       trace_path: tracePathFor(session),
@@ -165,6 +219,7 @@ function actionFor(session: TaskLifecycleSession): TaskLifecycleSettlementAction
   }
   if (session.issue_codes.length > 0) {
     return {
+      ...evidence,
       task_id: session.task_id,
       task_path: session.task_path,
       trace_path: session.trace_path,
@@ -177,6 +232,7 @@ function actionFor(session: TaskLifecycleSession): TaskLifecycleSettlementAction
     };
   }
   return {
+    ...evidence,
     task_id: session.task_id,
     task_path: session.task_path,
     trace_path: session.trace_path,
@@ -196,6 +252,7 @@ async function applyStartedFromGroundedTrace(
 ): Promise<TaskLifecycleSettlementAction> {
   const action = actionFor(session);
   if (!session.task_path || !session.trace_path) return action;
+  await assertActionSourceHashes(dataRoot, action);
   const taskFile = dataPath(dataRoot, session.task_path);
   const traceFile = dataPath(dataRoot, session.trace_path);
   const task = await readJson<JsonObject>(taskFile);
@@ -220,7 +277,11 @@ async function applyStartedFromGroundedTrace(
       trace_path: session.trace_path,
     },
   });
-  return { ...action, applied: true, reason_code: "started_task_repaired_from_grounded_trace" };
+  return await withAfterHashes(dataRoot, {
+    ...action,
+    applied: true,
+    reason_code: "started_task_repaired_from_grounded_trace",
+  });
 }
 
 async function applyBlockedMissingTrace(
@@ -230,6 +291,7 @@ async function applyBlockedMissingTrace(
 ): Promise<TaskLifecycleSettlementAction> {
   const action = actionFor(session);
   if (!session.task_path) return action;
+  await assertActionSourceHashes(dataRoot, action);
   const taskFile = dataPath(dataRoot, session.task_path);
   const task = await readJson<JsonObject>(taskFile);
   if (String(task.status ?? "") !== "blocked") {
@@ -269,7 +331,11 @@ async function applyBlockedMissingTrace(
       trace_path: tracePath,
     },
   });
-  return { ...action, applied: true, reason_code: "blocked_task_missing_trace_reconstructed" };
+  return await withAfterHashes(dataRoot, {
+    ...action,
+    applied: true,
+    reason_code: "blocked_task_missing_trace_reconstructed",
+  });
 }
 
 async function applyBlockStaleWithoutTrace(
@@ -279,6 +345,7 @@ async function applyBlockStaleWithoutTrace(
 ): Promise<TaskLifecycleSettlementAction> {
   const action = actionFor(session);
   if (!session.task_path) return action;
+  await assertActionSourceHashes(dataRoot, action);
   const taskFile = dataPath(dataRoot, session.task_path);
   const task = await readJson<JsonObject>(taskFile);
   if (String(task.status ?? "") !== "started") {
@@ -321,7 +388,11 @@ async function applyBlockStaleWithoutTrace(
       trace_path: tracePath,
     },
   });
-  return { ...action, applied: true, reason_code: "stale_task_without_trace_blocked" };
+  return await withAfterHashes(dataRoot, {
+    ...action,
+    applied: true,
+    reason_code: "stale_task_without_trace_blocked",
+  });
 }
 
 async function applyAutoClose(
@@ -332,6 +403,7 @@ async function applyAutoClose(
 ): Promise<TaskLifecycleSettlementAction> {
   const action = actionFor(session);
   if (!session.task_path || !session.auto_close_safe) return action;
+  await assertActionSourceHashes(dataRoot, action);
   const taskFile = dataPath(dataRoot, session.task_path);
   const task = await readJson<JsonObject>(taskFile);
   if (String(task.status ?? "") !== "started") {
@@ -346,11 +418,11 @@ async function applyAutoClose(
     task_id: session.task_id,
     outcome: "blocked",
     summary:
-      "Auto-closed stale DinoBrain diagnostic task after lifecycle settlement. The task was a hook/env probe with no terminal trace and no current active owner.",
+      "Auto-closed stale non-user DinoBrain service task after lifecycle settlement. The task had no terminal trace or current active owner.",
     changed_files: [],
     decisions: [
       "Classified as auto_close_candidate by task lifecycle report.",
-      "Closed only because the request/project matched DinoBrain hook diagnostic or manual hook env test patterns.",
+      `Closed only because prompt eligibility classified it as ${session.prompt_classification ?? "non-user service work"}.`,
     ],
     next_steps: ["Manual repair is still required for non-diagnostic stale tasks."],
     used_memory_paths: [],
@@ -359,7 +431,7 @@ async function applyAutoClose(
     finished_at: finishedAt,
     settlement: {
       version: TASK_LIFECYCLE_SETTLEMENT_VERSION,
-      reason_code: "stale_diagnostic_auto_closed",
+      reason_code: "stale_non_user_service_auto_closed",
       previous_status: session.status,
       previous_updated_at: session.updated_at,
       source_task_lifecycle_generated_at: lifecycleBefore.generated_at,
@@ -374,16 +446,16 @@ async function applyAutoClose(
     trace_path: tracePath,
     lifecycle_settlement: {
       version: TASK_LIFECYCLE_SETTLEMENT_VERSION,
-      reason_code: "stale_diagnostic_auto_closed",
+      reason_code: "stale_non_user_service_auto_closed",
       settled_at: finishedAt,
       trace_path: tracePath,
     },
   });
-  return {
+  return await withAfterHashes(dataRoot, {
     ...action,
     applied: true,
-    reason_code: "stale_diagnostic_auto_closed",
-  };
+    reason_code: "stale_non_user_service_auto_closed",
+  });
 }
 
 function visibleStatus(status: TaskLifecycleSettlementReport["status"], apply: boolean): string {
@@ -464,6 +536,7 @@ export async function settleTaskLifecycle(
       status: lifecycleBefore.status,
       counts: lifecycleBefore.counts,
       by_decision_class: lifecycleBefore.by_decision_class,
+      by_prompt_classification: lifecycleBefore.by_prompt_classification,
     },
     lifecycle_after: lifecycleAfter
       ? {
@@ -471,11 +544,14 @@ export async function settleTaskLifecycle(
           status: lifecycleAfter.status,
           counts: lifecycleAfter.counts,
           by_decision_class: lifecycleAfter.by_decision_class,
+          by_prompt_classification: lifecycleAfter.by_prompt_classification,
         }
       : null,
     counts: {
       auto_close_candidates_before: targetSessions.length,
-      auto_close_applied: actions.filter((action) => action.applied && action.action === "auto_close_stale_diagnostic").length,
+      auto_close_applied: actions.filter(
+        (action) => action.applied && action.action === "auto_close_stale_non_user_service",
+      ).length,
       auto_close_candidates_after: autoCloseCandidatesAfter,
       finish_gate_repairs_before: repairableManualSessions.length,
       finish_gate_repairs_applied: actions.filter(

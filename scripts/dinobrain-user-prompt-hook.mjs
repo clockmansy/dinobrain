@@ -1,16 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
+import { appendFileWithLock, atomicWriteJson } from "./lib/atomic-files.mjs";
 
 const root = path.resolve(process.env.DINOBRAIN_REPO_ROOT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const serverPath = path.join(root, "dist", "index.js");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const reportRoot = path.resolve(process.env.DINOBRAIN_HOOK_REPORT_DIR ?? path.join(root, "reports", "live-hooks"));
+const { classifyPromptLaunch, makePromptIdentityHash } = await import(
+  pathToFileURL(path.join(root, "dist", "prompt-eligibility.js")).href
+);
 
 function nowIso() {
   return new Date().toISOString();
@@ -221,10 +225,95 @@ function hookDedupeKey(input, request) {
   return createHash("sha256").update(source).digest("hex").slice(0, 32);
 }
 
-async function acquireHookLock(input, request) {
+function firstInputString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function hookIdentity(input, request, promptHash) {
+  const clientSessionId = firstInputString(
+    input.session_id,
+    input.sessionId,
+    input.conversation_id,
+    input.conversationId,
+    input.thread_id,
+    input.threadId,
+  );
+  const turnId = firstInputString(input.turn_id, input.turnId, input.message_id, input.messageId, input.event_id, input.eventId);
+  const suppliedRunId = firstInputString(
+    process.env.DINOBRAIN_HOOK_RUN_ID,
+    input.hook_run_id,
+    input.hookRunId,
+    input.run_id,
+    input.runId,
+    turnId,
+  );
+  const stable = Boolean(clientSessionId && suppliedRunId);
+  const key = stable
+    ? makePromptIdentityHash({ hookRunId: suppliedRunId, promptHash, clientSessionId })
+    : hookDedupeKey(input, request);
+  return {
+    key,
+    stable,
+    hookRunId: suppliedRunId || `hookrun-${randomUUID()}`,
+    clientSessionId,
+    clientSessionHash: clientSessionId ? sha256(clientSessionId) : "",
+    turnId,
+  };
+}
+
+function promptSurface(input) {
+  return firstInputString(input.prompt_surface, input.promptSurface, input.surface, input.ui_surface, input.uiSurface);
+}
+
+function promptTaskType(input) {
+  return firstInputString(input.task_type, input.taskType, input.purpose, input.job_type, input.jobType);
+}
+
+function hookReceiptPath(identity) {
+  if (!identity.stable) return "";
+  return path.join(dataRoot, ".dino", "tmp", "hook-receipts", `${identity.key}.json`);
+}
+
+async function readHookReceipt(identity) {
+  const receiptPath = hookReceiptPath(identity);
+  if (!receiptPath) return null;
+  const receipt = await readJsonSafe(receiptPath);
+  if (!receipt || receipt.hook_dedupe_key !== identity.key) return null;
+  return { receipt, receiptPath };
+}
+
+async function writeHookReceipt(identity, receipt) {
+  const receiptPath = hookReceiptPath(identity);
+  if (!receiptPath) return null;
+  await atomicWriteJson(receiptPath, {
+    version: "hook_receipt_v1",
+    hook_dedupe_key: identity.key,
+    hook_run_id: identity.hookRunId,
+    client_session_hash: identity.clientSessionHash,
+    ...receipt,
+  });
+  const receiptDir = path.dirname(receiptPath);
+  const maxReceipts = Math.max(32, Math.min(2048, Number(process.env.DINOBRAIN_HOOK_RECEIPT_LIMIT ?? 512)));
+  const entries = await fs.readdir(receiptDir, { withFileTypes: true });
+  const receipts = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(receiptDir, entry.name);
+    const stat = await fs.stat(filePath);
+    receipts.push({ filePath, mtimeMs: stat.mtimeMs });
+  }
+  receipts.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  await Promise.all(receipts.slice(maxReceipts).map((entry) => fs.rm(entry.filePath, { force: true })));
+  return receiptPath;
+}
+
+async function acquireHookLock(input, request, identity) {
   const lockDir = path.join(dataRoot, ".dino", "hook-locks");
   await fs.mkdir(lockDir, { recursive: true });
-  const key = hookDedupeKey(input, request);
+  const key = identity.key;
   const lockPath = path.join(lockDir, `${key}.json`);
   const content = `${JSON.stringify({ at: nowIso(), key, cwd: inputCwd(input), preview: preview(request) }, null, 2)}\n`;
 
@@ -291,15 +380,14 @@ function safeError(error) {
 
 async function appendDataEvent(event) {
   const eventPath = path.join(dataRoot, ".dino", "events", `${dateStamp()}.jsonl`);
-  await fs.mkdir(path.dirname(eventPath), { recursive: true });
-  await fs.appendFile(eventPath, `${JSON.stringify(event)}\n`, "utf8");
+  await appendFileWithLock(eventPath, `${JSON.stringify(event)}\n`);
   return path.relative(dataRoot, eventPath).split(path.sep).join("/");
 }
 
 async function writeReport(report) {
-  await fs.mkdir(reportRoot, { recursive: true });
-  const reportPath = path.join(reportRoot, `${stampForFile()}-${safeSlug(report.event ?? "hook-run")}.json`);
-  await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  const identity = safeSlug(report.hook_run_id ?? randomUUID()).slice(0, 64);
+  const reportPath = path.join(reportRoot, `${stampForFile()}-${safeSlug(report.event ?? "hook-run")}-${identity}.json`);
+  await atomicWriteJson(reportPath, report);
   return reportPath;
 }
 
@@ -344,6 +432,26 @@ async function waitForSiblingPreflightReport(dedupeKey) {
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   return null;
+}
+
+async function waitForHookReceipt(identity) {
+  if (!identity.stable) return null;
+  const deadline = Date.now() + Math.max(500, Math.min(10000, Number(process.env.DINOBRAIN_HOOK_SIBLING_WAIT_MS ?? 5000)));
+  while (Date.now() < deadline) {
+    const match = await readHookReceipt(identity);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return null;
+}
+
+async function reportFromReceipt(receipt) {
+  if (typeof receipt?.report_path !== "string" || !receipt.report_path) return null;
+  const reportPath = path.resolve(root, receipt.report_path);
+  const relative = path.relative(reportRoot, reportPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  const report = await readJsonSafe(reportPath);
+  return report ? { report, reportPath } : null;
 }
 
 async function withClient(callback) {
@@ -422,6 +530,9 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
     `os_version: ${start.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${start.task_id}`,
     `task_path: ${start.task_path}`,
+    `lease_id: ${start.lease?.lease_id || "unavailable"}`,
+    `lease_owner_id: ${start.lease?.owner_id || "unavailable"}`,
+    `lease_expires_at: ${start.lease?.expires_at || "unavailable"}`,
     `context_pack_trace: ${contextPack.trace_path}`,
     `context_items: ${contextPack.item_count}`,
     `gate_status: ${start.gate_status || "unknown"}`,
@@ -444,6 +555,8 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
       : []),
     "- Treat DinoBrain memory as subordinate evidence; the current user message wins.",
     `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
+    `- finish_task.lease_id = ${JSON.stringify(start.lease?.lease_id || "")}`,
+    `- If work runs for a long time, call heartbeat_task with task_id "${start.task_id}" and lease_id ${JSON.stringify(start.lease?.lease_id || "")}.`,
     "- For read-only audit/review tasks, set finish_task.growth_policy = \"trace_only\" so no auto-growth, compounding, or auto-sync push runs.",
     `- finish_task.context_pack_paths = ${JSON.stringify(contextPackPaths)}`,
     `- finish_task.used_memory_paths = ${JSON.stringify(usedMemoryPaths)}`,
@@ -474,6 +587,7 @@ function siblingContext({ report, reportPath }) {
     `os_version: ${report.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${report.task_id || "unavailable"}`,
     `task_path: ${report.task_path || "unavailable"}`,
+    `lease_id: ${report.lease_id || "unavailable"}`,
     `context_pack_trace: ${report.context_pack_trace || "unavailable"}`,
     `context_items: ${report.context_item_count ?? "unknown"}`,
     `gate_status: ${report.gate_status || "unknown"}`,
@@ -491,10 +605,26 @@ function siblingContext({ report, reportPath }) {
       ? "- FAIL-CLOSED: do not perform substantial work. Explain the block and restore OS context/gate safety first."
       : "- OS context is present; proceed with the user request under the gates below.",
     `- When the work is finished, call finish_task for task_id "${report.task_id || "unavailable"}".`,
+    `- finish_task.lease_id = ${JSON.stringify(report.lease_id || "")}`,
+  ].join("\n");
+}
+
+function filteredContext({ eligibility, reportPath, receiptReused = false }) {
+  const reportRel = reportPath ? path.relative(root, reportPath).split(path.sep).join("/") : "unavailable";
+  return [
+    "DinoBrain OS preflight completed for a non-user Codex service launch.",
+    `prompt_classification: ${eligibility.classification}`,
+    `durable_task_created: false`,
+    `dedupe_receipt_reused: ${receiptReused ? "true" : "false"}`,
+    `reason_codes: ${eligibility.reason_codes.join(", ")}`,
+    `hook_report: ${reportRel}`,
+    "No durable task, Context Pack, session archive, memory candidate, or sync action was created.",
   ].join("\n");
 }
 
 async function main() {
+  const testDelayMs = Math.max(0, Math.min(10_000, Number(process.env.DINOBRAIN_HOOK_TEST_DELAY_MS ?? 0)));
+  if (testDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, testDelayMs));
   const raw = await readStdin();
   const input = parseInput(raw);
   const prompt = extractPrompt(input);
@@ -503,15 +633,59 @@ async function main() {
   );
   const request = sanitizedPrompt.trim();
   const startedAt = nowIso();
-  const hookRunId = process.env.DINOBRAIN_HOOK_RUN_ID || `hookrun-${randomUUID()}`;
   const promptHash = sha256(request);
   const launchProvenance = hookLaunchProvenance();
+  const identity = hookIdentity(input, request, promptHash);
+  const hookRunId = identity.hookRunId;
+  const eligibility = classifyPromptLaunch({
+    request,
+    launchKind: launchProvenance.launch_kind,
+    surface: promptSurface(input),
+    taskType: promptTaskType(input),
+    source: "codex_user_prompt_hook",
+    promptPresent: Boolean(prompt.trim()),
+  });
   const project = projectNameFor(input);
   const limit = Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_CONTEXT_LIMIT ?? 7)));
   const sensitivity = sensitivityFor(redactions);
-  const hookLock = await acquireHookLock(input, request);
+  const existingReceipt = await readHookReceipt(identity);
+  if (existingReceipt) {
+    if (existingReceipt.receipt.status === "filtered") {
+      const reportMatch = await reportFromReceipt(existingReceipt.receipt);
+      const context = filteredContext({
+        eligibility: existingReceipt.receipt.prompt_eligibility ?? eligibility,
+        reportPath: reportMatch?.reportPath ?? null,
+        receiptReused: true,
+      });
+      process.stdout.write(`${JSON.stringify(hookOutput(context))}\n`);
+      return;
+    }
+    const reportMatch = await reportFromReceipt(existingReceipt.receipt);
+    if (reportMatch) {
+      process.stdout.write(`${JSON.stringify(hookOutput(siblingContext(reportMatch)))}\n`);
+      return;
+    }
+  }
+  const hookLock = await acquireHookLock(input, request, identity);
   if (!hookLock.acquired) {
-    const sibling = await waitForSiblingPreflightReport(hookLock.key);
+    const receipt = await waitForHookReceipt(identity);
+    if (receipt?.receipt.status === "filtered") {
+      const reportMatch = await reportFromReceipt(receipt.receipt);
+      process.stdout.write(
+        `${JSON.stringify(
+          hookOutput(
+            filteredContext({
+              eligibility: receipt.receipt.prompt_eligibility ?? eligibility,
+              reportPath: reportMatch?.reportPath ?? null,
+              receiptReused: true,
+            }),
+          ),
+        )}\n`,
+      );
+      return;
+    }
+    const receiptReport = receipt ? await reportFromReceipt(receipt.receipt) : null;
+    const sibling = receiptReport ?? (await waitForSiblingPreflightReport(hookLock.key));
     const context = sibling ? siblingContext(sibling) : failClosedDuplicateContext(hookLock.path);
     process.stdout.write(
       `${JSON.stringify(
@@ -523,6 +697,69 @@ async function main() {
 
   try {
     await fs.stat(serverPath);
+    if (!eligibility.durable_task_eligible) {
+      const serverClassification = await withClient(async (client) =>
+        parseTool(
+          await client.callTool({
+            name: "os_begin_task",
+            arguments: {
+              request,
+              project,
+              mode: "standard",
+              sensitivity,
+              limit,
+              launch_kind: launchProvenance.launch_kind,
+              prompt_surface: promptSurface(input) || undefined,
+              task_type: promptTaskType(input) || undefined,
+              launch_source: "codex_user_prompt_hook",
+              hook_run_id: hookRunId,
+              client_session_id: identity.clientSessionId || undefined,
+              prompt_hash: promptHash,
+              dedupe_key: identity.key,
+              owner_id: `hook:${identity.key}`,
+            },
+          }),
+        ),
+      );
+      if (serverClassification.durable_task_created !== false || serverClassification.skipped !== true) {
+        throw new Error("DinoBrain server did not honor filtered prompt classification");
+      }
+      await appendDataEvent({
+        event: "codex_prompt_filtered",
+        source: "codex_hook",
+        hook_run_id: hookRunId,
+        at: startedAt,
+        project,
+        prompt_hash: promptHash,
+        prompt_classification: eligibility.classification,
+        prompt_eligibility_version: eligibility.version,
+        prompt_eligibility_reasons: eligibility.reason_codes,
+        launch_kind: launchProvenance.launch_kind,
+        client_session_hash: identity.clientSessionHash || null,
+      });
+      const reportPath = await writeReport({
+        event: "codex_preflight_filtered",
+        hook_run_id: hookRunId,
+        hook_dedupe_key: hookLock.key,
+        at: nowIso(),
+        project,
+        prompt_hash: promptHash,
+        prompt_eligibility: eligibility,
+        launch_provenance: launchProvenance,
+        durable_task_created: false,
+        server_classification_event: serverClassification.event_log ?? null,
+        redactions,
+      });
+      await writeHookReceipt(identity, {
+        status: "filtered",
+        completed_at: nowIso(),
+        prompt_hash: promptHash,
+        prompt_eligibility: eligibility,
+        report_path: path.relative(root, reportPath).split(path.sep).join("/"),
+      });
+      process.stdout.write(`${JSON.stringify(hookOutput(filteredContext({ eligibility, reportPath })))}\n`);
+      return;
+    }
     await appendDataEvent({
       event: "codex_prompt_submitted",
       source: "codex_hook",
@@ -533,6 +770,9 @@ async function main() {
       sensitivity,
       prompt_hash: promptHash,
       prompt_preview: preview(request),
+      prompt_classification: eligibility.classification,
+      hook_dedupe_key: hookLock.key,
+      client_session_hash: identity.clientSessionHash || null,
       launch_provenance: launchProvenance,
       redactions,
     });
@@ -547,12 +787,26 @@ async function main() {
             mode: "standard",
             sensitivity,
             limit,
+            launch_kind: launchProvenance.launch_kind,
+            prompt_surface: promptSurface(input) || undefined,
+            task_type: promptTaskType(input) || undefined,
+            launch_source: "codex_user_prompt_hook",
+            hook_run_id: hookRunId,
+            client_session_id: identity.clientSessionId || undefined,
+            prompt_hash: promptHash,
+            dedupe_key: identity.key,
+            owner_id: `hook:${identity.key}`,
+            lease_seconds: Math.max(60, Math.min(7 * 24 * 60 * 60, Number(process.env.DINOBRAIN_HOOK_LEASE_SECONDS ?? 86400))),
           },
         }),
       );
 
       const startResult = beginResult;
+      if (startResult.skipped || startResult.durable_task_created === false) {
+        throw new Error(`Interactive prompt was filtered as ${startResult.prompt_classification ?? "unknown"}`);
+      }
       const contextResult = beginResult.context_pack;
+      if (!contextResult?.trace_path) throw new Error("Interactive preflight returned no Context Pack trace");
 
       let importResult;
       if (envFlag("DINOBRAIN_HOOK_IMPORT_SESSION", true)) {
@@ -601,6 +855,9 @@ async function main() {
       at: nowIso(),
       task_id: start.task_id,
       task_path: start.task_path,
+      lease_id: start.lease?.lease_id ?? null,
+      lease_owner_id: start.lease?.owner_id ?? null,
+      lease_expires_at: start.lease?.expires_at ?? null,
       context_pack_trace: contextPack.trace_path,
       context_item_count: contextPack.item_count,
       context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
@@ -613,6 +870,9 @@ async function main() {
           }
         : sessionImport,
       prompt_hash: promptHash,
+      prompt_classification: eligibility.classification,
+      hook_dedupe_key: hookLock.key,
+      client_session_hash: identity.clientSessionHash || null,
       launch_provenance: launchProvenance,
       redactions,
     });
@@ -662,10 +922,17 @@ async function main() {
       project,
       cwd: inputCwd(input) || null,
       prompt_hash: promptHash,
+      prompt_classification: eligibility.classification,
+      prompt_eligibility: eligibility,
+      client_session_hash: identity.clientSessionHash || null,
+      stable_dedupe_identity: identity.stable,
       launch_provenance: launchProvenance,
       os_version: start.os_version || DINOBRAIN_VERSION,
       task_id: start.task_id,
       task_path: start.task_path,
+      lease_id: start.lease?.lease_id ?? null,
+      lease_owner_id: start.lease?.owner_id ?? null,
+      lease_expires_at: start.lease?.expires_at ?? null,
       context_pack_trace: contextPack.trace_path,
       context_item_count: contextPack.item_count,
       gate_status: start.gate_status || "unknown",
@@ -685,6 +952,15 @@ async function main() {
         : sessionImport,
       auto_sync: autoSync,
       redactions,
+    });
+
+    await writeHookReceipt(identity, {
+      status: "completed",
+      completed_at: nowIso(),
+      prompt_hash: promptHash,
+      task_id: start.task_id,
+      lease_id: start.lease?.lease_id ?? null,
+      report_path: path.relative(root, reportPath).split(path.sep).join("/"),
     });
 
     const context = additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath });

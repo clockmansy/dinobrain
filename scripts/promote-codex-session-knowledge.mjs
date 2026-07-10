@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { appendFileWithLockSync, atomicWriteJsonSync, atomicWriteTextSync } from "./lib/atomic-files-sync.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
@@ -54,19 +55,18 @@ function ensureDirFor(relativePath) {
 
 function writeJson(relativePath, value) {
   ensureDirFor(relativePath);
-  writeFileSync(dataPath(relativePath), `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  atomicWriteJsonSync(dataPath(relativePath), value);
 }
 
 function writeText(relativePath, value) {
   ensureDirFor(relativePath);
-  writeFileSync(dataPath(relativePath), value, "utf8");
+  atomicWriteTextSync(dataPath(relativePath), value);
 }
 
 function appendJsonl(relativePath, value) {
   ensureDirFor(relativePath);
   const fullPath = dataPath(relativePath);
-  const previous = existsSync(fullPath) ? readFileSync(fullPath, "utf8") : "";
-  writeFileSync(fullPath, `${previous}${JSON.stringify(value)}\n`, "utf8");
+  appendFileWithLockSync(fullPath, `${JSON.stringify(value)}\n`);
 }
 
 function readJsonSafe(relativePath) {

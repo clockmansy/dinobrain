@@ -70,6 +70,16 @@ Purpose:
 
 - record a task start
 - store request, project, mode, and sensitivity
+- classify prompt provenance before durable creation
+- attach a lease and terminal owner contract
+
+Internal Codex service, title, ambient suggestion, and diagnostic launches are
+returned as `skipped` and create no durable task or Context Pack.
+
+### `heartbeat_task`
+
+Renews an active task lease using the task's `task_id` and `lease_id`. A wrong
+lease is rejected and cannot take terminal ownership.
 
 ### `finish_task`
 
@@ -82,6 +92,8 @@ Creates or updates:
 Purpose:
 
 - mark a task as completed, partial, or blocked
+- require the active `lease_id` when the task has a lease
+- make repeated finish calls by the same owner idempotent
 - store a trace summary
 - store structured memory-use fields:
   - `used_memory_paths`

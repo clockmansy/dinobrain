@@ -348,7 +348,7 @@ function isIgnoredDirectory(name: string): boolean {
 
 function isGeneratedStatusArtifact(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
-  return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`);
+  return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) || normalized.startsWith(".dino/generations/");
 }
 
 function toMillis(value: string | null): number | null {

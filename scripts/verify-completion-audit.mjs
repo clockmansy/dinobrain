@@ -29,7 +29,7 @@ function execution(exitCode = 0) {
 async function main() {
   assert(HARD_GATE_IDS.length === 12, `expected 12 hard gates, got ${HARD_GATE_IDS.length}`);
   assert(COMPLETION_GATES.length === 12, `expected 12 gate registry rows, got ${COMPLETION_GATES.length}`);
-  assert(COMPLETION_COMMANDS.length === 56, `expected 56 mandatory command executions, got ${COMPLETION_COMMANDS.length}`);
+  assert(COMPLETION_COMMANDS.length === 60, `expected 60 mandatory command executions, got ${COMPLETION_COMMANDS.length}`);
   assert(COMPLETION_GATES.every((gate) => gate.command_ids.length > 0), "gate without commands found");
   assert(COMPLETION_GATES.every((gate) => gate.artifact_ids.length > 0), "gate without artifacts found");
   const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -39,17 +39,18 @@ async function main() {
   const contract = readFileSync(path.join(root, "docs", "OS_COMPLETION_CONDITIONS.md"), "utf8");
   const runnerBody = contract.match(/\$commands = @\(([\s\S]*?)\r?\n\)/)?.[1] ?? "";
   const documentedScripts = [...runnerBody.matchAll(/npm run ([A-Za-z0-9:_-]+)/g)].map((match) => match[1]);
-  const registryBaseScripts = COMPLETION_COMMANDS.slice(0, 52).map((entry) => entry.npm_script);
-  assert(documentedScripts.length === 52, `normative runner should list 52 base commands, got ${documentedScripts.length}`);
+  const registryBaseScripts = COMPLETION_COMMANDS.slice(0, 55).map((entry) => entry.npm_script);
+  assert(documentedScripts.length === 55, `normative runner should list 55 base commands, got ${documentedScripts.length}`);
   assert(
     JSON.stringify(documentedScripts) === JSON.stringify(registryBaseScripts),
     "typed completion registry drifted from the normative PowerShell runner",
   );
   assert(
-    COMPLETION_COMMANDS.slice(52, 55).every((entry) => entry.npm_script === "index:verify:concurrency"),
+    COMPLETION_COMMANDS.slice(55, 58).every((entry) => entry.npm_script === "index:verify:concurrency"),
     "registry must run the concurrency command exactly three times after the base suite",
   );
-  assert(COMPLETION_COMMANDS[55]?.npm_script === "verify:goal", "verify:goal must be the last mandatory command");
+  assert(COMPLETION_COMMANDS[58]?.npm_script === "status:refresh", "status:refresh must publish the final evidence generation");
+  assert(COMPLETION_COMMANDS[59]?.npm_script === "verify:goal", "verify:goal must be the last mandatory command");
 
   const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-completion-audit-"));
   try {
@@ -69,7 +70,10 @@ async function main() {
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-    assert(ledger.length === 56, `partial ledger should still contain 56 rows, got ${ledger.length}`);
+    assert(
+      ledger.length === COMPLETION_COMMANDS.length,
+      `partial ledger should still contain ${COMPLETION_COMMANDS.length} rows, got ${ledger.length}`,
+    );
     assert(ledger.find((entry) => entry.command_id === "npm:build")?.status === "PASS", "selected command did not pass");
     assert(
       ledger.filter((entry) => entry.command_id !== "npm:build").every((entry) => entry.status === "BLOCKED"),

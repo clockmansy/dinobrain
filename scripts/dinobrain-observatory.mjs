@@ -6,6 +6,12 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
+import {
+  loadCurrentStatusGeneration,
+  resolveStatusGenerationArtifactPath,
+  STATUS_GENERATION_ARTIFACT_PATHS,
+  STATUS_GENERATION_POINTER_RELATIVE_PATH,
+} from "../dist/status-generation.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
@@ -14,14 +20,38 @@ const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find(
 const observatoryVersion = "2026-07-03-os-health-cockpit-v1";
 const execFileAsync = promisify(execFile);
 const readinessVersion = "observatory_readiness_v1";
+const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
+let statusGenerationCache = { loaded_at: 0, value: null };
 
 function rel(filePath) {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
 }
 
+async function currentStatusGeneration() {
+  if (statusGenerationCache.value && Date.now() - statusGenerationCache.loaded_at < 250) {
+    return statusGenerationCache.value;
+  }
+  const value = await loadCurrentStatusGeneration(dataRoot, {
+    verifyEntries: true,
+    verifySourceCoherence: true,
+  });
+  statusGenerationCache = { loaded_at: Date.now(), value };
+  return value;
+}
+
+async function resolveObservablePath(filePath) {
+  const relativePath = rel(filePath);
+  if (!statusGenerationArtifacts.has(relativePath)) return { filePath, generation: null, managed: false };
+  const generation = await currentStatusGeneration();
+  const snapshotPath = resolveStatusGenerationArtifactPath(generation, relativePath);
+  return { filePath: snapshotPath, generation, managed: true };
+}
+
 async function readJson(filePath) {
+  const resolved = await resolveObservablePath(filePath);
+  if (resolved.managed && !resolved.filePath) return null;
   try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
+    return JSON.parse(await fs.readFile(resolved.filePath, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     return null;
@@ -29,9 +59,19 @@ async function readJson(filePath) {
 }
 
 async function readStatusArtifact(relativePath) {
-  const filePath = path.join(dataRoot, relativePath.replace(/\//g, path.sep));
+  const canonicalPath = path.join(dataRoot, relativePath.replace(/\//g, path.sep));
+  const resolved = await resolveObservablePath(canonicalPath);
+  if (resolved.managed && !resolved.filePath) {
+    return {
+      ok: false,
+      artifact_parse_status: "generation_invalid",
+      artifact_path: relativePath,
+      value: null,
+      error: resolved.generation?.reason ?? "status_generation_unavailable",
+    };
+  }
   try {
-    const text = await fs.readFile(filePath, "utf8");
+    const text = await fs.readFile(resolved.filePath, "utf8");
     try {
       return {
         ok: true,
@@ -97,7 +137,10 @@ async function readOperationIndex() {
 }
 
 async function readSqliteOperations() {
-  const shardPath = path.join(dataRoot, ".dino", "index", "sqlite", "operations.sqlite");
+  const canonicalPath = path.join(dataRoot, ".dino", "index", "sqlite", "operations.sqlite");
+  const resolved = await resolveObservablePath(canonicalPath);
+  if (resolved.managed && !resolved.filePath) return null;
+  const shardPath = resolved.filePath;
   try {
     await fs.access(shardPath);
   } catch {
@@ -216,7 +259,20 @@ function selectGraphWindow(nodes, edges, limit = 450) {
 }
 
 async function readWikiGraph() {
-  const shardPath = path.join(dataRoot, ".dino", "index", "sqlite", "wiki.sqlite");
+  const canonicalPath = path.join(dataRoot, ".dino", "index", "sqlite", "wiki.sqlite");
+  const resolved = await resolveObservablePath(canonicalPath);
+  if (resolved.managed && !resolved.filePath) {
+    return {
+      ok: false,
+      index_mode: "status_generation_invalid",
+      generated_at: null,
+      data_root: dataRoot,
+      stats: { records: 0, nodes: 0, edges: 0, shown_nodes: 0, shown_edges: 0, truncated: false },
+      nodes: [],
+      edges: [],
+    };
+  }
+  const shardPath = resolved.filePath;
   try {
     await fs.access(shardPath);
     const db = new DatabaseSync(shardPath, { readOnly: true });
@@ -708,6 +764,7 @@ function laneItem(id, status, reason, pathValue = null) {
 
 async function readiness(existingState = null) {
   const [
+    statusGeneration,
     healthArtifact,
     clientArtifact,
     nativeArtifact,
@@ -723,6 +780,7 @@ async function readiness(existingState = null) {
     graphArtifact,
     audits,
   ] = await Promise.all([
+    currentStatusGeneration(),
     readStatusArtifact(".dino/state/health_status.json"),
     readStatusArtifact(".dino/state/client_mcp_direct_status.json"),
     readStatusArtifact(".dino/state/native_instruction_authority.json"),
@@ -738,6 +796,16 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/index/graph-health.json"),
     existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
   ]);
+  const generationArtifact = {
+    value: {
+      status: statusGeneration.status === "healthy" ? "healthy" : statusGeneration.status,
+      generated_at: statusGeneration.pointer?.generated_at ?? null,
+      generation_id: statusGeneration.pointer?.generation_id ?? null,
+      warnings: statusGeneration.errors,
+    },
+    artifact_parse_status: statusGeneration.status === "healthy" ? "ok" : `generation_${statusGeneration.status}`,
+    artifact_path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
+  };
 
   const clientAgents = Array.isArray(clientArtifact.value?.agents) ? clientArtifact.value.agents : [];
   const clientMissingTools = clientAgents.flatMap((agent) =>
@@ -760,6 +828,13 @@ async function readiness(existingState = null) {
       : "answer_quality_status_artifact_unavailable";
 
   const hardGates = [
+    hardGateFromArtifact({
+      id: "status_generation",
+      label: "Atomic Status Generation",
+      artifact: generationArtifact,
+      expectedStatuses: ["healthy"],
+      blockerReason: statusGeneration.status === "healthy" ? null : statusGeneration.reason ?? "status_generation_invalid",
+    }),
     hardGateFromArtifact({ id: "health_status", label: "Health Rollup", artifact: healthArtifact, expectedStatuses: ["healthy"] }),
     hardGateFromArtifact({
       id: "client_mcp_direct_status",
@@ -864,6 +939,14 @@ async function readiness(existingState = null) {
     data_root: dataRoot,
     status: ok ? "ready" : "needs_attention",
     visible_status: ok ? "Completion readiness green" : "Completion blockers visible",
+    status_generation: {
+      artifact_path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
+      status: statusGeneration.status,
+      generation_id: statusGeneration.pointer?.generation_id ?? null,
+      generated_at: statusGeneration.pointer?.generated_at ?? null,
+      reason: statusGeneration.reason,
+      errors: statusGeneration.errors,
+    },
     health_status: {
       artifact_path: healthArtifact.artifact_path,
       artifact_parse_status: healthArtifact.artifact_parse_status,
@@ -1994,6 +2077,8 @@ function html() {
       );
       kv(readinessSummaryEl, [
         ["status", readiness.status],
+        ["generation", readiness.status_generation?.generation_id],
+        ["generation health", readiness.status_generation?.status],
         ["blockers", readiness.counts?.blockers],
         ["reviewer pending", readiness.counts?.reviewer_pending],
         ["main pending", readiness.counts?.main_pending],

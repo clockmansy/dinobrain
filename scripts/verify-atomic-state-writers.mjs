@@ -7,6 +7,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { atomicWriteJson, atomicWriteText } = await import(
   pathToFileURL(path.join(root, "dist", "concurrency.js")).href
 );
+const { atomicWriteJsonSync } = await import(
+  pathToFileURL(path.join(root, "scripts", "lib", "atomic-files-sync.mjs")).href
+);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -20,12 +23,34 @@ function sourceFiles(dir) {
   });
 }
 
+function scriptFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return scriptFiles(fullPath);
+    if (!entry.isFile() || !entry.name.endsWith(".mjs")) return [];
+    if (entry.name.startsWith("verify-") || entry.name === "smoke-mcp.mjs") return [];
+    return [fullPath];
+  });
+}
+
 async function main() {
   const directWrites = [];
   for (const filePath of sourceFiles(path.join(root, "src"))) {
     if (filePath.endsWith(`${path.sep}concurrency.ts`)) continue;
     const source = readFileSync(filePath, "utf8");
     if (/\bfs\.writeFile\s*\(|\bwriteFileSync\s*\(/.test(source)) {
+      directWrites.push(path.relative(root, filePath).replace(/\\/g, "/"));
+    }
+  }
+  for (const filePath of scriptFiles(path.join(root, "scripts"))) {
+    let source = readFileSync(filePath, "utf8");
+    if (filePath.endsWith(`${path.sep}dinobrain-user-prompt-hook.mjs`)) {
+      source = source.replace(
+        /await fs\.writeFile\(lockPath, content, \{ encoding: "utf8", flag: "wx" \}\);/g,
+        "",
+      );
+    }
+    if (/\bfs\.(?:writeFile|appendFile)\s*\(|\b(?:writeFileSync|appendFileSync)\s*\(/.test(source)) {
       directWrites.push(path.relative(root, filePath).replace(/\\/g, "/"));
     }
   }
@@ -52,6 +77,9 @@ async function main() {
     const final = JSON.parse(readFileSync(jsonPath, "utf8"));
     assert(Number.isInteger(final.generation), "concurrent publication produced invalid JSON");
     assert(final.payload.length === 128, "concurrent publication produced partial JSON");
+    atomicWriteJsonSync(jsonPath, { generation: "sync", payload: "y".repeat(128) });
+    const syncFinal = JSON.parse(readFileSync(jsonPath, "utf8"));
+    assert(syncFinal.generation === "sync", "synchronous atomic publication did not replace the prior file");
     const leaked = readdirSync(temp).filter((entry) => entry.endsWith(".tmp") || entry.includes(".tmp."));
     assert(leaked.length === 0, `temporary publication files leaked: ${leaked.join(",")}`);
 

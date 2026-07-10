@@ -12,9 +12,12 @@ DinoBrain can show how it interacts with Codex by combining two pieces:
 ```mermaid
 flowchart LR
   user["User prompt"] --> hook["Codex UserPromptSubmit hook"]
-  hook --> start["DinoBrain start_task"]
-  hook --> pack["DinoBrain get_context_pack"]
-  hook --> ingest["DinoBrain import_session"]
+  hook --> classify["Classify prompt launch"]
+  classify -->|user-interactive| start["DinoBrain os_begin_task"]
+  classify -->|title / ambient / internal / diagnostic| filtered["Bounded local diagnostic only"]
+  start --> pack["DinoBrain get_context_pack"]
+  start --> ingest["DinoBrain import_session"]
+  filtered --> events
   start --> events[".dino/events"]
   pack --> events
   ingest --> raw["10_Conversations/raw"]
@@ -56,13 +59,24 @@ the safe diagnosis is that `/hooks` approval is still required for the current
 command hash or Codex is storing trust in a location this repository cannot
 inspect directly.
 
-If multiple hook paths are active, the hook runtime uses `.dino/hook-locks` to avoid duplicate task records for the same prompt.
+The hook classifies every launch as `user_interactive`,
+`internal_codex_service`, `ambient_suggestion`, `title_generation`,
+`diagnostic_probe`, or `unknown`. Only `user_interactive` launches can create a
+durable task, Context Pack, session archive, candidate, or sync action.
+
+If multiple hook paths are active, the hook runtime uses `.dino/hook-locks` for
+the in-flight launch and a local-only `.dino/tmp/hook-receipts` record keyed by
+hook run id, prompt hash, and client session identity. Replaying the same stable
+session turn reuses the first verified preflight instead of creating a second
+task. The PowerShell wrapper drains child output asynchronously and emits a
+visible fail-closed response when preflight exceeds its bounded timeout.
 
 ## Commands
 
 ```powershell
 npm run build
 npm run hook:verify
+npm run prompt:eligibility:verify
 npm run verify:codex-loop
 npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
@@ -117,6 +131,11 @@ It writes:
 - `80_Review_Queue/promotion/<candidate_id>.json`
 - `.dino/events/<date>.jsonl`
 - `reports/live-hooks/<hook-run>.json`
+
+Durable user tasks include a lease id, owner id, heartbeat time, and expiry.
+The injected protocol passes the lease id back to `finish_task`; long-running
+work renews it with `heartbeat_task`. Internal and diagnostic launches write
+only bounded local diagnostics and receipts, never the durable paths above.
 
 The `reports/` directory is local-only and ignored by git.
 

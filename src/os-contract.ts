@@ -33,6 +33,7 @@ export const REQUIRED_OS_TOOLS = [
   "finish_task",
   "get_context_pack",
   "git_sync",
+  "heartbeat_task",
   "import_session",
   "os_begin_task",
   "os_gate",

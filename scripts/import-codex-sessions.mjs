@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { appendFileWithLockSync, atomicWriteJsonSync, atomicWriteTextSync } from "./lib/atomic-files-sync.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -191,13 +192,13 @@ function ensureDirFor(file) {
 function writeJson(relativePath, value) {
   const full = path.join(dataRoot, ...relativePath.split("/"));
   ensureDirFor(full);
-  writeFileSync(full, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  atomicWriteJsonSync(full, value);
 }
 
 function writeText(relativePath, value) {
   const full = path.join(dataRoot, ...relativePath.split("/"));
   ensureDirFor(full);
-  writeFileSync(full, value, "utf8");
+  atomicWriteTextSync(full, value);
 }
 
 function existingArchiveHash(relativePath) {
@@ -336,7 +337,7 @@ if (write) {
   writeJson(reportPath, report);
   const eventFull = path.join(dataRoot, ...eventPath.split("/"));
   ensureDirFor(eventFull);
-  writeFileSync(
+  appendFileWithLockSync(
     eventFull,
     `${JSON.stringify({
       event: "codex_sessions_registered",
@@ -352,7 +353,6 @@ if (write) {
       message_content_stored: false,
       candidate_count: 0,
     })}\n`,
-    { encoding: "utf8", flag: "a" },
   );
 }
 

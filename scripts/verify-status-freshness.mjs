@@ -100,7 +100,10 @@ async function main() {
     await seedVault(dataRoot);
     await refreshAllRequiredArtifacts(dataRoot);
     let status = await buildStatusFreshness(dataRoot, { staleAfterMs: 0 });
-    assert(status.status === "healthy", `expected healthy freshness, got ${status.status}`);
+    assert(
+      status.status === "healthy",
+      `expected healthy freshness, got ${status.status}: ${JSON.stringify(status.checks.filter((check) => check.status !== "fresh"))}`,
+    );
     assert(status.counts.missing === 0, "fresh vault should not have missing required artifacts");
     assert(status.checks.every((check) => check.visible_status), "visible status labels missing");
     assert(status.checks.some((check) => check.id === "health_status"), "health status freshness check missing");

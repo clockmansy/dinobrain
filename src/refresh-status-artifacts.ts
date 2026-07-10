@@ -14,9 +14,12 @@ import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag
 import { buildAndWriteRagProof } from "./rag-proof.js";
 import { buildAndWriteReleaseManifestReport, RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import { settleReviewQueueActions } from "./review-settlement.js";
+import { buildReviewWorklist } from "./review-worklist.js";
+import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { buildAndWriteSourceLineageReport } from "./source-lineage.js";
 import { buildAndWriteSqliteShards, SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { buildAndWriteStatusFreshness } from "./status-freshness.js";
+import { publishStatusGeneration, STATUS_GENERATION_POINTER_RELATIVE_PATH } from "./status-generation.js";
 import { buildAndWriteTaskLifecycleReport } from "./task-lifecycle.js";
 import { settleTaskLifecycle } from "./task-lifecycle-settlement.js";
 import { buildAndWriteWikiIndex, WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
@@ -42,23 +45,22 @@ export async function refreshStatusArtifacts(
   visible_status: string;
   counts: Record<string, number>;
   warnings: string[];
+  status_generation_id: string;
+  status_generation_pointer_path: string;
 }> {
   const taskStaleAfterMs = options.taskStaleAfterMs ?? 24 * 60 * 60 * 1000;
   const steps: RefreshStatusArtifactStep[] = [];
-
-  await buildAndWriteWikiIndex(dataRoot);
-  steps.push({ id: "wiki_index", status: "written", path: WIKI_INDEX_RELATIVE_PATH });
-
-  await buildAndWriteOperationsIndex(dataRoot);
-  steps.push({ id: "operations_index", status: "written", path: OPERATIONS_INDEX_RELATIVE_PATH });
-
-  await buildAndWriteSqliteShards(dataRoot);
-  steps.push({ id: "sqlite_manifest", status: "written", path: SQLITE_MANIFEST_RELATIVE_PATH });
 
   const review = await settleReviewQueueActions(dataRoot);
   steps.push({ id: "review_queue_settlement", status: review.review.status, path: review.reviewPath });
   steps.push({ id: "semantic_jobs", status: review.semantic.status, path: review.semanticPath });
   steps.push({ id: "review_queue_settlement_actions", status: review.actions.status, path: review.actionsPath });
+
+  const reviewWorklist = await buildReviewWorklist(dataRoot);
+  steps.push({ id: "review_worklist", status: reviewWorklist.report.status, path: reviewWorklist.statePath });
+
+  const reviewActions = await buildReviewWorklistActions(dataRoot);
+  steps.push({ id: "review_worklist_actions", status: reviewActions.report.status, path: reviewActions.statePath });
 
   const lifecycle = await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: taskStaleAfterMs });
   steps.push({ id: "task_lifecycle", status: lifecycle.report.status, path: lifecycle.statusPath });
@@ -69,6 +71,15 @@ export async function refreshStatusArtifacts(
     status: lifecycleSettlement.report.status,
     path: lifecycleSettlement.statusPath,
   });
+
+  await buildAndWriteWikiIndex(dataRoot);
+  steps.push({ id: "wiki_index", status: "written", path: WIKI_INDEX_RELATIVE_PATH });
+
+  await buildAndWriteOperationsIndex(dataRoot);
+  steps.push({ id: "operations_index", status: "written", path: OPERATIONS_INDEX_RELATIVE_PATH });
+
+  await buildAndWriteSqliteShards(dataRoot);
+  steps.push({ id: "sqlite_manifest", status: "written", path: SQLITE_MANIFEST_RELATIVE_PATH });
 
   const ragProof = await buildAndWriteRagProof(dataRoot);
   steps.push({ id: "rag_proof", status: ragProof.report.status, path: ragProof.statusPath });
@@ -121,6 +132,13 @@ export async function refreshStatusArtifacts(
   const freshness = await buildAndWriteStatusFreshness(dataRoot);
   steps.push({ id: "status_freshness", status: freshness.report.status, path: freshness.path });
 
+  const generation = await publishStatusGeneration(dataRoot);
+  steps.push({
+    id: "status_generation",
+    status: generation.pointer.status,
+    path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
+  });
+
   const auditOk = !["drift_unclassified", "parse_error"].includes(audit.report.status);
 
   return {
@@ -131,6 +149,8 @@ export async function refreshStatusArtifacts(
     visible_status: freshness.report.visible_status,
     counts: freshness.report.counts,
     warnings: [...freshness.report.warnings, ...(auditOk ? [] : ["full_memory_audit_not_cleanly_classified"])],
+    status_generation_id: generation.pointer.generation_id,
+    status_generation_pointer_path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
   };
 }
 
@@ -150,6 +170,8 @@ async function main(): Promise<void> {
         visible_status: result.visible_status,
         counts: result.counts,
         warnings: result.warnings,
+        status_generation_id: result.status_generation_id,
+        status_generation_pointer_path: result.status_generation_pointer_path,
         steps: result.steps,
       },
       null,

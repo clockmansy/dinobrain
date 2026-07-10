@@ -133,6 +133,7 @@ try {
       name: "finish_task",
       arguments: {
         task_id: begin.task_id,
+        lease_id: begin.lease?.lease_id,
         summary:
           "Verified release parity rules and pushed installer work only after exact local/remote ref checks.",
         outcome: "completed",
@@ -201,7 +202,9 @@ try {
   );
   assert(
     laterPack.items.some((item) => item.path === reviewedParity.accepted_path),
-    "later Context Pack did not retrieve the reviewed behavior rule",
+    `later Context Pack did not retrieve the reviewed behavior rule: expected=${reviewedParity.accepted_path} actual=${laterPack.items
+      .map((item) => item.path)
+      .join(",")}`,
   );
 
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {

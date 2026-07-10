@@ -70,9 +70,10 @@ function command(
 
 export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("build", [...HARD_GATE_IDS], { timeout_ms: LONG_TIMEOUT_MS }),
-  command("status:refresh", ["HG-03", "HG-04", "HG-05", "HG-06", "HG-07", "HG-08", "HG-10", "HG-12"], {
-    timeout_ms: LONG_TIMEOUT_MS,
-  }),
+  command("completion:audit:verify", ["HG-08", "HG-10", "HG-12"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("atomic:writers:verify", ["HG-03", "HG-10"]),
+  command("status:generation:verify", ["HG-08", "HG-10", "HG-12"]),
+  command("prompt:eligibility:verify", ["HG-01", "HG-03", "HG-06"]),
   command("audit:full-memory", ["HG-09", "HG-10", "HG-12"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("status:freshness:verify", ["HG-08", "HG-12"]),
   command("index:verify:operations", ["HG-03", "HG-10"]),
@@ -134,12 +135,22 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
       environment: { DINOBRAIN_CONCURRENCY_CLIENTS: "24", DINOBRAIN_CONCURRENCY_RUN: String(run) },
     }),
   ),
+  command("status:refresh", ["HG-03", "HG-04", "HG-05", "HG-06", "HG-07", "HG-08", "HG-10", "HG-12"], {
+    timeout_ms: LONG_TIMEOUT_MS,
+  }),
   command("verify:goal", ["HG-12"], { timeout_ms: LONG_TIMEOUT_MS, final: true }),
 ];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
+  {
+    id: "current_status_generation",
+    relative_path: ".dino/state/current-status-generation.json",
+    kind: "json",
+    gates: ["HG-08", "HG-10", "HG-12"],
+    accepted_statuses: ["published"],
+  },
   {
     id: "client_mcp_direct_status",
     relative_path: ".dino/state/client_mcp_direct_status.json",

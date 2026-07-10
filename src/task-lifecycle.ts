@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { atomicWriteJson, atomicWriteText } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
+import { classifyPromptLaunch } from "./prompt-eligibility.js";
 
 export const TASK_LIFECYCLE_VERSION = "task_lifecycle_v1";
 export const TASK_LIFECYCLE_STATUS_RELATIVE_PATH = ".dino/state/task_sessions.json";
@@ -34,10 +35,19 @@ export type TaskLifecycleSession = {
   task_id: string;
   task_path: string | null;
   trace_path: string | null;
+  task_sha256: string | null;
+  trace_sha256: string | null;
   status: string;
   lifecycle_state: LifecycleState;
   terminal_state: string | null;
   prompt_hash: string | null;
+  prompt_classification: string | null;
+  prompt_durable_task_eligible: boolean | null;
+  lease_id: string | null;
+  lease_owner_id: string | null;
+  lease_expires_at: string | null;
+  lease_expired: boolean;
+  terminal_owner_id: string | null;
   created_at: string | null;
   updated_at: string | null;
   finished_at: string | null;
@@ -77,6 +87,7 @@ export type TaskLifecycleReport = {
     traces: number;
     active: number;
     stale_active: number;
+    expired_leases: number;
     terminal: number;
     terminal_missing_trace: number;
     trace_without_task: number;
@@ -88,6 +99,7 @@ export type TaskLifecycleReport = {
     manual_repair_required: number;
   };
   by_decision_class: Record<LifecycleDecisionClass, number>;
+  by_prompt_classification: Record<string, number>;
   sessions: TaskLifecycleSession[];
   grounding_records: FinishGroundingRecord[];
   warnings: string[];
@@ -118,6 +130,10 @@ function sha256Short(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
+function sha256Full(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function isTerminalStatus(status: string): boolean {
   return ["completed", "partial", "blocked"].includes(status.toLowerCase());
 }
@@ -137,7 +153,10 @@ async function readJson<T>(filePath: string): Promise<T | null> {
   }
 }
 
-async function readJsonDir(dataRoot: string, relativeDir: string): Promise<Array<{ path: string; record: JsonObject }>> {
+async function readJsonDir(
+  dataRoot: string,
+  relativeDir: string,
+): Promise<Array<{ path: string; record: JsonObject; sha256: string }>> {
   const dir = dataPath(dataRoot, relativeDir);
   let entries: Array<import("node:fs").Dirent>;
   try {
@@ -146,12 +165,13 @@ async function readJsonDir(dataRoot: string, relativeDir: string): Promise<Array
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const records: Array<{ path: string; record: JsonObject }> = [];
+  const records: Array<{ path: string; record: JsonObject; sha256: string }> = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     const fullPath = path.join(dir, entry.name);
-    const record = await readJson<JsonObject>(fullPath);
-    if (record) records.push({ path: relDataPath(dataRoot, fullPath), record });
+    const raw = await fs.readFile(fullPath, "utf8");
+    const record = JSON.parse(raw) as JsonObject;
+    records.push({ path: relDataPath(dataRoot, fullPath), record, sha256: sha256Full(raw) });
   }
   return records.sort((a, b) => a.path.localeCompare(b.path));
 }
@@ -205,6 +225,7 @@ function nextActionFor(issueCodes: string[], lifecycleState: LifecycleState): st
   if (issueCodes.includes("trace_task_id_mismatch")) return "Repair or quarantine the trace whose task_id does not match its task record.";
   if (issueCodes.includes("terminal_task_missing_trace")) return "Reconstruct or mark the terminal task trace before using it as finish evidence.";
   if (issueCodes.includes("trace_without_task")) return "Link the trace to a task record or archive it as orphaned operational history.";
+  if (issueCodes.includes("expired_task_lease")) return "Renew the task lease with its owner or close it as abandoned with explicit evidence.";
   if (issueCodes.includes("stale_active_task")) return "Auto-close with an explicit reason or finish the task with grounded terminal evidence.";
   if (issueCodes.includes("ungrounded_finish")) return "Add summary and evidence paths or reclassify the finish as partial/blocked.";
   if (issueCodes.includes("partial_grounding")) return "Add context, memory, artifact, decision, or next-step evidence before claiming strong completion.";
@@ -215,7 +236,17 @@ function nextActionFor(issueCodes: string[], lifecycleState: LifecycleState): st
 function looksLikeDiagnosticProbe(task: JsonObject): boolean {
   const request = firstString(task.request).toLowerCase();
   const project = firstString(task.project).toLowerCase();
+  const classification = firstString(task.prompt_classification);
+  const derived = classifyPromptLaunch({
+    request,
+    launchKind: firstString(task.launch_kind, "direct_mcp"),
+    surface: firstString(task.prompt_surface),
+    taskType: firstString(task.task_type),
+    source: firstString(task.launch_source),
+  });
   return (
+    ["internal_codex_service", "ambient_suggestion", "title_generation", "diagnostic_probe"].includes(classification) ||
+    !derived.durable_task_eligible ||
     request.includes("dinobrain live codex hook diagnostic probe") ||
     request.includes("manual hook env test") ||
     project.includes("hook-diagnose")
@@ -229,7 +260,7 @@ function decisionClassFor(task: JsonObject | null, issueCodes: string[], lifecyc
   if (issueCodes.includes("ungrounded_finish") || issueCodes.includes("partial_grounding")) {
     return "finish_grounding_repair_required";
   }
-  if (issueCodes.includes("stale_active_task")) {
+  if (issueCodes.includes("stale_active_task") || issueCodes.includes("expired_task_lease")) {
     return task && looksLikeDiagnosticProbe(task) ? "auto_close_candidate" : "manual_stale_review_required";
   }
   if (lifecycleState === "active") return "recent_active";
@@ -273,16 +304,33 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     const tracePath = firstString(task.record.trace_path);
     const traceEntry = tracePath ? traces.find((entry) => entry.path === tracePath) ?? null : traceByTaskId.get(taskId) ?? null;
     const trace = traceEntry?.record ?? null;
+    const promptEligibility = classifyPromptLaunch({
+      request: firstString(task.record.request),
+      launchKind: firstString(task.record.launch_kind, "direct_mcp"),
+      surface: firstString(task.record.prompt_surface),
+      taskType: firstString(task.record.task_type),
+      source: firstString(task.record.launch_source),
+    });
+    const promptClassification = firstString(task.record.prompt_classification, promptEligibility.classification) || null;
     const createdAt = firstString(task.record.created_at) || null;
     const updatedAt = firstString(task.record.updated_at, task.record.finished_at, task.record.created_at) || null;
     const finishedAt = firstString(task.record.finished_at, trace?.finished_at) || null;
+    const lease = task.record.lease && typeof task.record.lease === "object" && !Array.isArray(task.record.lease)
+      ? (task.record.lease as JsonObject)
+      : null;
+    const leaseId = firstString(lease?.lease_id) || null;
+    const leaseOwnerId = firstString(lease?.owner_id) || null;
+    const leaseExpiresAt = firstString(lease?.expires_at) || null;
+    const leaseExpiresMs = parseTime(leaseExpiresAt);
+    const leaseExpired = status === "started" && leaseExpiresMs !== null && now.getTime() > leaseExpiresMs;
     const updatedMs = parseTime(updatedAt);
     const staleAgeMs = status === "started" && updatedMs !== null ? now.getTime() - updatedMs : null;
-    const isStale = status === "started" && staleAgeMs !== null && staleAgeMs > staleAfterMs;
+    const isStale = status === "started" && ((staleAgeMs !== null && staleAgeMs > staleAfterMs) || leaseExpired);
     const traceExists = await exists(dataRoot, tracePath || traceEntry?.path || null);
     const issueCodes: string[] = [];
     let lifecycleState: LifecycleState = isStale ? "stale_active" : status === "started" ? "active" : "terminal";
     if (isStale) issueCodes.push("stale_active_task");
+    if (leaseExpired) issueCodes.push("expired_task_lease");
     if (isTerminalStatus(status) && (!tracePath || !traceExists)) {
       lifecycleState = "terminal_missing_trace";
       issueCodes.push("terminal_task_missing_trace");
@@ -300,10 +348,19 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       task_id: taskId,
       task_path: task.path,
       trace_path: tracePath || traceEntry?.path || null,
+      task_sha256: task.sha256,
+      trace_sha256: traceEntry?.sha256 ?? null,
       status,
       lifecycle_state: lifecycleState,
       terminal_state: isTerminalStatus(status) ? status : null,
       prompt_hash: firstString(task.record.prompt_hash) || (firstString(task.record.request) ? sha256Short(firstString(task.record.request)) : null),
+      prompt_classification: promptClassification,
+      prompt_durable_task_eligible: promptEligibility.durable_task_eligible,
+      lease_id: leaseId,
+      lease_owner_id: leaseOwnerId,
+      lease_expires_at: leaseExpiresAt,
+      lease_expired: leaseExpired,
+      terminal_owner_id: firstString(task.record.terminal_owner_id, trace?.terminal_owner_id) || null,
       created_at: createdAt,
       updated_at: updatedAt,
       finished_at: finishedAt,
@@ -332,10 +389,19 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       task_id: taskId,
       task_path: null,
       trace_path: trace.path,
+      task_sha256: null,
+      trace_sha256: trace.sha256,
       status: "orphan_trace",
       lifecycle_state: "trace_without_task",
       terminal_state: firstString(trace.record.outcome) || null,
       prompt_hash: null,
+      prompt_classification: null,
+      prompt_durable_task_eligible: null,
+      lease_id: null,
+      lease_owner_id: null,
+      lease_expires_at: null,
+      lease_expired: false,
+      terminal_owner_id: firstString(trace.record.terminal_owner_id) || null,
       created_at: null,
       updated_at: firstString(trace.record.finished_at) || null,
       finished_at: firstString(trace.record.finished_at) || null,
@@ -368,7 +434,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     }));
   const blockerSessions = sessions.filter((session) =>
     session.issue_codes.some((issue) =>
-      ["stale_active_task", "terminal_task_missing_trace", "trace_task_id_mismatch", "trace_without_task", "ungrounded_finish"].includes(issue),
+      ["stale_active_task", "expired_task_lease", "terminal_task_missing_trace", "trace_task_id_mismatch", "trace_without_task", "ungrounded_finish"].includes(issue),
     ),
   );
   const status = blockerSessions.length > 0 ? "needs_attention" : "healthy";
@@ -388,6 +454,14 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       sessions.filter((session) => session.decision_class === decisionClass).length,
     ]),
   ) as Record<LifecycleDecisionClass, number>;
+  const byPromptClassification = Object.fromEntries(
+    Array.from(new Set(sessions.map((session) => session.prompt_classification ?? "unclassified")))
+      .sort()
+      .map((classification) => [
+        classification,
+        sessions.filter((session) => (session.prompt_classification ?? "unclassified") === classification).length,
+      ]),
+  );
   return {
     version: TASK_LIFECYCLE_VERSION,
     status,
@@ -399,6 +473,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       traces: traces.length,
       active: sessions.filter((session) => session.lifecycle_state === "active").length,
       stale_active: sessions.filter((session) => session.lifecycle_state === "stale_active").length,
+      expired_leases: sessions.filter((session) => session.lease_expired).length,
       terminal: sessions.filter((session) => session.lifecycle_state === "terminal").length,
       terminal_missing_trace: sessions.filter((session) => session.lifecycle_state === "terminal_missing_trace").length,
       trace_without_task: sessions.filter((session) => session.lifecycle_state === "trace_without_task").length,
@@ -410,6 +485,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       manual_repair_required: sessions.filter((session) => isManualRepairDecision(session.decision_class)).length,
     },
     by_decision_class: byDecisionClass,
+    by_prompt_classification: byPromptClassification,
     sessions: sessions.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.task_id.localeCompare(b.task_id)),
     grounding_records: groundingRecords,
     warnings: status === "healthy" ? [] : ["task_lifecycle_finish_gate_attention_required"],

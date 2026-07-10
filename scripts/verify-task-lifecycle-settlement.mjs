@@ -93,6 +93,10 @@ async function main() {
     assert(settlement.report.counts.finish_gate_repairs_before === 3, "dry-run repair count mismatch");
     assert(settlement.report.counts.auto_close_applied === 0, "dry-run unexpectedly applied changes");
     assert(settlement.report.counts.finish_gate_repairs_applied === 0, "dry-run unexpectedly repaired tasks");
+    const dryRunDiagnostic = settlement.report.actions.find((action) => action.task_id === "task-diagnostic");
+    assert(dryRunDiagnostic?.prompt_classification === "diagnostic_probe", "dry-run omitted prompt classification");
+    assert(/^[a-f0-9]{64}$/.test(dryRunDiagnostic?.task_sha256_before ?? ""), "dry-run omitted task SHA-256");
+    assert(dryRunDiagnostic?.task_sha256_after === null, "dry-run should not record an after hash");
     assert(existsSync(path.join(dataRoot, TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH)), "settlement report missing");
     assert(!existsSync(path.join(dataRoot, ".dino", "traces", "task-diagnostic.json")), "dry-run wrote trace");
 
@@ -107,6 +111,9 @@ async function main() {
     assert(settlement.report.counts.auto_close_candidates_after === 0, "auto-close candidates remained after apply");
     assert(settlement.report.counts.finish_gate_repairs_after === 0, "repairable finish-gate tasks remained after apply");
     assert(settlement.report.counts.manual_repair_required_after === 0, "manual repair task should be resolved");
+    const appliedDiagnostic = settlement.report.actions.find((action) => action.task_id === "task-diagnostic");
+    assert(/^[a-f0-9]{64}$/.test(appliedDiagnostic?.task_sha256_after ?? ""), "apply omitted task after SHA-256");
+    assert(/^[a-f0-9]{64}$/.test(appliedDiagnostic?.trace_sha256_after ?? ""), "apply omitted trace after SHA-256");
 
     const diagnosticTask = readJson(path.join(dataRoot, ".dino", "tasks", "task-diagnostic.json"));
     const manualTask = readJson(path.join(dataRoot, ".dino", "tasks", "task-manual.json"));

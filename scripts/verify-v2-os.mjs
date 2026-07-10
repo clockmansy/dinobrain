@@ -393,6 +393,7 @@ try {
       name: "finish_task",
       arguments: {
         task_id: begin.task_id,
+        lease_id: begin.lease?.lease_id,
         summary: "Verified DinoBrain OS v2 mandatory pre-response context, gates, provenance, feedback, lifecycle, and behavior eval.",
         outcome: "completed",
         changed_files: ["scripts/verify-v2-os.mjs"],

@@ -24,6 +24,8 @@ npm run version:verify
 npm run completion:audit:verify
 npm run completion:audit -- --plan-only --allow-not-complete
 npm run atomic:writers:verify
+npm run status:generation:verify
+npm run prompt:eligibility:verify
 npm run smoke
 npm run audit:full-memory
 npm run audit:full-memory:verify

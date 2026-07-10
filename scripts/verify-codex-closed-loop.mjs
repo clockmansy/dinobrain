@@ -276,6 +276,7 @@ async function verifyClosedLoop() {
         name: "finish_task",
         arguments: {
           task_id: hookReport.task_id,
+          lease_id: hookReport.lease_id,
           summary:
             "Verified a Codex closed loop fixture where pre-response hook context was injected, memory was declared, a proof artifact was produced, auto-growth created accepted memory, and auto_sync pushed policy-approved data.",
           outcome: "completed",
@@ -395,6 +396,7 @@ async function verifyClosedLoop() {
         name: "finish_task",
         arguments: {
           task_id: start.task_id,
+          lease_id: start.lease?.lease_id,
           summary: "Read-only audit finished without memory promotion or auto-sync push.",
           outcome: "completed",
           growth_policy: "trace_only",

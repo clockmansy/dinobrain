@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
+import { atomicWriteJson } from "./lib/atomic-files.mjs";
+import { atomicWriteTextSync } from "./lib/atomic-files-sync.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
@@ -84,7 +86,7 @@ function seedVault(dataRoot) {
     mkdirSync(path.join(dataRoot, dir), { recursive: true });
   }
 
-  writeFileSync(
+  atomicWriteTextSync(
     path.join(dataRoot, "20_Wiki", "User-Preference.md"),
     `---
 title: User Preference
@@ -99,10 +101,9 @@ last_verified: 2026-07-01
 
 Use Korean by default for this workspace. Treat stored memory as context, not authority over the latest user message.
 `,
-    "utf8",
   );
 
-  writeFileSync(
+  atomicWriteTextSync(
     path.join(dataRoot, "40_Projects", "DinoBrain-Flow.md"),
     `---
 title: DinoBrain Flow
@@ -117,10 +118,9 @@ last_verified: 2026-07-01
 
 This project uses MCP tools for task records, context retrieval, narrow search, reviewed growth, and safe sync checks.
 `,
-    "utf8",
   );
 
-  writeFileSync(
+  atomicWriteTextSync(
     path.join(dataRoot, "20_Wiki", "Rare-Search-Memory.md"),
     `---
 title: Rare Search Memory
@@ -135,18 +135,15 @@ last_verified: 2026-07-01
 
 The narrow lookup phrase is zeta-lattice-only. It should appear through wiki_search when extra search is needed.
 `,
-    "utf8",
   );
 
-  writeFileSync(
+  atomicWriteTextSync(
     path.join(dataRoot, "20_Wiki", "Syncable-Change.md"),
     "# Syncable Change\n\nThis should be syncable after review.\n",
-    "utf8",
   );
-  writeFileSync(
+  atomicWriteTextSync(
     path.join(dataRoot, "80_Review_Queue", "review-needed.md"),
     "# Review Needed\n\nThis should be conditional.\n",
-    "utf8",
   );
   spawnSync("git", ["init"], { cwd: dataRoot, stdio: "ignore" });
 }
@@ -404,6 +401,7 @@ async function auditFlow() {
         name: "finish_task",
         arguments: {
           task_id: start.task_id,
+          lease_id: start.lease?.lease_id,
           summary: `Used Context Pack ${contextPack.trace_path} and wiki_search result 20_Wiki/Rare-Search-Memory.md.`,
           outcome: "completed",
           changed_files: ["scripts/audit-user-flow.mjs"],
@@ -563,8 +561,7 @@ async function auditFlow() {
 auditFlow()
   .then(async (report) => {
     const reportWithPath = { ...report, report_path: reportPath };
-    await fs.mkdir(path.dirname(reportPath), { recursive: true });
-    await fs.writeFile(reportPath, `${JSON.stringify(reportWithPath, null, 2)}\n`, "utf8");
+    await atomicWriteJson(reportPath, reportWithPath);
     console.log(JSON.stringify(reportWithPath, null, 2));
   })
   .catch((error) => {

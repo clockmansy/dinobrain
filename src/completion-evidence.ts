@@ -16,6 +16,8 @@ import {
   type HardGateId,
 } from "./completion-registry.js";
 import { DINOBRAIN_VERSION_MANIFEST } from "./version.js";
+import { loadCurrentStatusGeneration } from "./status-generation.js";
+import { refreshStatusArtifacts } from "./refresh-status-artifacts.js";
 
 const execFileAsync = promisify(execFile);
 const COMPLETION_AUDIT_VERSION = "completion_audit_v1";
@@ -683,10 +685,26 @@ export async function runCompletionAudit(options: CompletionAuditOptions): Promi
     for (const line of (await fs.readFile(candidate, "utf8")).split(/\r?\n/).filter(Boolean)) JSON.parse(line);
   });
 
+  // A full run writes its own command ledger after the public status-refresh
+  // command. Rebuild once more so the final evidence generation includes that
+  // ledger and no later command can make the published read model stale.
+  if (!selected) await refreshStatusArtifacts(dataRoot);
+
   const identity = await captureIdentity(appRoot, dataRoot, [`.dino/audits/completion/${auditRunId}`]);
   const artifactEntries = await Promise.all(
     COMPLETION_ARTIFACTS.map((spec) => inspectArtifact({ spec, dataRoot, auditStartedAt: startedAt, now: now() })),
   );
+  const statusGeneration = await loadCurrentStatusGeneration(dataRoot, {
+    verifyEntries: true,
+    verifySourceCoherence: true,
+  });
+  const statusGenerationArtifact = artifactEntries.find((entry) => entry.artifact_id === "current_status_generation");
+  if (statusGenerationArtifact && statusGeneration.status !== "healthy") {
+    statusGenerationArtifact.status = statusGeneration.status === "missing" ? "BLOCKED" : "FAIL";
+    statusGenerationArtifact.fresh = false;
+    statusGenerationArtifact.reason = `status_generation_${statusGeneration.reason ?? "invalid"}`;
+    if (statusGeneration.status === "invalid") statusGenerationArtifact.parse_status = "invalid";
+  }
   for (const result of commandResults) {
     artifactEntries.push(
       await inspectRecordedFile({

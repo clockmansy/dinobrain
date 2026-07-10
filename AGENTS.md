@@ -8,7 +8,8 @@
 - If neither injected preflight context nor DinoBrain MCP preflight is available for nontrivial work, stop before substantive work and report the session as degraded/fail-closed.
 - Current user instructions always outrank stored DinoBrain memory.
 - Use `wiki_search` only when the initial Context Pack is not enough and the needed memory can be searched narrowly.
-- At completion, call `finish_task` with the active `task_id`, summary, changed files, decisions, next steps, every Context Pack trace path, and the memory paths actually used from the pack.
+- At completion, call `finish_task` with the active `task_id`, its `lease_id` when present, summary, changed files, decisions, next steps, every Context Pack trace path, and the memory paths actually used from the pack.
+- For work that outlives the task lease window, call `heartbeat_task` with the active `task_id` and `lease_id` before the lease expires.
 - For read-only audits or review-only work, call `finish_task` with `growth_policy: "trace_only"` so the trace is recorded without auto-growth, compounding, or auto-sync push.
 
 ## Evidence And Safety

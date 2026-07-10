@@ -86,7 +86,13 @@ function Get-HookLauncherProvenance {
     if ($null -ne $grandparent) { $grandparent.command_line }
   ) -join " "
 
-  $derivedLaunchKind = if ($parentText -match "(?i)(^|[\\\s])codex(\.exe)?([\\\s]|$)|OpenAI[\\/]Codex") { "codex_desktop" } else { "manual_probe" }
+  $derivedLaunchKind = if ($parentText -match "(?i)(^|[\\\s])codex(\.exe)?([\\\s]|$)|OpenAI[\\/]Codex") {
+    "codex_desktop"
+  } elseif ($parentText -match "(?i)(^|[\\\s])claude(\.exe)?([\\\s]|$)|Claude Code") {
+    "claude_code"
+  } else {
+    "manual_probe"
+  }
   $requestedLaunchKind = $env:DINOBRAIN_HOOK_LAUNCH_KIND
   $launchKind = $derivedLaunchKind
   $launchKindOverrideIgnored = $false
@@ -137,16 +143,36 @@ try {
   $oldLaunchProvenance = $env:DINOBRAIN_HOOK_LAUNCH_PROVENANCE
   $env:DINOBRAIN_REPO_ROOT = $repoRoot
   $env:DINOBRAIN_HOOK_LAUNCH_PROVENANCE = Get-HookLauncherProvenance
+  $timeoutSeconds = 28
+  if ($env:DINOBRAIN_HOOK_TIMEOUT_SECONDS) {
+    $parsedTimeout = 0
+    if ([int]::TryParse($env:DINOBRAIN_HOOK_TIMEOUT_SECONDS, [ref]$parsedTimeout)) {
+      $timeoutSeconds = [Math]::Max(1, [Math]::Min(120, $parsedTimeout))
+    }
+  }
+  $timedOut = $false
   try {
     $process = [System.Diagnostics.Process]::Start($processInfo)
     $process.StandardInput.Write($inputText)
     $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+      $timedOut = $true
+      try { $process.Kill() } catch {}
+      try { $process.WaitForExit(5000) | Out-Null } catch {}
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
   } finally {
     if ($null -eq $oldRepoRoot) { Remove-Item Env:\DINOBRAIN_REPO_ROOT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_REPO_ROOT = $oldRepoRoot }
     if ($null -eq $oldLaunchProvenance) { Remove-Item Env:\DINOBRAIN_HOOK_LAUNCH_PROVENANCE -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_HOOK_LAUNCH_PROVENANCE = $oldLaunchProvenance }
+  }
+
+  if ($timedOut) {
+    $message = "DinoBrain OS preflight timed out after $timeoutSeconds seconds."
+    [Console]::Out.WriteLine((New-HookJson ($message + " FAIL-CLOSED: do not perform substantial work because no verified DinoBrain Context Pack was injected for this turn. Start a new trusted session after repairing the hook/MCP runtime.") -Block -Reason $message))
+    exit 0
   }
 
   if (-not $stdout) {

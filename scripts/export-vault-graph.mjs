@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { atomicWriteJson, atomicWriteText } from "./lib/atomic-files.mjs";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(appRoot, "..", "dinobrain-data"));
@@ -646,9 +647,9 @@ ${nodeCircles}
 async function main() {
   const graph = await buildGraph();
   await fs.mkdir(outDir, { recursive: true });
-  await fs.writeFile(jsonPath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
-  await fs.writeFile(htmlPath, renderHtml(graph), "utf8");
-  await fs.writeFile(svgPath, renderSvg(graph), "utf8");
+  await atomicWriteJson(jsonPath, graph);
+  await atomicWriteText(htmlPath, renderHtml(graph));
+  await atomicWriteText(svgPath, renderSvg(graph));
   console.log(
     JSON.stringify(
       {

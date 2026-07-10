@@ -387,7 +387,7 @@ export function rootIntentsForQuery(query: string): string[] {
     ["40_Projects/", /\b(project|projects|handoff|implementation|constraints|state|installer|release|version|new pc|roadmap)\b/],
     [
       "50_Instances/accepted/",
-      /\b(instance|instances|accepted|confidence|memory|preference|rule|lesson|goal|behavior|session knowledge|criteria|criterion|standard|equivalence|quality|direction|compounding|observability|release drift|risk)\b/,
+      /\b(instance|instances|accepted|confidence|memory|preference|rule|lesson|goal|behavior|session knowledge|criteria|criterion|standard|equivalence|quality|direction|compounding|observability|release drift|risk|completion|reporting)\b/,
     ],
     ["60_Operations/", /\b(operation|operations|runbook|runbooks|policy|policies|maintenance|sync|vault)\b/],
     ["70_Error_Book/", /\b(error|mistake|mistakes|correction|corrections|prevention)\b/],

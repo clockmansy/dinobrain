@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const { publishStatusGeneration, STATUS_GENERATION_ARTIFACT_PATHS } = await import(
+  pathToFileURL(path.join(root, "dist", "status-generation.js")).href
+);
 const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-observatory-graph-"));
 const port = 3900 + Math.floor(Math.random() * 400);
 
@@ -299,6 +302,11 @@ tags: [context-pack]
   });
 
   await run(process.execPath, [path.join(root, "dist", "build-sqlite-shards.js")]);
+  await publishStatusGeneration(dataRoot, {
+    artifactPaths: STATUS_GENERATION_ARTIFACT_PATHS.filter((relativePath) =>
+      existsSync(path.join(dataRoot, ...relativePath.split("/"))),
+    ),
+  });
   const server = spawn(process.execPath, [path.join(root, "scripts", "dinobrain-observatory.mjs"), `--port=${port}`], {
     cwd: root,
     env: { ...process.env, DINOBRAIN_DATA_DIR: dataRoot },
@@ -370,16 +378,17 @@ tags: [context-pack]
     assert(html.includes("memory links"), "UI does not include memory link statistics");
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
     assert(html.includes("readiness-audit-paths"), "UI does not include audit path container");
+    const graphHealth = await fetch(`http://127.0.0.1:${port}/api/graph-health`).then((response) => response.json());
+    assert(graphHealth.ok === true && typeof graphHealth.score === "number", "Graph health endpoint did not return health");
     writeFileSync(path.join(dataRoot, ".dino", "state", "native_instruction_authority.json"), "{ bad json\n", "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const invalidReadiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(
       invalidReadiness.lanes.blockers.some(
-        (gate) => gate.id === "native_instruction_authority" && gate.artifact_parse_status === "invalid_json",
+        (gate) => gate.id === "status_generation" && gate.blocker_reason === "source_generation_mismatch:.dino/state/native_instruction_authority.json",
       ),
-      "Invalid status JSON did not surface as readiness blocker",
+      "Canonical status drift did not invalidate the published generation",
     );
-    const graphHealth = await fetch(`http://127.0.0.1:${port}/api/graph-health`).then((response) => response.json());
-    assert(graphHealth.ok === true && typeof graphHealth.score === "number", "Graph health endpoint did not return health");
     console.log("observatory live graph verification ok");
   } finally {
     server.kill();
