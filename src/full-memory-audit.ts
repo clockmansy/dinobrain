@@ -131,7 +131,7 @@ function isIgnoredDirectory(name: string): boolean {
 
 function isIgnoredVaultDirectory(dataRoot: string, fullPath: string): boolean {
   const relative = relDataPath(dataRoot, fullPath);
-  return [".dino/tmp", ".dino/hook-locks", ".dino/cache"].some(
+  return [".dino/tmp", ".dino/locks", ".dino/hook-locks", ".dino/cache"].some(
     (prefix) => relative === prefix || relative.startsWith(`${prefix}/`),
   );
 }
@@ -287,10 +287,12 @@ function classifyDrift(vaultPath: string): DriftClass {
     normalized.startsWith(".dino/compounding/") ||
     normalized.startsWith(".dino/evaluations/") ||
     normalized.startsWith(".dino/generations/") ||
+    normalized.startsWith(".dino/migrations/") ||
     normalized.startsWith(".dino/index/") ||
     normalized.startsWith(".dino/provenance/") ||
     normalized.startsWith(".dino/quarantine/") ||
     normalized.startsWith(".dino/tmp/") ||
+    normalized.startsWith(".dino/locks/") ||
     normalized.startsWith(".dino/hook-locks/") ||
     normalized.startsWith(".dino/cache/") ||
     normalized.startsWith("10_Conversations/raw/") ||

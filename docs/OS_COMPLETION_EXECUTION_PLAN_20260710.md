@@ -327,9 +327,13 @@ proofs, and removing one tool or replaying a stale proof fails the gate.
 
 **Implement:**
 
-- snapshot the 543-task baseline and classify all 196 blockers;
-- apply the 18 deterministic auto-close actions only with before/after hashes;
-- reconstruct four terminal traces only when grounded evidence is sufficient;
+- retain the original 543-task/196-blocker/18-auto-close audit as a frozen
+  historical baseline, then recompute the live vault before every apply;
+- apply only current deterministic actions with per-file before/after hashes,
+  exact local backup, a Git recovery ref, and a hash-chained migration ledger;
+- distinguish a missing trace from a missing task-to-trace binding, bind an
+  existing grounded trace without rewriting it, and reconstruct a trace only
+  when no task-matched trace exists;
 - mark evidence-free stale tasks abandoned/blocked, never completed;
 - record an immutable migration ledger for every changed source task or trace;
 - enforce new invariants at write time so the backlog cannot recur.
@@ -337,6 +341,14 @@ proofs, and removing one tool or replaying a stale proof fails the gate.
 **Acceptance:** zero stale active tasks, zero terminal tasks missing traces, zero
 orphan/mismatched traces, zero ungrounded finishes, and no new blocker after a
 24-hour real-client soak.
+
+**Execution evidence (2026-07-10):** the live baseline was 548 tasks, 271
+traces, and 199 blockers. A 199-action migration reached zero blockers, an
+actual rollback restored 199 files and removed 177 generated traces with zero
+conflicts, and a second migration reapplied the same classification to a
+verified state. SQLite, graph, full-memory, Observatory, and public-data checks
+passed after rebuild. See `docs/TASK_LIFECYCLE_MIGRATION.md`. The 24-hour
+real-client soak remains pending, so LOOP-04 is not yet fully certified.
 
 ### Phase 2 - Memory Lifecycle And Knowledge Compounding (P0/P1, 5-8 engineer-days)
 

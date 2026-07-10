@@ -734,6 +734,7 @@ function hardGateFromArtifact({ id, label, artifact, expectedStatuses = ["health
     latest_verified_at: value?.latest_verified_at ?? value?.generated_at ?? null,
     generated_at: value?.generated_at ?? null,
     stale_after_ms: value?.stale_after_ms ?? null,
+    latest_migration: value?.latest_migration ?? null,
     missing_tools: missingTools,
     warnings: artifactWarnings(artifact),
   };

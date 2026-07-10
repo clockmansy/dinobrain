@@ -120,9 +120,9 @@ async function renameWithRetry(source: string, destination: string): Promise<voi
   throw lastError instanceof Error ? lastError : new Error(`Could not replace ${destination}`);
 }
 
-export async function atomicWriteText(
+export async function atomicWriteBytes(
   filePath: string,
-  value: string,
+  value: Uint8Array,
   validate?: (candidatePath: string) => Promise<void>,
 ): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -130,7 +130,7 @@ export async function atomicWriteText(
   let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
   try {
     handle = await fs.open(tempPath, "wx");
-    await handle.writeFile(value, "utf8");
+    await handle.writeFile(value);
     await handle.sync();
     await handle.close();
     handle = null;
@@ -141,6 +141,14 @@ export async function atomicWriteText(
     if (handle) await handle.close().catch(() => undefined);
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
   }
+}
+
+export async function atomicWriteText(
+  filePath: string,
+  value: string,
+  validate?: (candidatePath: string) => Promise<void>,
+): Promise<void> {
+  await atomicWriteBytes(filePath, Buffer.from(value, "utf8"), validate);
 }
 
 export async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {

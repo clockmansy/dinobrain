@@ -90,6 +90,7 @@ export type TaskLifecycleReport = {
     expired_leases: number;
     terminal: number;
     terminal_missing_trace: number;
+    trace_binding_missing: number;
     trace_without_task: number;
     ungrounded_finish: number;
     partial_grounded_finish: number;
@@ -223,6 +224,7 @@ function classifyGrounding(trace: JsonObject | null): FinishGroundingClassificat
 
 function nextActionFor(issueCodes: string[], lifecycleState: LifecycleState): string {
   if (issueCodes.includes("trace_task_id_mismatch")) return "Repair or quarantine the trace whose task_id does not match its task record.";
+  if (issueCodes.includes("terminal_task_trace_binding_missing")) return "Bind the terminal task to its existing task-matched trace without rewriting the trace.";
   if (issueCodes.includes("terminal_task_missing_trace")) return "Reconstruct or mark the terminal task trace before using it as finish evidence.";
   if (issueCodes.includes("trace_without_task")) return "Link the trace to a task record or archive it as orphaned operational history.";
   if (issueCodes.includes("expired_task_lease")) return "Renew the task lease with its owner or close it as abandoned with explicit evidence.";
@@ -255,6 +257,7 @@ function looksLikeDiagnosticProbe(task: JsonObject): boolean {
 
 function decisionClassFor(task: JsonObject | null, issueCodes: string[], lifecycleState: LifecycleState): LifecycleDecisionClass {
   if (issueCodes.includes("trace_task_id_mismatch")) return "manual_trace_binding_repair_required";
+  if (issueCodes.includes("terminal_task_trace_binding_missing")) return "manual_trace_binding_repair_required";
   if (issueCodes.includes("terminal_task_missing_trace")) return "manual_trace_reconstruction_required";
   if (issueCodes.includes("trace_without_task")) return "manual_orphan_trace_archive_required";
   if (issueCodes.includes("ungrounded_finish") || issueCodes.includes("partial_grounding")) {
@@ -302,7 +305,8 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     const taskId = firstString(task.record.task_id, taskIdFromPath(task.path));
     const status = firstString(task.record.status, "unknown");
     const tracePath = firstString(task.record.trace_path);
-    const traceEntry = tracePath ? traces.find((entry) => entry.path === tracePath) ?? null : traceByTaskId.get(taskId) ?? null;
+    const declaredTraceEntry = tracePath ? traces.find((entry) => entry.path === tracePath) ?? null : null;
+    const traceEntry = declaredTraceEntry ?? traceByTaskId.get(taskId) ?? null;
     const trace = traceEntry?.record ?? null;
     const promptEligibility = classifyPromptLaunch({
       request: firstString(task.record.request),
@@ -326,14 +330,16 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     const updatedMs = parseTime(updatedAt);
     const staleAgeMs = status === "started" && updatedMs !== null ? now.getTime() - updatedMs : null;
     const isStale = status === "started" && ((staleAgeMs !== null && staleAgeMs > staleAfterMs) || leaseExpired);
-    const traceExists = await exists(dataRoot, tracePath || traceEntry?.path || null);
+    const traceExists = await exists(dataRoot, (traceEntry?.path ?? tracePath) || null);
     const issueCodes: string[] = [];
     let lifecycleState: LifecycleState = isStale ? "stale_active" : status === "started" ? "active" : "terminal";
     if (isStale) issueCodes.push("stale_active_task");
     if (leaseExpired) issueCodes.push("expired_task_lease");
-    if (isTerminalStatus(status) && (!tracePath || !traceExists)) {
+    if (isTerminalStatus(status) && (!traceEntry || !traceExists)) {
       lifecycleState = "terminal_missing_trace";
       issueCodes.push("terminal_task_missing_trace");
+    } else if (isTerminalStatus(status) && traceEntry && tracePath !== traceEntry.path) {
+      issueCodes.push("terminal_task_trace_binding_missing");
     }
     if (trace && firstString(trace.task_id, taskId) !== taskId) issueCodes.push("trace_task_id_mismatch");
     const grounding = status === "started" ? "active" : classifyGrounding(trace);
@@ -347,7 +353,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       session_id: taskId,
       task_id: taskId,
       task_path: task.path,
-      trace_path: tracePath || traceEntry?.path || null,
+      trace_path: (traceEntry?.path ?? tracePath) || null,
       task_sha256: task.sha256,
       trace_sha256: traceEntry?.sha256 ?? null,
       status,
@@ -434,7 +440,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
     }));
   const blockerSessions = sessions.filter((session) =>
     session.issue_codes.some((issue) =>
-      ["stale_active_task", "expired_task_lease", "terminal_task_missing_trace", "trace_task_id_mismatch", "trace_without_task", "ungrounded_finish"].includes(issue),
+      ["stale_active_task", "expired_task_lease", "terminal_task_missing_trace", "terminal_task_trace_binding_missing", "trace_task_id_mismatch", "trace_without_task", "ungrounded_finish"].includes(issue),
     ),
   );
   const status = blockerSessions.length > 0 ? "needs_attention" : "healthy";
@@ -476,6 +482,7 @@ export async function buildTaskLifecycleReport(dataRoot: string, options: BuildO
       expired_leases: sessions.filter((session) => session.lease_expired).length,
       terminal: sessions.filter((session) => session.lifecycle_state === "terminal").length,
       terminal_missing_trace: sessions.filter((session) => session.lifecycle_state === "terminal_missing_trace").length,
+      trace_binding_missing: sessions.filter((session) => session.issue_codes.includes("terminal_task_trace_binding_missing")).length,
       trace_without_task: sessions.filter((session) => session.lifecycle_state === "trace_without_task").length,
       ungrounded_finish: sessions.filter((session) => session.grounding_classification === "ungrounded").length,
       partial_grounded_finish: sessions.filter((session) => session.grounding_classification === "partial_grounded").length,

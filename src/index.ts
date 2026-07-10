@@ -23,6 +23,8 @@ import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
 import { classifyPromptLaunch } from "./prompt-eligibility.js";
+import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
+import { writeTerminalTaskAndTrace, writeTerminalTaskAndTraceUnlocked } from "./task-terminal-store.js";
 import {
   type OperationContextPackEntry,
   type OperationEventEntry,
@@ -1338,8 +1340,13 @@ async function finalizePreflightBlockedTask(params: {
     lease: terminalLease,
     terminal_owner_id: terminalOwnerId,
   };
-  await writeJson(params.taskPath, updated);
-  await writeJson(tracePath, trace);
+  const terminalTransaction = await writeTerminalTaskAndTrace({
+    dataRoot: DATA_ROOT,
+    taskPath: params.taskPath,
+    taskRecord: updated,
+    tracePath,
+    traceRecord: trace,
+  });
   const taskRelativePath = relDataPath(params.taskPath);
   await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
   await upsertOperationTrace(DATA_ROOT, traceRelativePath, trace);
@@ -1358,6 +1365,8 @@ async function finalizePreflightBlockedTask(params: {
     lease_id: firstString(lease?.lease_id) || null,
     terminal_owner_id: terminalOwnerId,
     pre_response_auto_terminal: true,
+    terminal_transaction_id: terminalTransaction.transaction_id,
+    terminal_transaction_journal: terminalTransaction.journal_path,
   });
   return { record: updated, trace_path: traceRelativePath, event_log: eventLog };
 }
@@ -2153,6 +2162,7 @@ registerTool(
     },
   },
   async ({ task_id, lease_id, extend_seconds }) => {
+    return withTaskLifecycleMutationLock(DATA_ROOT, async () => {
     const taskPath = dataPath(".dino", "tasks", `${safeSlug(task_id)}.json`);
     const existing = await readJson<Record<string, unknown>>(taskPath);
     if (!existing) throw new Error(`Task does not exist: ${task_id}`);
@@ -2191,8 +2201,166 @@ registerTool(
       lease: renewedLease,
       event_log: eventLog,
     });
+    });
   },
 );
+
+type FinishTaskTerminalResult =
+  | {
+      idempotent: true;
+      taskPath: string;
+      traceRelativePath: string;
+      terminalOwnerId: string;
+      outcome: string;
+    }
+  | {
+      idempotent: false;
+      taskPath: string;
+      tracePath: string;
+      taskRelativePath: string;
+      traceRelativePath: string;
+      expectedLeaseId: string;
+      terminalOwnerId: string;
+      finishedAt: string;
+      trace: Record<string, unknown>;
+      updated: Record<string, unknown>;
+      normalizedUsedMemoryPaths: string[];
+      normalizedContextPackPaths: string[];
+      normalizedSessionArchivePaths: string[];
+      normalizedCandidatePaths: string[];
+      normalizedSearchQueries: string[];
+      terminalTransaction: { transaction_id: string; journal_path: string };
+    };
+
+async function finishTaskTerminalWrite(params: {
+  taskId: string;
+  leaseId?: string;
+  terminalOwnerId?: string;
+  summary: string;
+  outcome: "completed" | "partial" | "blocked";
+  growthPolicy: "auto" | "trace_only";
+  changedFiles: string[];
+  decisions: string[];
+  nextSteps: string[];
+  usedMemoryPaths: string[];
+  contextPackPaths: string[];
+  sessionArchivePaths: string[];
+  candidatePaths: string[];
+  searchQueries: string[];
+}): Promise<FinishTaskTerminalResult> {
+  return withTaskLifecycleMutationLock(DATA_ROOT, async () => {
+    const taskPath = dataPath(".dino", "tasks", `${safeSlug(params.taskId)}.json`);
+    const existing = await readJson<Record<string, unknown>>(taskPath);
+    if (!existing) throw new Error(`Task does not exist: ${params.taskId}`);
+    const existingLease = existing.lease as Record<string, unknown> | undefined;
+    const expectedLeaseId = firstString(existingLease?.lease_id);
+    if (expectedLeaseId && params.leaseId !== expectedLeaseId) {
+      throw new Error(`Task lease ownership mismatch: ${params.taskId}`);
+    }
+    const leaseExpiresAt = firstString(existingLease?.expires_at);
+    if (
+      expectedLeaseId &&
+      firstString(existingLease?.state, "active") === "active" &&
+      leaseExpiresAt &&
+      Number.isFinite(Date.parse(leaseExpiresAt)) &&
+      Date.now() > Date.parse(leaseExpiresAt)
+    ) {
+      throw new Error(`Task lease expired; renew it with heartbeat_task before finishing: ${params.taskId}`);
+    }
+    const terminalOwnerId = firstString(params.terminalOwnerId, existingLease?.owner_id, "legacy-unleased-owner");
+    const existingTerminalOwner = firstString(existing.terminal_owner_id);
+    if (existingTerminalOwner && existingTerminalOwner !== terminalOwnerId) {
+      throw new Error(`Task terminal owner mismatch: ${params.taskId}`);
+    }
+    const existingStatus = firstString(existing.status).toLowerCase();
+    if (["completed", "partial", "blocked"].includes(existingStatus)) {
+      const existingTracePath = firstString(existing.trace_path, `.dino/traces/${safeSlug(params.taskId)}.json`);
+      const existingTrace = await readJson<Record<string, unknown>>(dataPath(existingTracePath));
+      if (!existingTrace) throw new Error(`Terminal task is missing its trace: ${params.taskId}`);
+      return {
+        idempotent: true,
+        taskPath,
+        traceRelativePath: existingTracePath,
+        terminalOwnerId,
+        outcome: existingStatus,
+      };
+    }
+    const finishedAt = nowIso();
+    const normalizedUsedMemoryPaths = normalizeVaultPaths(params.usedMemoryPaths);
+    const normalizedContextPackPaths = normalizeVaultPaths(params.contextPackPaths);
+    const normalizedSessionArchivePaths = normalizeVaultPaths(params.sessionArchivePaths);
+    const normalizedCandidatePaths = normalizeVaultPaths(params.candidatePaths);
+    const normalizedSearchQueries = normalizeTextList(params.searchQueries);
+    const trace = {
+      task_id: params.taskId,
+      outcome: params.outcome,
+      summary: params.summary,
+      growth_policy: params.growthPolicy,
+      changed_files: params.changedFiles,
+      decisions: params.decisions,
+      next_steps: params.nextSteps,
+      used_memory_paths: normalizedUsedMemoryPaths,
+      context_pack_paths: normalizedContextPackPaths,
+      session_archive_paths: normalizedSessionArchivePaths,
+      candidate_paths: normalizedCandidatePaths,
+      search_queries: normalizedSearchQueries,
+      lease_id: expectedLeaseId || null,
+      terminal_owner_id: terminalOwnerId,
+      memory_use: {
+        used_memory_count: normalizedUsedMemoryPaths.length,
+        context_pack_count: normalizedContextPackPaths.length,
+        session_archive_count: normalizedSessionArchivePaths.length,
+        candidate_count: normalizedCandidatePaths.length,
+        search_query_count: normalizedSearchQueries.length,
+      },
+      finished_at: finishedAt,
+    };
+    const terminalLease = existingLease
+      ? {
+          ...existingLease,
+          heartbeat_at: finishedAt,
+          state: "terminal",
+          terminal_at: finishedAt,
+        }
+      : null;
+    const traceRelativePath = `.dino/traces/${safeSlug(params.taskId)}.json`;
+    const updated = {
+      ...existing,
+      status: params.outcome,
+      updated_at: finishedAt,
+      finished_at: finishedAt,
+      trace_path: traceRelativePath,
+      lease: terminalLease,
+      terminal_owner_id: terminalOwnerId,
+    };
+    const tracePath = dataPath(traceRelativePath);
+    const terminalTransaction = await writeTerminalTaskAndTraceUnlocked({
+      dataRoot: DATA_ROOT,
+      taskPath,
+      taskRecord: updated,
+      tracePath,
+      traceRecord: trace,
+    });
+    return {
+      idempotent: false,
+      taskPath,
+      tracePath,
+      taskRelativePath: relDataPath(taskPath),
+      traceRelativePath,
+      expectedLeaseId,
+      terminalOwnerId,
+      finishedAt,
+      trace,
+      updated,
+      normalizedUsedMemoryPaths,
+      normalizedContextPackPaths,
+      normalizedSessionArchivePaths,
+      normalizedCandidatePaths,
+      normalizedSearchQueries,
+      terminalTransaction,
+    };
+  });
+}
 
 registerTool(
   "finish_task",
@@ -2232,96 +2400,50 @@ registerTool(
     candidate_paths,
     search_queries,
   }) => {
-    const taskPath = dataPath(".dino", "tasks", `${safeSlug(task_id)}.json`);
-    const existing = await readJson<Record<string, unknown>>(taskPath);
-    if (!existing) throw new Error(`Task does not exist: ${task_id}`);
-    const existingLease = existing.lease as Record<string, unknown> | undefined;
-    const expectedLeaseId = firstString(existingLease?.lease_id);
-    if (expectedLeaseId && lease_id !== expectedLeaseId) {
-      throw new Error(`Task lease ownership mismatch: ${task_id}`);
-    }
-    const leaseExpiresAt = firstString(existingLease?.expires_at);
-    if (
-      expectedLeaseId &&
-      firstString(existingLease?.state, "active") === "active" &&
-      leaseExpiresAt &&
-      Number.isFinite(Date.parse(leaseExpiresAt)) &&
-      Date.now() > Date.parse(leaseExpiresAt)
-    ) {
-      throw new Error(`Task lease expired; renew it with heartbeat_task before finishing: ${task_id}`);
-    }
-    const terminalOwnerId = firstString(terminal_owner_id, existingLease?.owner_id, "legacy-unleased-owner");
-    const existingTerminalOwner = firstString(existing.terminal_owner_id);
-    if (existingTerminalOwner && existingTerminalOwner !== terminalOwnerId) {
-      throw new Error(`Task terminal owner mismatch: ${task_id}`);
-    }
-    const existingStatus = firstString(existing.status).toLowerCase();
-    if (["completed", "partial", "blocked"].includes(existingStatus)) {
-      const existingTracePath = firstString(existing.trace_path, `.dino/traces/${safeSlug(task_id)}.json`);
-      const existingTrace = await readJson<Record<string, unknown>>(dataPath(existingTracePath));
-      if (!existingTrace) throw new Error(`Terminal task is missing its trace: ${task_id}`);
+    const terminalWrite = await finishTaskTerminalWrite({
+      taskId: task_id,
+      leaseId: lease_id,
+      terminalOwnerId: terminal_owner_id,
+      summary,
+      outcome,
+      growthPolicy: growth_policy,
+      changedFiles: changed_files,
+      decisions,
+      nextSteps: next_steps,
+      usedMemoryPaths: used_memory_paths,
+      contextPackPaths: context_pack_paths,
+      sessionArchivePaths: session_archive_paths,
+      candidatePaths: candidate_paths,
+      searchQueries: search_queries,
+    });
+    if (terminalWrite.idempotent) {
       return jsonResult({
         ok: true,
         idempotent: true,
         task_id,
-        task_path: relDataPath(taskPath),
-        trace_path: existingTracePath,
-        terminal_owner_id: terminalOwnerId,
-        outcome: existingStatus,
+        task_path: relDataPath(terminalWrite.taskPath),
+        trace_path: terminalWrite.traceRelativePath,
+        terminal_owner_id: terminalWrite.terminalOwnerId,
+        outcome: terminalWrite.outcome,
       });
     }
-    const finishedAt = nowIso();
-    const normalizedUsedMemoryPaths = normalizeVaultPaths(used_memory_paths);
-    const normalizedContextPackPaths = normalizeVaultPaths(context_pack_paths);
-    const normalizedSessionArchivePaths = normalizeVaultPaths(session_archive_paths);
-    const normalizedCandidatePaths = normalizeVaultPaths(candidate_paths);
-    const normalizedSearchQueries = normalizeTextList(search_queries);
-    const trace = {
-      task_id,
-      outcome,
-      summary,
-      growth_policy,
-      changed_files,
-      decisions,
-      next_steps,
-      used_memory_paths: normalizedUsedMemoryPaths,
-      context_pack_paths: normalizedContextPackPaths,
-      session_archive_paths: normalizedSessionArchivePaths,
-      candidate_paths: normalizedCandidatePaths,
-      search_queries: normalizedSearchQueries,
-      lease_id: expectedLeaseId || null,
-      terminal_owner_id: terminalOwnerId,
-      memory_use: {
-        used_memory_count: normalizedUsedMemoryPaths.length,
-        context_pack_count: normalizedContextPackPaths.length,
-        session_archive_count: normalizedSessionArchivePaths.length,
-        candidate_count: normalizedCandidatePaths.length,
-        search_query_count: normalizedSearchQueries.length,
-      },
-      finished_at: finishedAt,
-    };
-    const terminalLease = existingLease
-      ? {
-          ...existingLease,
-          heartbeat_at: finishedAt,
-          state: "terminal",
-          terminal_at: finishedAt,
-        }
-      : null;
-    const updated = {
-      ...existing,
-      status: outcome,
-      updated_at: finishedAt,
-      finished_at: finishedAt,
-      trace_path: `.dino/traces/${safeSlug(task_id)}.json`,
-      lease: terminalLease,
-      terminal_owner_id: terminalOwnerId,
-    };
-    const tracePath = dataPath(".dino", "traces", `${safeSlug(task_id)}.json`);
-    await writeJson(taskPath, updated);
-    await writeJson(tracePath, trace);
-    const taskRelativePath = relDataPath(taskPath);
-    const traceRelativePath = relDataPath(tracePath);
+    const {
+      taskPath,
+      tracePath,
+      taskRelativePath,
+      traceRelativePath,
+      expectedLeaseId,
+      terminalOwnerId,
+      finishedAt,
+      trace,
+      updated,
+      normalizedUsedMemoryPaths,
+      normalizedContextPackPaths,
+      normalizedSessionArchivePaths,
+      normalizedCandidatePaths,
+      normalizedSearchQueries,
+      terminalTransaction,
+    } = terminalWrite;
     await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
     await upsertOperationTrace(DATA_ROOT, traceRelativePath, trace);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
@@ -2357,6 +2479,8 @@ registerTool(
       search_query_count: normalizedSearchQueries.length,
       lease_id: expectedLeaseId || null,
       terminal_owner_id: terminalOwnerId,
+      terminal_transaction_id: terminalTransaction.transaction_id,
+      terminal_transaction_journal: terminalTransaction.journal_path,
     });
     const effectiveGrowthPolicy = growth_policy === "auto" ? envString("DINOBRAIN_FINISH_GROWTH_POLICY", "auto") : growth_policy;
     const traceOnly = effectiveGrowthPolicy === "trace_only";
@@ -2423,6 +2547,7 @@ registerTool(
       lease_id: expectedLeaseId || null,
       terminal_owner_id: terminalOwnerId,
       event_log: eventLog,
+      terminal_transaction: terminalTransaction,
       behavior_recall: {
         ledger_path: behaviorRecall.ledger_path,
         recall_id: behaviorRecall.entry.recall_id,

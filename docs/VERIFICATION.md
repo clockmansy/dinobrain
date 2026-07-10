@@ -42,6 +42,7 @@ npm run review:worklist:actions:verify
 npm run task:lifecycle
 npm run task:lifecycle:verify
 npm run task:lifecycle:settle
+npm run task:lifecycle:settle -- --rollback <migration-id>
 npm run task:lifecycle:settle:verify
 npm run sources:rag:seed
 npm run session:verify
@@ -133,9 +134,9 @@ publication files leak.
 
 `npm run task:lifecycle:verify` proves the lifecycle gate on clean and dirty temporary vaults.
 
-`npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when auto-close or finish-gate repair candidates remain. With `-- --apply`, it mutates only deterministic repair shapes: stale diagnostic hook/env probe tasks are closed as blocked, stale `started` tasks with grounded traces are updated to the trace outcome, blocked tasks missing a trace get a reconstructed blocked trace, and stale no-trace tasks are closed as blocked/abandoned instead of being treated as successful completion evidence.
+`npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when lifecycle blockers remain. With `-- --apply`, it creates a Git recovery ref, exact local-only backups, and a hash-chained migration ledger before mutating deterministic repair shapes. Non-user service tasks and stale no-trace user tasks are closed as blocked, stale `started` tasks may inherit an outcome only from a grounded task-matched trace, terminal tasks can be bound to an existing trace without rewriting that trace, and blocked tasks receive a reconstructed trace only when no task-matched trace exists. Post-apply lifecycle invariants must be zero or the migration rolls back automatically.
 
-`npm run task:lifecycle:settle:verify` proves that settlement repairs those deterministic finish-gate cases while preserving recent active work.
+`npm run task:lifecycle:settle -- --rollback <migration-id>` verifies the immutable ledger and backup hashes, rejects conflicting external writes, restores prior files byte-for-byte, removes migration-created traces, and rebuilds lifecycle status. `npm run task:lifecycle:settle:verify` proves successful apply, exact rollback/reapply, interruption recovery, tamper-safe rollback refusal, concurrent apply serialization, terminal task/trace transaction recovery, existing-trace binding without trace mutation, and idempotent no-op apply while preserving recent active work.
 
 `npm run rag:proof` writes `.dino/evaluations/rag-golden.json`, `.dino/index/dense-vectors.json`, and `.dino/state/rag_proof_status.json` from the current reviewed behavior golden and Wiki index. The current dense vectors are local deterministic text-hash vectors for retrieval-proof scaffolding; they are deliberately marked `semantic_embedding_provider: false` and do not pretend to be an external embedding provider.
 
