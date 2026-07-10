@@ -87,6 +87,18 @@ writeFileSync(
   "{\"note\":\"This path must be blocked even without secret-looking values.\"}\n",
   "utf8",
 );
+mkdirSync(path.join(tempDataRoot, ".dino", "migrations", "behavior-recall"), { recursive: true });
+writeFileSync(
+  path.join(tempDataRoot, ".dino", "migrations", "behavior-recall", "local-repair.json"),
+  "{\"type\":\"private_behavior_recall_migration\"}\n",
+  "utf8",
+);
+mkdirSync(path.join(tempDataRoot, ".dino", "state"), { recursive: true });
+writeFileSync(
+  path.join(tempDataRoot, ".dino", "state", "behavior_recall_evidence_migration.json"),
+  "{\"status\":\"healthy\"}\n",
+  "utf8",
+);
 mkdirSync(path.join(tempDataRoot, ".dino", "review-admissions", "2026-07"), { recursive: true });
 writeFileSync(
   path.join(tempDataRoot, ".dino", "review-admissions", "2026-07", "decision.json"),
@@ -561,6 +573,15 @@ try {
   const blockedAdmissionReceipt = syncFiles.get(".dino/review-admissions/2026-07/decision.json");
   if (!blockedAdmissionReceipt || blockedAdmissionReceipt.classification !== "blocked") {
     throw new Error("git_sync did not block local review admission receipt");
+  }
+  for (const privateMigrationPath of [
+    ".dino/migrations/behavior-recall/local-repair.json",
+    ".dino/state/behavior_recall_evidence_migration.json",
+  ]) {
+    const privateMigration = syncFiles.get(privateMigrationPath);
+    if (!privateMigration || privateMigration.classification !== "blocked") {
+      throw new Error(`git_sync did not block private behavior recall migration: ${privateMigrationPath}`);
+    }
   }
   const sensitivePatternFile = syncFiles.get("20_Wiki/Sensitive-Pattern.md");
   if (

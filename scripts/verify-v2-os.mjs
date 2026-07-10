@@ -365,6 +365,7 @@ try {
         decision: "approve",
         reviewer: "verify-v2-os",
         notes: "Direct user correction passed conflict, scope, and sensitivity review.",
+        correction_resolution: "no_conflict",
       },
     }),
   );
@@ -467,7 +468,7 @@ try {
         context_pack_path: begin.context_pack.trace_path,
         gate_report_path: begin.gate_report_path,
         source_chunk_path: sourceChunk.source_chunk_path,
-        feedback_path: feedback.accepted_path,
+        feedback_path: reviewedFeedback.accepted_path,
         behavior_eval_path: behavior.evaluation_path,
         lifecycle_path: lifecycle.lifecycle_path,
         trace_path: finish.trace_path,

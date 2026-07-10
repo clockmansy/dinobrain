@@ -41,6 +41,7 @@ export const STATUS_GENERATION_ARTIFACT_PATHS = [
   ".dino/state/answer_quality_status.json",
   ".dino/state/release_manifest_status.json",
   ".dino/state/source_lineage_status.json",
+  ".dino/state/behavior_recall_evidence_migration.json",
   ".dino/state/behavior_recall_status.json",
   ".dino/state/full_memory_manifest.json",
   ".dino/state/full_memory_audit_status.json",

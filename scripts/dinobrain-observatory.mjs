@@ -526,12 +526,30 @@ async function readBehaviorRecallStatus() {
       correction_conflicts: 0,
       correction_records: 0,
       correction_records_without_recall: 0,
+      evidence_migrations_applied: 0,
+      evidence_migrations_invalid: 0,
       blockers: 0,
     },
     latest_entries: [],
     findings: [],
     warnings: ["behavior_recall_status_missing"],
     visible_status: "Behavior recall status missing",
+    _path: rel(statusPath),
+  };
+}
+
+async function readBehaviorRecallMigrationStatus() {
+  const statusPath = path.join(dataRoot, ".dino", "state", "behavior_recall_evidence_migration.json");
+  const status = await readJson(statusPath);
+  if (status && typeof status === "object") return { ok: true, _path: rel(statusPath), ...status };
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    generated_at: null,
+    counts: { planned_repairs: 0, applied_repairs: 0, unresolved: 0 },
+    warnings: ["behavior_recall_evidence_migration_status_missing"],
+    visible_status: "Behavior recall evidence migration status missing",
     _path: rel(statusPath),
   };
 }
@@ -814,6 +832,7 @@ async function readiness(existingState = null) {
     clientArtifact,
     nativeArtifact,
     sourceArtifact,
+    recallMigrationArtifact,
     recallArtifact,
     taskArtifact,
     settlementArtifact,
@@ -833,6 +852,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/client_mcp_direct_status.json"),
     readStatusArtifact(".dino/state/native_instruction_authority.json"),
     readStatusArtifact(".dino/state/source_lineage_status.json"),
+    readStatusArtifact(".dino/state/behavior_recall_evidence_migration.json"),
     readStatusArtifact(".dino/state/behavior_recall_status.json"),
     readStatusArtifact(".dino/state/task_sessions.json"),
     readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
@@ -915,6 +935,12 @@ async function readiness(existingState = null) {
       expectedStatuses: ["healthy"],
     }),
     hardGateFromArtifact({ id: "source_lineage", label: "Source Lineage", artifact: sourceArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({
+      id: "behavior_recall_evidence_migration",
+      label: "Behavior Evidence Migration",
+      artifact: recallMigrationArtifact,
+      expectedStatuses: ["healthy"],
+    }),
     hardGateFromArtifact({ id: "behavior_recall", label: "Behavior Recall", artifact: recallArtifact, expectedStatuses: ["healthy"] }),
     hardGateFromArtifact({ id: "task_lifecycle", label: "Task Lifecycle", artifact: taskArtifact, expectedStatuses: ["healthy"] }),
     hardGateFromArtifact({
@@ -1434,13 +1460,14 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecall, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
     readNativeInstructionAuthority(),
     readSourceLineageStatus(),
+    readBehaviorRecallMigrationStatus(),
     readBehaviorRecallStatus(),
     readLifecycleQueue(),
     readSyncRisk(),
@@ -1454,6 +1481,7 @@ async function state() {
       graph_health_score: graphHealth.score,
       native_instruction_authority_status: nativeAuthority.status,
       source_lineage_status: sourceLineage.status,
+      behavior_recall_migration_status: behaviorRecallMigration.status,
       behavior_recall_status: behaviorRecall.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
@@ -1462,6 +1490,7 @@ async function state() {
     graph_health: graphHealth,
     native_instruction_authority: nativeAuthority,
     source_lineage: sourceLineage,
+    behavior_recall_migration: behaviorRecallMigration,
     behavior_recall: behaviorRecall,
     lifecycle,
     sync_risk: syncRisk,
@@ -2765,6 +2794,7 @@ function html() {
       const graphHealth = data.graph_health || {};
       const lifecycle = data.lifecycle || { counts: {} };
       const sourceLineage = data.source_lineage || { counts: {} };
+      const behaviorRecallMigration = data.behavior_recall_migration || { counts: {} };
       const behaviorRecall = data.behavior_recall || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
@@ -2910,6 +2940,9 @@ function html() {
         : '<p class="muted">No source lineage blockers.</p>';
       kv(behaviorRecallEl, [
         ["status", behaviorRecall.status],
+        ["evidence migration", behaviorRecallMigration.status],
+        ["migrated evidence", behaviorRecall.counts?.evidence_migrations_applied],
+        ["invalid migrations", behaviorRecall.counts?.evidence_migrations_invalid],
         ["entries", behaviorRecall.counts?.entries],
         ["completion", behaviorRecall.counts?.completion],
         ["handoff", behaviorRecall.counts?.handoff],

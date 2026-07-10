@@ -4,6 +4,7 @@ import path from "node:path";
 import { atomicWriteJson } from "./concurrency.js";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
+import { BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH } from "./behavior-recall-migration.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
 import { dataPath } from "./context.js";
@@ -93,6 +94,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
   {
     id: "source_lineage",
     artifactPath: SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
+    authorityRank: 93,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "behavior_recall_evidence_migration",
+    artifactPath: BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
     authorityRank: 93,
     healthyStatuses: ["healthy"],
   },

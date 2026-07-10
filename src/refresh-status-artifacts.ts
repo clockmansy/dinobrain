@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH, buildAndWriteAnswerQualityReport } from "./answer-quality.js";
 import { buildAndWriteBehaviorRecallReport } from "./behavior-recall.js";
+import { applyBehaviorRecallEvidenceMigration } from "./behavior-recall-migration.js";
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { applyColdPartitions } from "./cold-partitions.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
@@ -53,6 +54,13 @@ export async function refreshStatusArtifacts(
 }> {
   const taskStaleAfterMs = options.taskStaleAfterMs ?? 24 * 60 * 60 * 1000;
   const steps: RefreshStatusArtifactStep[] = [];
+
+  const behaviorRecallMigration = await applyBehaviorRecallEvidenceMigration(dataRoot);
+  steps.push({
+    id: "behavior_recall_evidence_migration",
+    status: behaviorRecallMigration.report.status,
+    path: behaviorRecallMigration.statusPath,
+  });
 
   const review = await settleReviewQueueActions(dataRoot);
   steps.push({ id: "review_queue_settlement", status: review.review.status, path: review.reviewPath });

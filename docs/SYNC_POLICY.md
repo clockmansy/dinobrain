@@ -64,6 +64,8 @@ These data types are local-only unless the plan is explicitly changed:
 - `.dino/local.json`
 - `.dino/index`
 - `.dino/events`
+- `.dino/migrations/behavior-recall`
+- `.dino/state/behavior_recall_evidence_migration.json`
 - `10_Conversations/raw`
 
 ## `git_sync` And `auto_sync` Behavior
@@ -89,6 +91,10 @@ Closed-loop push tests and private/encrypted backup workflows may explicitly set
 both flags to `1`; that opt-in is not the default public data posture.
 
 Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
+
+Behavior-recall migration maps are also local-only because they contain task and
+trace identities. Their reviewed public evidence is limited to hash-only
+summaries under `60_Operations/behavior-recall-migrations/`.
 
 The data repo also carries Git hooks under `.githooks`. Install/update must set `core.hooksPath = .githooks`. These hooks block local-only paths and auto-generated accepted memories without review lineage at `pre-commit` and `pre-push` time. This is required because a long-lived stale MCP process may not yet know the newest in-process sync policy.
 

@@ -11,6 +11,8 @@ type BehaviorCase = {
   expected_behavior_terms?: string[];
   forbidden_context_terms?: string[];
   min_path_recall?: number;
+  memory_off_action?: string;
+  expected_memory_on_action?: string;
 };
 
 type BehaviorGolden = {
@@ -64,6 +66,25 @@ function scoreMemoryOff(requiredTerms: string[], forbiddenTerms: string[], reque
   return Number((requiredTermHits * 45 + forbiddenPenalty).toFixed(3));
 }
 
+async function behaviorActionFromMemory(
+  dataRoot: string,
+  returnedPaths: string[],
+): Promise<{ action: string | null; source_path: string | null }> {
+  for (const returnedPath of returnedPaths) {
+    if (!returnedPath.startsWith("50_Instances/accepted/") || returnedPath.split("/").includes("..")) continue;
+    try {
+      const record = JSON.parse(await fs.readFile(path.join(dataRoot, ...returnedPath.split("/")), "utf8")) as Record<string, unknown>;
+      const behaviorAction = record.behavior_action;
+      if (!behaviorAction || typeof behaviorAction !== "object" || Array.isArray(behaviorAction)) continue;
+      const expected = (behaviorAction as Record<string, unknown>).expected_memory_on_action;
+      if (typeof expected === "string" && expected.trim()) return { action: expected.trim(), source_path: returnedPath };
+    } catch {
+      continue;
+    }
+  }
+  return { action: null, source_path: null };
+}
+
 export async function evaluateBehaviorMemoryLift(
   dataRoot: string,
   options: { allowMissingGolden?: boolean; goldenPath?: string; packLimit?: number } = {},
@@ -103,6 +124,13 @@ export async function evaluateBehaviorMemoryLift(
     const memoryOffScore = scoreMemoryOff(requiredTerms, forbiddenTerms, behaviorCase.request);
     const lift = Number((memoryOnScore - memoryOffScore).toFixed(3));
     const minPathRecall = behaviorCase.min_path_recall ?? 1;
+    const actionRequired = Boolean(behaviorCase.memory_off_action && behaviorCase.expected_memory_on_action);
+    const recalledAction = await behaviorActionFromMemory(dataRoot, returnedPaths);
+    const memoryOffAction = behaviorCase.memory_off_action?.trim() ?? null;
+    const expectedMemoryOnAction = behaviorCase.expected_memory_on_action?.trim() ?? null;
+    const memoryOnAction = recalledAction.action ?? memoryOffAction;
+    const actionChanged = actionRequired && normalized(memoryOnAction ?? "") !== normalized(memoryOffAction ?? "");
+    const actionCorrect = actionRequired && normalized(memoryOnAction ?? "") === normalized(expectedMemoryOnAction ?? "");
     results.push({
       id: behaviorCase.id,
       request: behaviorCase.request,
@@ -116,11 +144,18 @@ export async function evaluateBehaviorMemoryLift(
       memory_on_score: memoryOnScore,
       memory_off_baseline_score: memoryOffScore,
       memory_lift: lift,
+      memory_off_action: memoryOffAction,
+      memory_on_action: memoryOnAction,
+      expected_memory_on_action: expectedMemoryOnAction,
+      action_source_path: recalledAction.source_path,
+      action_changed: actionRequired ? actionChanged : null,
+      action_correct: actionRequired ? actionCorrect : null,
       pass:
         lift >= golden.target_memory_lift &&
         memoryOn.pathRecall >= minPathRecall &&
         memoryOn.requiredTermRecall >= 1 &&
-        memoryOn.forbiddenHitCount === 0,
+        memoryOn.forbiddenHitCount === 0 &&
+        (!actionRequired || (actionChanged && actionCorrect)),
     });
   }
 

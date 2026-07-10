@@ -426,7 +426,7 @@ async function auditFlow() {
       "finish_task trace did not preserve structured used_memory_paths",
     );
     assert(finish.growth?.enabled === true, "finish_task did not run automatic growth");
-    assert(finish.growth?.destination === "candidate_review", "automatic growth bypassed review queue");
+    assert(finish.growth?.destination === "cold_hold", "missing review admission state did not fail closed to cold hold");
     assert(finish.growth?.candidate_path, "automatic growth did not create a candidate record");
     assert(finish.growth?.review_path, "automatic growth did not create a promotion review record");
     assert(

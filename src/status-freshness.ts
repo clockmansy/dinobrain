@@ -4,6 +4,10 @@ import path from "node:path";
 import { atomicWriteJson } from "./concurrency.js";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH, BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
+import {
+  BEHAVIOR_RECALL_MIGRATION_ROOT,
+  BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
+} from "./behavior-recall-migration.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { COLD_PARTITION_INDEX_RELATIVE_PATH, COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
 import { dataPath, relDataPath } from "./context.js";
@@ -131,6 +135,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
       NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
       SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
+      BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
       BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
@@ -173,6 +178,14 @@ const ARTIFACTS: ArtifactSpec[] = [
     authorityRank: 93,
   },
   {
+    id: "behavior_recall_evidence_migration",
+    label: "behavior recall evidence migration",
+    artifactPath: BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
+    sourceRoots: [BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH, ".dino/traces", BEHAVIOR_RECALL_MIGRATION_ROOT],
+    required: true,
+    authorityRank: 93,
+  },
+  {
     id: "behavior_recall",
     label: "behavior recall ledger",
     artifactPath: BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
@@ -182,6 +195,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       ".dino/tasks",
       "50_Instances/accepted",
       ".dino/quarantine",
+      BEHAVIOR_RECALL_MIGRATION_ROOT,
       "80_Review_Queue/behavior-conflicts",
     ],
     required: true,

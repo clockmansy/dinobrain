@@ -3,13 +3,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
+import {
+  loadAppliedBehaviorRecallRepairs,
+  validateBehaviorRecallEvidenceRepair,
+} from "./behavior-recall-migration.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 
 export const BEHAVIOR_RECALL_VERSION = "behavior_recall_v1";
 export const BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/behavior_recall_audit.jsonl`;
 export const BEHAVIOR_RECALL_STATUS_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/behavior_recall_status.json`;
-export const BEHAVIOR_CONFLICT_REVIEW_DIR = "80_Review_Queue/behavior-conflicts";
 
 export type BehaviorRecallTrigger = "completion" | "handoff" | "error" | "direction_change" | "correction";
 export type BehaviorRecallDecisionStatus = "performed" | "skipped" | "not_applicable";
@@ -25,6 +28,7 @@ export type BehaviorRecallEntry = {
   reason: string;
   evidence_path: string;
   conflicting_memory_paths: string[];
+  conflict_resolution?: "hold_superseded" | "demote_superseded" | "no_conflict" | null;
   followup_action: string;
   created_at: string;
 };
@@ -34,6 +38,7 @@ export type BehaviorRecallFinding = {
     | "ledger_missing"
     | "ledger_entry_malformed"
     | "evidence_path_missing"
+    | "evidence_migration_invalid"
     | "correction_conflict_not_quarantined"
     | "correction_missing_recall_entry";
   severity: "fail" | "warn";
@@ -62,6 +67,8 @@ export type BehaviorRecallReport = {
     correction_conflicts: number;
     correction_records: number;
     correction_records_without_recall: number;
+    evidence_migrations_applied: number;
+    evidence_migrations_invalid: number;
     blockers: number;
   };
   latest_entries: BehaviorRecallEntry[];
@@ -91,6 +98,8 @@ type FeedbackRecallInput = {
   taskId?: string | null;
   acceptedPath: string;
   createdAt: string;
+  conflictingMemoryPaths?: string[];
+  conflictResolution?: "hold_superseded" | "demote_superseded" | "no_conflict" | null;
 };
 
 function nowIso(date: Date): string {
@@ -99,16 +108,6 @@ function nowIso(date: Date): string {
 
 function hashShort(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
-}
-
-function safeSlug(value: string): string {
-  return (
-    value
-      .trim()
-      .replace(/[^A-Za-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 96) || "behavior-recall"
-  );
 }
 
 function firstString(...values: unknown[]): string {
@@ -215,10 +214,13 @@ function hasCorrectionConflictCue(value: string): boolean {
 function isBehaviorRecord(pathValue: string, record: JsonObject): boolean {
   const tags = stringArray(record.tags).map((tag) => tag.toLowerCase());
   const type = firstString(record.type).toLowerCase();
-  const status = firstString(record.status).toLowerCase();
+  const status = firstString(record.status).toLowerCase().replace(/_/g, "-");
+  const lifecycleState = firstString(record.lifecycle_state).toLowerCase().replace(/_/g, "-");
+  const excludedStates = ["hold", "held", "quarantined", "archived", "archived-merged", "archived-rejected", "demoted"];
   return (
     pathValue.startsWith("50_Instances/accepted/") &&
-    !["hold", "held", "quarantined", "archived_merged", "archived_rejected"].includes(status) &&
+    !excludedStates.includes(status) &&
+    !excludedStates.includes(lifecycleState) &&
     (type.includes("feedback") ||
       type.includes("behavior") ||
       tags.some((tag) => ["behavior", "correction", "operating-rule", "user-preference", "memory-priority"].includes(tag)) ||
@@ -226,7 +228,7 @@ function isBehaviorRecord(pathValue: string, record: JsonObject): boolean {
   );
 }
 
-async function findPotentialBehaviorConflicts(
+export async function findPotentialBehaviorConflicts(
   dataRoot: string,
   correction: string,
   acceptedPath: string,
@@ -244,50 +246,6 @@ async function findPotentialBehaviorConflicts(
     if (overlapCount(correction, textOf(entry.record)) >= 2) conflicts.push(entry.path);
   }
   return conflicts.slice(0, 12);
-}
-
-async function writeConflictArtifacts(
-  dataRoot: string,
-  feedbackId: string,
-  acceptedPath: string,
-  correction: string,
-  conflictPaths: string[],
-  createdAt: string,
-): Promise<{ quarantine_paths: string[]; review_path: string | null }> {
-  const quarantinePaths: string[] = [];
-  for (const conflictPath of conflictPaths) {
-    const quarantineId = `behavior-conflict-${safeSlug(feedbackId)}-${hashShort(conflictPath)}`;
-    const quarantinePath = dataPath(dataRoot, ".dino", "quarantine", `${quarantineId}.json`);
-    await writeJson(quarantinePath, {
-      quarantine_id: quarantineId,
-      type: "behavior_conflict_quarantine",
-      status: "quarantined",
-      target_path: conflictPath,
-      source_feedback_path: acceptedPath,
-      reason: "New direct user correction may contradict this older behavior memory.",
-      correction_preview: correction.slice(0, 320),
-      created_at: createdAt,
-      updated_at: createdAt,
-    });
-    quarantinePaths.push(relDataPath(dataRoot, quarantinePath));
-  }
-
-  if (conflictPaths.length === 0) return { quarantine_paths: quarantinePaths, review_path: null };
-  const reviewPath = dataPath(dataRoot, BEHAVIOR_CONFLICT_REVIEW_DIR, `${safeSlug(feedbackId)}.json`);
-  await writeJson(reviewPath, {
-    review_id: `behavior-conflict-${safeSlug(feedbackId)}`,
-    type: "behavior_conflict_review",
-    status: "pending",
-    recommendation: "hold_or_merge_conflicting_behavior_memory",
-    source_feedback_path: acceptedPath,
-    conflicting_memory_paths: conflictPaths,
-    quarantine_paths: quarantinePaths,
-    required_action:
-      "Review the correction and either keep the quarantine, merge the older memory into the correction, or explicitly restore it.",
-    created_at: createdAt,
-    updated_at: createdAt,
-  });
-  return { quarantine_paths: quarantinePaths, review_path: relDataPath(dataRoot, reviewPath) };
 }
 
 function triggerFromFinish(input: FinishRecallInput): BehaviorRecallTrigger {
@@ -355,15 +313,9 @@ export async function recordFeedbackCorrectionRecall(
   review_path: string | null;
 }> {
   const acceptedPath = normalizeVaultPath(input.acceptedPath);
-  const conflicts = await findPotentialBehaviorConflicts(dataRoot, input.correction, acceptedPath, input.appliesTo);
-  const conflictArtifacts = await writeConflictArtifacts(
-    dataRoot,
-    input.feedbackId,
-    acceptedPath,
-    input.correction,
-    conflicts,
-    input.createdAt,
-  );
+  const conflicts = input.conflictingMemoryPaths === undefined
+    ? await findPotentialBehaviorConflicts(dataRoot, input.correction, acceptedPath, input.appliesTo)
+    : normalizeVaultPaths(input.conflictingMemoryPaths);
   const entry: BehaviorRecallEntry = {
     version: BEHAVIOR_RECALL_VERSION,
     recall_id: `behavior-recall-${input.createdAt.replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}-${hashShort(
@@ -376,16 +328,21 @@ export async function recordFeedbackCorrectionRecall(
     reason: "Direct user correction was written back as accepted behavior memory for future Context Packs.",
     evidence_path: acceptedPath,
     conflicting_memory_paths: conflicts,
+    conflict_resolution: input.conflictResolution ?? (conflicts.length > 0 ? null : "no_conflict"),
     followup_action:
-      conflicts.length > 0 ? "conflicting_memory_quarantined_for_review" : "retrieve_correction_in_next_context_pack",
+      conflicts.length > 0
+        ? input.conflictResolution === "demote_superseded"
+          ? "superseded_memory_demoted"
+          : "superseded_memory_held"
+        : "retrieve_correction_in_next_context_pack",
     created_at: input.createdAt,
   };
   const ledger = await appendBehaviorRecallEntry(dataRoot, entry);
   return {
     ...ledger,
     conflicting_memory_paths: conflicts,
-    quarantine_paths: conflictArtifacts.quarantine_paths,
-    review_path: conflictArtifacts.review_path,
+    quarantine_paths: [],
+    review_path: null,
   };
 }
 
@@ -456,6 +413,16 @@ async function hasQuarantineFor(dataRoot: string, targetPath: string): Promise<b
   );
 }
 
+async function hasResolvedCorrectionConflict(dataRoot: string, targetPath: string, successorPath: string): Promise<boolean> {
+  const record = await readJson<JsonObject>(dataPath(dataRoot, normalizeVaultPath(targetPath)));
+  const status = firstString(record?.lifecycle_state, record?.status).toLowerCase().replace(/_/g, "-");
+  const successors = stringArray(record?.successor_paths).map(normalizeVaultPath);
+  if (["held", "hold", "demoted", "quarantined", "quarantine"].includes(status) && successors.includes(successorPath)) {
+    return true;
+  }
+  return hasQuarantineFor(dataRoot, targetPath);
+}
+
 async function pathExists(dataRoot: string, relativePath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(dataPath(dataRoot, normalizeVaultPath(relativePath)));
@@ -473,7 +440,10 @@ export async function buildBehaviorRecallReport(
   const generatedAt = nowIso(options.now ?? new Date());
   const ledger = await readLedger(dataRoot);
   const corrections = await correctionRecords(dataRoot);
+  const evidenceRepairs = await loadAppliedBehaviorRecallRepairs(dataRoot);
   const findings: BehaviorRecallFinding[] = [];
+  let appliedEvidenceMigrations = 0;
+  let invalidEvidenceMigrations = 0;
 
   if (!ledger.exists) {
     findings.push({
@@ -497,26 +467,41 @@ export async function buildBehaviorRecallReport(
   if (ledger.exists && ledger.entries.some((entry) => entry.trigger_type === "correction")) {
     for (const entry of ledger.entries.filter((item) => item.trigger_type === "correction")) {
       for (const conflictPath of entry.conflicting_memory_paths) {
-        if (!(await hasQuarantineFor(dataRoot, conflictPath))) {
+        if (!(await hasResolvedCorrectionConflict(dataRoot, conflictPath, entry.evidence_path))) {
           findings.push({
             signal: "correction_conflict_not_quarantined",
             severity: "fail",
             path: entry.evidence_path,
-            reason: `Conflicting memory is not quarantined for review: ${conflictPath}`,
+            reason: `Conflicting memory is not held, demoted, or quarantined with the correction as successor: ${conflictPath}`,
           });
         }
       }
     }
   }
   for (const entry of ledger.entries) {
-    if (!(await pathExists(dataRoot, entry.evidence_path))) {
+    if (await pathExists(dataRoot, entry.evidence_path)) continue;
+    const migrated = evidenceRepairs.get(entry.recall_id);
+    if (migrated) {
+      const validation = await validateBehaviorRecallEvidenceRepair(dataRoot, entry as unknown as JsonObject, migrated.repair);
+      if (validation.ok) {
+        appliedEvidenceMigrations += 1;
+        continue;
+      }
+      invalidEvidenceMigrations += 1;
       findings.push({
-        signal: "evidence_path_missing",
+        signal: "evidence_migration_invalid",
         severity: "fail",
-        path: entry.evidence_path,
-        reason: `Behavior recall evidence path does not exist for ${entry.recall_id}.`,
+        path: migrated.migration_path,
+        reason: `Behavior recall evidence migration is invalid for ${entry.recall_id}: ${validation.issues.join(", ")}.`,
       });
+      continue;
     }
+    findings.push({
+      signal: "evidence_path_missing",
+      severity: "fail",
+      path: entry.evidence_path,
+      reason: `Behavior recall evidence path does not exist for ${entry.recall_id}.`,
+    });
   }
 
   if (ledger.exists && ledger.entries.length > 0 && correctionRecordsWithoutRecall.length > 0) {
@@ -555,6 +540,8 @@ export async function buildBehaviorRecallReport(
       correction_conflicts: ledger.entries.reduce((total, entry) => total + entry.conflicting_memory_paths.length, 0),
       correction_records: corrections.length,
       correction_records_without_recall: correctionRecordsWithoutRecall.length,
+      evidence_migrations_applied: appliedEvidenceMigrations,
+      evidence_migrations_invalid: invalidEvidenceMigrations,
       blockers,
     },
     latest_entries: ledger.entries

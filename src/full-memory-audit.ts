@@ -328,6 +328,7 @@ function classifyDrift(vaultPath: string, lifecyclePaths: Set<string>): DriftCla
     normalized.startsWith("60_Operations/review-worklists/") ||
     normalized.startsWith("60_Operations/review-worklist-actions/")
     || normalized.startsWith("60_Operations/cold-partitions/")
+    || normalized.startsWith("60_Operations/behavior-recall-migrations/")
   ) {
     return "live_os_write";
   }

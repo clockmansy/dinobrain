@@ -119,7 +119,7 @@ publication files leak.
 
 `npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
 
-`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. The order includes review settlement/worklist/backpressure, cold partitions, node and task lifecycle, Wiki/operations indexes, SQLite shards, RAG proof/eval, graph, lineage, full-memory audit, health, and freshness before one status generation is published. This prevents generated index/status churn from masquerading as unresolved stale proof.
+`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. Behavior-recall evidence migration status is computed before review, cold-partition, and index artifacts so its public hash-only summary is part of the same generation. The remaining order includes review settlement/worklist/backpressure, cold partitions, node and task lifecycle, Wiki/operations indexes, SQLite shards, RAG proof/eval, graph, lineage, full-memory audit, health, and freshness before one status generation is published. This prevents generated index/status churn from masquerading as unresolved stale proof.
 
 `npm run status:freshness` writes `.dino/state/monitoring_status.json` without rebuilding dependencies. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, RAG proof artifacts, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
 
@@ -203,7 +203,9 @@ Run `npm run proof:mcp:codex` or `npm run proof:mcp:claude` after rebuilding/ins
 
 `npm run status:behavior-recall` writes `.dino/state/behavior_recall_status.json` from `.dino/state/behavior_recall_audit.jsonl`. The ledger records completion, handoff, error, direction-change, and correction recall decisions with `performed` / `skipped` / `not_applicable`, evidence paths, conflicting memories, and follow-up actions.
 
-`npm run verify:behavior-recall` proves the behavior recall gate with fixtures. It writes all trigger types, rejects malformed ledger rows, proves a later Context Pack retrieves a direct user correction, and verifies that a contradictory older behavior memory is quarantined and queued for review instead of remaining equal-weight retrievable memory.
+`npm run behavior:recall:migrate` detects stale recall evidence references and accepts only a unique task-id-matched trace. `--apply` writes an immutable local migration record containing the original ledger-row hash and destination trace hash, while the syncable `60_Operations` summary contains hashes only. `npm run behavior:recall:migrate:verify` proves dry-run, apply, trace-tamper rejection, exact transaction rollback, reapply, and public-summary redaction.
+
+`npm run verify:behavior-recall` runs a real stdio MCP correction flow. It verifies source-prompt hash binding, pre-review contradicted-rule linkage, zero mutation when conflict resolution is omitted, atomic correction promotion plus old-rule hold/demotion, later Context Pack retrieval, changed structured action, and real MCP trigger coverage for completion, handoff, error, direction change, and correction.
 
 `npm run verify:goal` is the completion gate for the full closed-loop objective. It combines real Codex Desktop live preflight evidence, the closed-loop fixture with GitHub-style push, OS memory/retrieval/behavior verification, data Git hooks, and public-data safety into one requirement-by-requirement JSON report. The live proof window starts at the latest Codex hook config or server build timestamp, so a valid proof remains useful after the default recent-live window has passed. The goal is not complete unless this command exits successfully.
 
@@ -399,7 +401,7 @@ A green `verify:os` run is stronger than the smoke test because it validates the
 
 It does not prove that every future Codex answer will automatically call DinoBrain. It proves that Codex is configured with a working DinoBrain MCP server, the user-level Codex hook is registered when required, and that an MCP client can retrieve reviewed memories through that server.
 
-The current `eval:behavior` gate is a context-level behavior check: it proves reviewed memories are retrieved and contain required action criteria that a memory-off prompt does not contain. It is not yet a Ragas-style answer-quality grader, so answer relevance/correctness/faithfulness still require a later evaluator.
+The current `eval:behavior` gate checks both context retrieval and an explicit structured action contract. When a golden case supplies `memory_off_action` and `expected_memory_on_action`, a retrieved accepted record must provide the expected memory-on action, the action must differ from the baseline, and its source path must be visible. This still is not a generated-answer faithfulness grader, so representative answer relevance/correctness/faithfulness remain a separate RAG acceptance gate.
 
 `verify:codex-loop` proves the hook/growth/sync loop can complete and push when invoked. `verify:codex-live` is the evidence gate for an actual Codex app session: it fails unless the real hook emitted live preflight events and a live hook report for the target prompt.
 

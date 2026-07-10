@@ -123,6 +123,8 @@ const blockedPathRules = [
   { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups|review-admissions)\// },
   { id: "generated_index_path", pattern: /^\.dino\/index\// },
   { id: "operation_event_path", pattern: /^\.dino\/events\// },
+  { id: "private_behavior_recall_migration_path", pattern: /^\.dino\/migrations\/behavior-recall\// },
+  { id: "private_behavior_recall_migration_status", pattern: /^\.dino\/state\/behavior_recall_evidence_migration\.json$/ },
   { id: "environment_file", pattern: /(^|\/)\.env(?:\.|$)/ },
   { id: "private_key_file", pattern: /\.(?:pem|key|p12|pfx)$/i },
 ];
@@ -282,6 +284,21 @@ function scanFile(relativePath, tracked) {
     ].filter(([, pattern]) => pattern.test(text)).map(([field]) => field);
     if (leakedFields.length > 0) {
       addFinding(tracked ? "blocker" : "warning", "unsafe_review_worklist_summary", relativePath, {
+        leaked_fields: leakedFields,
+      });
+    }
+  }
+
+  if (/^60_Operations\/behavior-recall-migrations\/.+\.json$/.test(relativePath)) {
+    const leakedFields = [
+      ["recall_id", /"recall_id"\s*:/],
+      ["task_id", /"task_id"\s*:/],
+      ["old_evidence_path", /"old_evidence_path"\s*:/],
+      ["new_evidence_path", /"new_evidence_path"\s*:/],
+      ["data_root", /"data_root"\s*:/],
+    ].filter(([, pattern]) => pattern.test(text)).map(([field]) => field);
+    if (leakedFields.length > 0) {
+      addFinding(tracked ? "blocker" : "warning", "unsafe_behavior_recall_migration_summary", relativePath, {
         leaked_fields: leakedFields,
       });
     }

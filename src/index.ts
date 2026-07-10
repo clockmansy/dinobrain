@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   appendBehaviorRecallEntry,
   buildFinishBehaviorRecallEntry,
+  findPotentialBehaviorConflicts,
   recordFeedbackCorrectionRecall,
 } from "./behavior-recall.js";
 import { ClientMcpProofRuntime } from "./client-mcp-proof.js";
@@ -34,6 +35,7 @@ import {
 import {
   currentNodeRecord,
   initializeLifecycleWrite,
+  rollbackNodeLifecycleTransaction,
   restoreDeletedNode,
   transitionLifecycleWrite,
   transitionNodeLifecycleFile,
@@ -668,8 +670,14 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/local-backups/",
     ".dino/review-admissions/",
     ".dino/events/",
+    ".dino/migrations/behavior-recall/",
   ];
-  const blockedExact = new Set([".env", ".dino/secrets.json", ".dino/local.json"]);
+  const blockedExact = new Set([
+    ".env",
+    ".dino/secrets.json",
+    ".dino/local.json",
+    ".dino/state/behavior_recall_evidence_migration.json",
+  ]);
   const blockedExtensions = [".pem", ".key", ".p12", ".pfx"];
   const conditionalPrefixes = [
     "50_Instances/candidates/",
@@ -3292,6 +3300,94 @@ registerTool(
   },
 );
 
+type CorrectionPromptBinding = {
+  binding_status: "verified" | "missing_task_id" | "task_not_found" | "prompt_hash_unverified";
+  task_id: string | null;
+  task_path: string | null;
+  prompt_hash: string | null;
+  request_hash: string | null;
+  prompt_classification: string | null;
+  prompt_eligibility_version: string | null;
+  launch_kind: string | null;
+  launch_source: string | null;
+  verified_at: string;
+};
+
+async function correctionPromptBinding(taskId: string | undefined, verifiedAt: string): Promise<CorrectionPromptBinding> {
+  const normalizedTaskId = firstString(taskId);
+  if (!normalizedTaskId) {
+    return {
+      binding_status: "missing_task_id",
+      task_id: null,
+      task_path: null,
+      prompt_hash: null,
+      request_hash: null,
+      prompt_classification: null,
+      prompt_eligibility_version: null,
+      launch_kind: null,
+      launch_source: null,
+      verified_at: verifiedAt,
+    };
+  }
+  const taskRelativePath = `.dino/tasks/${safeSlug(normalizedTaskId)}.json`;
+  const task = await readJson<Record<string, unknown>>(dataPath(taskRelativePath));
+  if (!task || firstString(task.task_id) !== normalizedTaskId) {
+    return {
+      binding_status: "task_not_found",
+      task_id: normalizedTaskId,
+      task_path: taskRelativePath,
+      prompt_hash: null,
+      request_hash: null,
+      prompt_classification: null,
+      prompt_eligibility_version: null,
+      launch_kind: null,
+      launch_source: null,
+      verified_at: verifiedAt,
+    };
+  }
+  const promptHash = firstString(task.prompt_hash);
+  const request = firstString(task.request);
+  const promptHashVerified = /^[a-f0-9]{64}$/i.test(promptHash) && request.length > 0 && sha256(request) === promptHash;
+  return {
+    binding_status: promptHashVerified ? "verified" : "prompt_hash_unverified",
+    task_id: normalizedTaskId,
+    task_path: taskRelativePath,
+    prompt_hash: promptHash || null,
+    request_hash: firstString(task.request_hash) || null,
+    prompt_classification: firstString(task.prompt_classification) || null,
+    prompt_eligibility_version: firstString(task.prompt_eligibility_version) || null,
+    launch_kind: firstString(task.launch_kind) || null,
+    launch_source: firstString(task.launch_source) || null,
+    verified_at: verifiedAt,
+  };
+}
+
+async function correctionConflictPaths(params: {
+  correction: string;
+  appliesTo: string;
+  acceptedPath: string;
+  explicitPaths: string[];
+}): Promise<{ paths: string[]; inferred_paths: string[]; invalid_paths: string[] }> {
+  const inferred = await findPotentialBehaviorConflicts(DATA_ROOT, params.correction, params.acceptedPath, params.appliesTo);
+  const paths = normalizeVaultPaths([...params.explicitPaths, ...inferred]).slice(0, 12);
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const targetPath of paths) {
+    if (!targetPath.startsWith("50_Instances/accepted/") || targetPath === params.acceptedPath) {
+      invalid.push(targetPath);
+      continue;
+    }
+    try {
+      const state = await currentNodeRecord(DATA_ROOT, targetPath);
+      if (state.state === "accepted") valid.push(targetPath);
+      else invalid.push(targetPath);
+    } catch {
+      invalid.push(targetPath);
+    }
+  }
+  return { paths: valid, inferred_paths: inferred.filter((targetPath) => valid.includes(targetPath)), invalid_paths: invalid };
+}
+
 registerTool(
   "record_feedback_correction",
   {
@@ -3302,9 +3398,14 @@ registerTool(
       applies_to: z.string().default("agent_behavior"),
       task_id: z.string().optional(),
       tags: z.array(z.string()).default([]),
+      contradicted_memory_paths: z.array(z.string()).max(12).default([]),
+      behavior_action: z.object({
+        memory_off_action: z.string().min(1),
+        expected_memory_on_action: z.string().min(1),
+      }).optional(),
     },
   },
-  async ({ correction, applies_to, task_id, tags }) => {
+  async ({ correction, applies_to, task_id, tags, contradicted_memory_paths, behavior_action }) => {
     const feedbackId = makeFeedbackId(correction);
     const createdAt = nowIso();
     const candidatePath = dataPath("50_Instances", "candidates", `${feedbackId}.json`);
@@ -3313,6 +3414,21 @@ registerTool(
     const candidateRelativePath = relDataPath(candidatePath);
     const reviewRelativePath = relDataPath(reviewPath);
     const provenanceRelativePath = relDataPath(provenancePath);
+    const sourcePromptMetadata = await correctionPromptBinding(task_id, createdAt);
+    const conflicts = await correctionConflictPaths({
+      correction,
+      appliesTo: applies_to,
+      acceptedPath: `50_Instances/accepted/${feedbackId}.json`,
+      explicitPaths: contradicted_memory_paths,
+    });
+    if (conflicts.invalid_paths.length > 0) {
+      return jsonResult({
+        ok: false,
+        error: "invalid_contradicted_memory_paths",
+        invalid_paths: conflicts.invalid_paths,
+        safe_action: "Use only existing accepted behavior-memory paths that are still in accepted lifecycle state.",
+      });
+    }
     const provenanceRecord = {
       provenance_id: feedbackId,
       type: "user_feedback_provenance",
@@ -3320,6 +3436,8 @@ registerTool(
       source_kind: "direct_user_correction",
       task_id: task_id ?? null,
       correction_sha256: sha256(correction),
+      source_prompt_metadata: sourcePromptMetadata,
+      contradicted_memory_paths: conflicts.paths,
       created_at: createdAt,
       updated_at: createdAt,
     };
@@ -3341,8 +3459,20 @@ registerTool(
       last_verified: dateStamp(),
       tags: Array.from(new Set(["feedback", "correction", "behavior", ...tags])),
       task_id: task_id ?? null,
+      source_prompt_metadata: sourcePromptMetadata,
+      contradicted_memory_paths: conflicts.paths,
+      conflict_detection: {
+        explicit_count: normalizeVaultPaths(contradicted_memory_paths).length,
+        inferred_count: conflicts.inferred_paths.length,
+        verified_count: conflicts.paths.length,
+      },
+      behavior_action: behavior_action ?? null,
       auto_promote: false,
-      promotion_blockers: ["manual_review_required", "correction_conflict_review_required"],
+      promotion_blockers: [
+        "manual_review_required",
+        "correction_conflict_resolution_required",
+        ...(sourcePromptMetadata.binding_status === "verified" ? [] : ["source_prompt_metadata_required"]),
+      ],
       created_at: createdAt,
       updated_at: createdAt,
     };
@@ -3352,7 +3482,9 @@ registerTool(
       status: "pending",
       candidate_path: candidateRelativePath,
       provenance_path: provenanceRelativePath,
-      required_checks: ["direct_user_correction", "conflicting_memory_review", "scope", "sensitivity"],
+      contradicted_memory_paths: conflicts.paths,
+      source_prompt_binding_status: sourcePromptMetadata.binding_status,
+      required_checks: ["direct_user_correction", "source_prompt_binding", "conflicting_memory_review", "scope", "sensitivity"],
       created_at: createdAt,
       updated_at: createdAt,
     };
@@ -3367,7 +3499,9 @@ registerTool(
           review_record: review,
           candidate_evidence_paths: [provenanceRelativePath],
           review_evidence_paths: [candidateRelativePath, provenanceRelativePath],
-          predecessor_paths: task_id ? [`.dino/tasks/${safeSlug(task_id)}.json`] : [],
+          predecessor_paths: sourcePromptMetadata.binding_status === "verified" && sourcePromptMetadata.task_path
+            ? [sourcePromptMetadata.task_path]
+            : [],
           at: createdAt,
         },
       ],
@@ -3383,6 +3517,8 @@ registerTool(
       review_path: reviewRelativePath,
       provenance_path: provenanceRelativePath,
       task_id: task_id ?? null,
+      source_prompt_binding_status: sourcePromptMetadata.binding_status,
+      contradicted_memory_paths: conflicts.paths,
       lifecycle_transaction_id: reviewAdmission.lifecycle_transaction.transaction_id,
       queue_destination: reviewAdmission.decisions[0]?.destination,
       os_version: DINOBRAIN_OS_VERSION,
@@ -3394,6 +3530,8 @@ registerTool(
       review_path: reviewRelativePath,
       provenance_path: provenanceRelativePath,
       accepted_path: null,
+      source_prompt_binding_status: sourcePromptMetadata.binding_status,
+      contradicted_memory_paths: conflicts.paths,
       lifecycle_transaction: reviewAdmission.lifecycle_transaction,
       queue_admission: reviewAdmission.decisions[0],
       event_log: eventLog,
@@ -3663,9 +3801,10 @@ registerTool(
       decision: z.enum(["approve", "reject"]),
       reviewer: z.string().default("manual-review"),
       notes: z.string().default(""),
+      correction_resolution: z.enum(["hold_superseded", "demote_superseded", "no_conflict"]).optional(),
     },
   },
-  async ({ candidate_id, decision, reviewer, notes }) => {
+  async ({ candidate_id, decision, reviewer, notes, correction_resolution }) => {
     const candidateId = safeSlug(candidate_id);
     const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
     const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);
@@ -3720,6 +3859,34 @@ registerTool(
     }
 
     const candidate = candidateState.record;
+    const isFeedbackCorrection = candidate.type === "feedback_correction";
+    const correctionConflictPaths = normalizeVaultPaths(
+      Array.isArray(candidate.contradicted_memory_paths) ? candidate.contradicted_memory_paths.map(String) : [],
+    );
+    const sourcePromptMetadata = candidate.source_prompt_metadata && typeof candidate.source_prompt_metadata === "object"
+      ? candidate.source_prompt_metadata as Record<string, unknown>
+      : null;
+    if (decision === "approve" && isFeedbackCorrection) {
+      const correctionBlockers = [
+        firstString(sourcePromptMetadata?.binding_status) !== "verified" ? "correction_source_prompt_unverified" : null,
+        correctionConflictPaths.length > 0 && !["hold_superseded", "demote_superseded"].includes(correction_resolution ?? "")
+          ? "correction_conflict_resolution_required"
+          : null,
+        correctionConflictPaths.length === 0 && correction_resolution !== "no_conflict"
+          ? "correction_no_conflict_attestation_required"
+          : null,
+      ].filter((value): value is string => Boolean(value));
+      if (correctionBlockers.length > 0) {
+        return jsonResult({
+          ok: false,
+          candidate_id: candidateId,
+          status: "blocked",
+          mutation_performed: false,
+          blockers: correctionBlockers,
+          reason: "Feedback correction approval requires verified source-prompt binding and explicit conflict resolution.",
+        });
+      }
+    }
     const evidence = candidate.evidence;
     const hasEvidence =
       typeof evidence === "object" &&
@@ -3744,11 +3911,42 @@ registerTool(
       decision,
       reviewer,
       notes,
+      correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+      contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
       reviewed_at: reviewedAt,
       updated_at: reviewedAt,
     });
 
     if (decision === "approve") {
+      const correctionConflictStates: Array<Awaited<ReturnType<typeof currentNodeRecord>> & { path: string }> = [];
+      if (isFeedbackCorrection) {
+        for (const conflictPath of correctionConflictPaths) {
+          try {
+            const state = await currentNodeRecord(DATA_ROOT, conflictPath);
+            if (state.state !== "accepted") {
+              return jsonResult({
+                ok: false,
+                candidate_id: candidateId,
+                status: "blocked",
+                mutation_performed: false,
+                blockers: ["correction_conflict_state_changed"],
+                conflict_path: conflictPath,
+                observed_state: state.state,
+              });
+            }
+            correctionConflictStates.push({ ...state, path: conflictPath });
+          } catch {
+            return jsonResult({
+              ok: false,
+              candidate_id: candidateId,
+              status: "blocked",
+              mutation_performed: false,
+              blockers: ["correction_conflict_missing_at_review"],
+              conflict_path: conflictPath,
+            });
+          }
+        }
+      }
       const acceptedBase = {
         ...withoutNodeLifecycle(candidate),
         status: "accepted",
@@ -3759,12 +3957,15 @@ registerTool(
         accepted_at: reviewedAt,
         source_candidate_path: candidateRelativePath,
         source_review_path: reviewRelativePath,
+        correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+        contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
+        supersedes_paths: isFeedbackCorrection ? correctionConflictPaths : [],
         promotion_blockers: [],
         quarantine: false,
         temperature: "hot",
         hold_reason: null,
         queue_destination: "accepted",
-        predecessor_paths: [candidateRelativePath, reviewRelativePath],
+        predecessor_paths: [candidateRelativePath, reviewRelativePath, ...correctionConflictPaths],
         updated_at: reviewedAt,
       };
       const acceptedStage = initializeLifecycleWrite(acceptedRelativePath, acceptedBase, {
@@ -3773,11 +3974,16 @@ registerTool(
         reason: "A reviewer approved the candidate after evidence and provenance checks.",
         actor: reviewer,
         evidence_paths: [reviewRelativePath],
-        predecessor_paths: [candidateRelativePath, reviewRelativePath],
+        predecessor_paths: [candidateRelativePath, reviewRelativePath, ...correctionConflictPaths],
         at: reviewedAt,
         idempotency_key: `candidate-approved|${candidateId}`,
       });
-      const approvedReview = { ...reviewBase, status: "approved", blockers: [] };
+      const approvedReview = {
+        ...reviewBase,
+        status: "approved",
+        blockers: [],
+        conflict_resolution_status: isFeedbackCorrection ? "resolved" : null,
+      };
       const eligibility = await evaluateAcceptedEligibility(DATA_ROOT, acceptedRelativePath, acceptedStage.mutation.record, {
         staged_records: { [reviewRelativePath]: approvedReview },
       });
@@ -3854,30 +4060,62 @@ registerTool(
         idempotency_key: `promotion-review-completed|${candidateId}`,
         sync_status: false,
       }, reviewState.sha256);
+      const correctionConflictWrites = correctionConflictStates.map((state) => {
+        const targetState: NodeLifecycleState = correction_resolution === "demote_superseded" ? "demoted" : "held";
+        const updatedRecord = mergePreservingNodeLifecycle(state.record, {
+          ...state.record,
+          superseded_by: acceptedRelativePath,
+          supersession_review_path: reviewRelativePath,
+          supersession_resolution: correction_resolution,
+          hold_reason: `Superseded by reviewed user correction ${candidateId}.`,
+          updated_at: reviewedAt,
+        });
+        return transitionThroughLifecycleStates(state.path, updatedRecord, [targetState], {
+          reason_code: "user_correction_superseded_behavior",
+          reason: `A reviewed direct user correction superseded this behavior memory via ${correction_resolution}.`,
+          actor: reviewer,
+          evidence_paths: [candidateRelativePath, reviewRelativePath],
+          successor_paths: [acceptedRelativePath],
+          at: reviewedAt,
+          idempotency_key: `correction-superseded|${candidateId}|${state.path}`,
+        }, state.sha256);
+      });
       acceptedStage.write.expected_before_sha256 = null;
       const lifecycleTransaction = await writeNodeLifecycleBatch(
         DATA_ROOT,
-        [candidateWrite, reviewWrite, acceptedStage.write],
+        [candidateWrite, reviewWrite, ...correctionConflictWrites, acceptedStage.write],
         { actor: reviewer, reason: `Approve candidate ${candidateId} into accepted memory.` },
       );
+      let correctionRecall = null;
+      if (isFeedbackCorrection) {
+        try {
+          correctionRecall = await recordFeedbackCorrectionRecall(DATA_ROOT, {
+            feedbackId: candidateId,
+            correction: firstString(candidate.claim, candidate.behavior_rule),
+            appliesTo: firstString(candidate.applies_to, "agent_behavior"),
+            taskId: firstString(candidate.task_id) || null,
+            acceptedPath: acceptedRelativePath,
+            createdAt: reviewedAt,
+            conflictingMemoryPaths: correctionConflictPaths,
+            conflictResolution: correction_resolution ?? null,
+          });
+        } catch (error) {
+          if (lifecycleTransaction.transaction_id) {
+            await rollbackNodeLifecycleTransaction(DATA_ROOT, lifecycleTransaction.transaction_id);
+          }
+          throw new Error(`Feedback correction recall write failed; lifecycle transaction rolled back: ${safeError(error)}`);
+        }
+      }
       await invalidateWikiIndex(DATA_ROOT);
       await invalidateSqliteWikiShard(DATA_ROOT);
-      if (candidate.type === "feedback_correction") {
-        await recordFeedbackCorrectionRecall(DATA_ROOT, {
-          feedbackId: candidateId,
-          correction: firstString(candidate.claim, candidate.behavior_rule),
-          appliesTo: firstString(candidate.applies_to, "agent_behavior"),
-          taskId: firstString(candidate.task_id) || null,
-          acceptedPath: acceptedRelativePath,
-          createdAt: reviewedAt,
-        });
-      }
       await appendEvent({
         event: "candidate_instance_reviewed",
         candidate_id: candidateId,
         decision,
         at: reviewedAt,
         accepted_path: acceptedRelativePath,
+        correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+        contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
         lifecycle_transaction_id: lifecycleTransaction.transaction_id,
       });
       return jsonResult({
@@ -3887,6 +4125,9 @@ registerTool(
         candidate_path: candidateRelativePath,
         review_path: reviewRelativePath,
         accepted_path: acceptedRelativePath,
+        correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+        contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
+        behavior_recall_path: correctionRecall?.ledger_path ?? null,
         lifecycle_transaction: lifecycleTransaction,
       });
     }

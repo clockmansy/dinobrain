@@ -259,6 +259,8 @@ PASS requires:
 Required evidence:
 
 - `.dino/state/behavior_recall_audit.jsonl`;
+- `.dino/state/behavior_recall_evidence_migration.json` plus immutable local
+  migration records binding old evidence references to task-matched trace hashes;
 - `.dino/state/behavior_recall_status.json`;
 - behavior golden/evaluation reports and `npm run verify:behavior-recall`.
 
@@ -417,6 +419,8 @@ the current-vault artifacts named above.
 | Source lineage | `npm run status:source-lineage` | HG-05 current-vault lineage status |
 | Lineage regression | `npm run verify:source-lineage` | HG-05 regression coverage |
 | Behavior recall | `npm run status:behavior-recall` | HG-07 current trigger and correction status |
+| Recall evidence migration | `npm run behavior:recall:migrate` | HG-07/HG-10 immutable stale-reference repair status |
+| Recall migration regression | `npm run behavior:recall:migrate:verify` | HG-07/HG-10 apply, tamper, rollback, and reapply proof |
 | Recall regression | `npm run verify:behavior-recall` | HG-07 regression coverage |
 | RAG proof | `npm run rag:proof` | HG-04 current proof generation |
 | RAG evaluation | `npm run eval:rag` | HG-04 current retrieval evaluation |
@@ -490,6 +494,8 @@ $commands = @(
   'npm run status:source-lineage',
   'npm run verify:source-lineage',
   'npm run status:behavior-recall',
+  'npm run behavior:recall:migrate',
+  'npm run behavior:recall:migrate:verify',
   'npm run verify:behavior-recall',
   'npm run rag:proof',
   'npm run eval:rag',

@@ -462,6 +462,22 @@ See `docs/REVIEW_QUEUE_BACKPRESSURE.md`.
 review, conflict resolution, later retrieval, and improved behavior evidence;
 all trigger classes are represented without synthetic status inflation.
 
+**Execution evidence (2026-07-11):** stale recall evidence is now repaired only
+through immutable, hash-bound migration records. The live vault dry-run found
+exactly two unique task-to-trace repairs and zero unresolved rows; apply made
+behavior recall healthy, rollback restored the two original blockers, and
+reapply restored healthy status with two validated migrations. The regression
+suite now drives a real stdio MCP flow: a task-bound correction candidate links
+its contradicted accepted rule before review, approval without an explicit
+resolution performs no mutation, and approval with `demote_superseded` commits
+the correction plus old-rule demotion in one lifecycle transaction. A later
+Context Pack excludes the old rule, retrieves the correction, and changes the
+structured action from the memory-off baseline to the reviewed expected action.
+Actual MCP `finish_task` calls cover completion, handoff, error, and direction
+change; the review flow supplies the correction trigger, with performed,
+skipped, and not-applicable decisions all represented. MEM-03 is complete;
+global completion remains open for later packages and external gates.
+
 #### MEM-04: Controlled compounding
 
 **Hard gates:** HG-06, HG-07
