@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -48,6 +48,8 @@ try {
   assert(dryRun.report.status === "needs_apply", `dry-run status mismatch: ${dryRun.report.status}`);
   assert(dryRun.report.counts.planned_repairs === 1, "dry-run did not plan exactly one unique repair");
   assert(dryRun.report.transaction_id === null, "dry-run unexpectedly mutated lifecycle state");
+  assert(dryRun.operationsPath === dryRun.statusPath, "dry-run unexpectedly published an operations summary");
+  assert(!existsSync(path.join(dataRoot, BEHAVIOR_RECALL_MIGRATION_ROOT)), "dry-run created a migration artifact");
 
   const applied = await applyBehaviorRecallEvidenceMigration(dataRoot, {
     now: new Date("2026-07-11T00:02:00.000Z"),

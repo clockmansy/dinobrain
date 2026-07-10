@@ -365,31 +365,34 @@ export async function applyBehaviorRecallEvidenceMigration(
         : "Behavior recall evidence migration blocked",
   };
   await atomicWriteJson(statusPath, report);
-  const operationsPath = dataPath(
-    dataRoot,
-    BEHAVIOR_RECALL_MIGRATION_OPERATIONS_DIR,
-    `behavior-recall-migration-${generatedAt.slice(0, 10).replace(/-/g, "")}-${repairs.length}.json`,
-  );
-  await atomicWriteJson(operationsPath, {
-    version: report.version,
-    status: report.status,
-    generated_at: report.generated_at,
-    apply: report.apply,
-    counts: report.counts,
-    migration_id: report.migration_id,
-    transaction_id: report.transaction_id,
-    recovery_ref: report.recovery_ref,
-    repairs: report.repairs.map((repair) => ({
-      recall_id_hash: sha256(repair.recall_id),
-      task_id_hash: sha256(repair.task_id),
-      old_evidence_path_hash: sha256(repair.old_evidence_path),
-      new_evidence_path_hash: sha256(repair.new_evidence_path),
-      source_entry_sha256: repair.source_entry_sha256,
-      source_trace_sha256: repair.source_trace_sha256,
-      reason_code: repair.reason_code,
-    })),
-    unresolved_count: report.unresolved.length,
-    note: "Public migration summary stores hashes only; task ids and trace paths remain local.",
-  });
+  let operationsPath = statusPath;
+  if (apply && transactionId && repairs.length > 0) {
+    operationsPath = dataPath(
+      dataRoot,
+      BEHAVIOR_RECALL_MIGRATION_OPERATIONS_DIR,
+      `behavior-recall-migration-${generatedAt.slice(0, 10).replace(/-/g, "")}-${repairs.length}.json`,
+    );
+    await atomicWriteJson(operationsPath, {
+      version: report.version,
+      status: report.status,
+      generated_at: report.generated_at,
+      apply: report.apply,
+      counts: report.counts,
+      migration_id: report.migration_id,
+      transaction_id: report.transaction_id,
+      recovery_ref: report.recovery_ref,
+      repairs: report.repairs.map((repair) => ({
+        recall_id_hash: sha256(repair.recall_id),
+        task_id_hash: sha256(repair.task_id),
+        old_evidence_path_hash: sha256(repair.old_evidence_path),
+        new_evidence_path_hash: sha256(repair.new_evidence_path),
+        source_entry_sha256: repair.source_entry_sha256,
+        source_trace_sha256: repair.source_trace_sha256,
+        reason_code: repair.reason_code,
+      })),
+      unresolved_count: report.unresolved.length,
+      note: "Public migration summary stores hashes only; task ids and trace paths remain local.",
+    });
+  }
   return { report, statusPath, operationsPath };
 }
