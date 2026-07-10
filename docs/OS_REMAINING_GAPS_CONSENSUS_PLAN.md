@@ -1,5 +1,9 @@
 # DinoBrain OS Remaining Gaps Consensus Plan
 
+> Historical consensus/work-plan record. It is not the completion authority.
+> Use `docs/OS_COMPLETION_CONDITIONS.md` for the normative hard gates and
+> `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md` for dated reviewer history.
+
 Status: superseded historical consensus draft
 Date: 2026-07-07
 Target: DinoBrain OS v2.2.x completion hardening

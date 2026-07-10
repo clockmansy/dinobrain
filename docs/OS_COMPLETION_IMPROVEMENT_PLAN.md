@@ -1,5 +1,10 @@
 # DinoBrain OS Completion Improvement Plan
 
+> Historical implementation plan. It is not the completion authority and its
+> dated current-state claims must not be used as fresh evidence. The normative
+> contract is `docs/OS_COMPLETION_CONDITIONS.md`; review history is in
+> `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`.
+
 Date: 2026-07-07
 Status: active implementation plan
 Governing document: `docs/OS_COMPLETION_CONDITIONS.md`

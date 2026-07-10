@@ -1,5 +1,10 @@
 # DinoBrain OS Unfinished Improvement Review
 
+> Historical review record. Its current-state and consensus sections apply only
+> to the dated revision reviewed here. The normative completion authority is
+> `docs/OS_COMPLETION_CONDITIONS.md`; later review history is in
+> `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`.
+
 Status: ten-agent consensus-approved completion contract; implementation gates still open
 Date: 2026-07-08
 Scope: current DinoBrain v2.2.1 app repo and `C:\Users\USER\Documents\dinobrain-data`

@@ -1,5 +1,9 @@
 # DinoBrain RAG OS Consensus
 
+> Historical RAG review record. It is not the completion authority. Current
+> hard gates are defined in `docs/OS_COMPLETION_CONDITIONS.md`, and later review
+> history is stored in `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`.
+
 Date: 2026-07-07
 Status: active critical audit
 Consensus: 20/20 subagents agree

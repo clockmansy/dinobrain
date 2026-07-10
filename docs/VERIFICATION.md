@@ -1,5 +1,10 @@
 # DinoBrain Verification
 
+Completion authority: `docs/OS_COMPLETION_CONDITIONS.md`. This file explains
+commands and artifacts, but a verifier description or isolated PASS does not
+override the normative hard-gate verdict. Dated reviewer/state history is kept
+in `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`.
+
 Date: 2026-07-01
 
 This document defines how to verify that DinoBrain is more than a note store.
