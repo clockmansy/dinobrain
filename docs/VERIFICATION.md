@@ -26,6 +26,7 @@ npm run completion:audit -- --plan-only --allow-not-complete
 npm run atomic:writers:verify
 npm run status:generation:verify
 npm run prompt:eligibility:verify
+npm run pre-response:gate:verify
 npm run smoke
 npm run audit:full-memory
 npm run audit:full-memory:verify
@@ -400,9 +401,20 @@ It verifies:
 - `get_context_pack` creates a trace and returns relevant memory.
 - `import_session` creates a local-only prompt archive and pending review candidates.
 - the hook returns `hookSpecificOutput.additionalContext`.
-- obvious secret-shaped prompt text is redacted before it reaches hook stdout or task records.
-- live events include `codex_prompt_submitted`, `task_started`, `context_pack_created`, `session_imported`, and `codex_preflight_completed`.
+- the final `additionalContext` SHA-256 matches the last delivery-ready event.
+- events are ordered as `codex_prompt_submitted`, `task_started`,
+  `context_pack_created`, `os_begin_task_completed`, then
+  `codex_preflight_completed`.
 - the PowerShell wrapper fails closed with a blocking hook decision when Node cannot be found.
+
+`npm run pre-response:gate:verify` exercises the independent action policy in
+separate temporary vaults. It proves that forged context declarations, missing
+or stale traces, an actually disabled required MCP tool, destructive requests,
+sensitive persistence, and policy-blocked DinoBrain data sync fail closed. It
+also proves that redacted sensitive assistance remains available without
+session growth/sync and that the hook's delivery nonce and context hash match
+the final ordered event. This fixture proof does not replace the fresh Codex and
+Claude live-client evidence required by HG-01.
 
 `npm run verify:codex-loop` extends this from hook preflight to the complete Codex loop. It creates a temporary data vault and a temporary bare Git remote, runs the hook, writes a proof artifact, calls `finish_task`, and asserts that both the preflight records and the finish/growth records are pushed to the remote under explicit conditional-push opt-in.
 

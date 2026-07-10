@@ -16,14 +16,17 @@ flowchart LR
   classify -->|user-interactive| start["DinoBrain os_begin_task"]
   classify -->|title / ambient / internal / diagnostic| filtered["Bounded local diagnostic only"]
   start --> pack["DinoBrain get_context_pack"]
-  start --> ingest["DinoBrain import_session"]
+  pack --> gate["Independent OS action gate"]
+  gate -->|allow / normal constrained| ingest["DinoBrain import_session"]
+  gate -->|block| terminal["Auto-terminal blocked trace"]
+  gate --> delivery["Hashed context delivery ready"]
   filtered --> events
   start --> events[".dino/events"]
   pack --> events
   ingest --> raw["10_Conversations/raw"]
   ingest --> review["50_Instances/candidates + 80_Review_Queue"]
   ingest --> events
-  pack --> injected["additionalContext injected into Codex"]
+  delivery --> injected["additionalContext injected into Codex"]
   events --> observatory["DinoBrain Observatory"]
   finish --> audit["audit_memory_use"]
   audit --> audits[".dino/audits"]
@@ -71,12 +74,24 @@ session turn reuses the first verified preflight instead of creating a second
 task. The PowerShell wrapper drains child output asynchronously and emits a
 visible fail-closed response when preflight exceeds its bounded timeout.
 
+The action gate does not trust caller-declared Context Pack fields. It verifies
+the task-bound pack path, bytes, SHA-256, age, ordered events, and the tools
+actually registered by the running MCP server. Data-vault sync requests also
+run the real sync policy as a dry-run. Results are `allow`,
+`constrained_action`, or `block` with explicit reason codes.
+
+`codex_preflight_completed` is appended only after the report, stable receipt,
+and final `additionalContext` payload are ready. The event stores the ordered
+chain, a delivery nonce, and the payload SHA-256. This proves hook delivery
+readiness; a fresh real-client proof is still required to prove model use.
+
 ## Commands
 
 ```powershell
 npm run build
 npm run hook:verify
 npm run prompt:eligibility:verify
+npm run pre-response:gate:verify
 npm run verify:codex-loop
 npm run verify:codex-live:recent
 npm run verify:codex-live -- --snippet "unique prompt text" --since "2026-07-07T00:00:00Z"
@@ -120,7 +135,12 @@ If global `npm` is not available, use the portable Node runtime installed by `in
 
 The hook records bounded task and event data, not raw full conversation logs. It redacts obvious secret patterns such as OpenAI key shapes, GitHub token shapes, AWS access key shapes, bearer/JWT tokens, API key assignments, token assignments, secret assignments, password assignments, cookie assignments, and private-key blocks before calling DinoBrain MCP tools.
 
-By default the hook also calls `import_session` with the redacted user prompt. This creates a local-only session archive and pending review candidates, but does not put those candidates into default retrieval.
+For normal prompts the hook also calls `import_session` with the redacted user
+prompt. This creates a local-only session archive and pending review candidates,
+but does not put those candidates into default retrieval. Sensitive prompts are
+restricted to metadata-only task/gate evidence: session import, memory growth,
+and automatic sync are skipped. A request that combines sensitive material with
+persistence or sync intent is blocked and auto-terminaled with a trace.
 
 It writes:
 

@@ -42,7 +42,14 @@ import {
   upsertSqliteOperationTrace,
 } from "./sqlite-shards.js";
 import { buildSessionImportPlan, type SessionMessageInput } from "./session-ingest.js";
-import { DINOBRAIN_OS_CONTRACT, DINOBRAIN_OS_VERSION, REQUIRED_OS_TOOLS, evaluateActionGates } from "./os-contract.js";
+import {
+  DINOBRAIN_OS_CONTRACT,
+  DINOBRAIN_OS_VERSION,
+  detectRequestActionIntent,
+  effectiveSensitivity,
+  evaluateActionGates,
+  type SyncRiskObservation,
+} from "./os-contract.js";
 import { invalidateWikiIndex } from "./wiki-index.js";
 
 const execFileAsync = promisify(execFile);
@@ -160,8 +167,25 @@ type TaskLaunchMetadata = {
   lease_seconds?: number;
 };
 
-function sha256(value: string): string {
+function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function sanitizeTaskRequest(request: string): {
+  request: string;
+  request_hash: string;
+  redactions: string[];
+  truncated: boolean;
+} {
+  const redacted = redactSensitiveText(request);
+  const maxChars = Math.max(200, Math.min(12_000, Number(process.env.DINOBRAIN_TASK_REQUEST_MAX_CHARS ?? 4_000)));
+  const truncated = redacted.truncated || redacted.text.length > maxChars;
+  return {
+    request: truncated ? `${redacted.text.slice(0, maxChars)}\n[truncated by DinoBrain task guard]` : redacted.text,
+    request_hash: sha256(request),
+    redactions: redacted.redactions,
+    truncated,
+  };
 }
 
 function classifyTaskLaunch(request: string, metadata: TaskLaunchMetadata) {
@@ -762,6 +786,67 @@ async function buildSyncPlan(options: {
   };
 }
 
+async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation> {
+  const intent = detectRequestActionIntent(request);
+  if (!intent.data_sync) {
+    return {
+      status: "not_requested",
+      changed_file_count: 0,
+      syncable_count: 0,
+      conditional_count: 0,
+      blocked_count: 0,
+      reason_codes: [],
+    };
+  }
+
+  try {
+    const plan = await buildSyncPlan({
+      includeSensitiveScan: true,
+      dryRun: true,
+      wouldPush: false,
+    });
+    if (!plan.ok) {
+      return {
+        status: "unavailable",
+        changed_file_count: 0,
+        syncable_count: 0,
+        conditional_count: 0,
+        blocked_count: 0,
+        reason_codes: ["git_sync_plan_unavailable"],
+      };
+    }
+    const status = plan.summary.blocked > 0
+      ? "blocked"
+      : plan.summary.conditional > 0
+        ? "review_required"
+        : "clean";
+    return {
+      status,
+      changed_file_count: plan.changed_file_count,
+      syncable_count: plan.summary.syncable,
+      conditional_count: plan.summary.conditional,
+      blocked_count: plan.summary.blocked,
+      reason_codes: Array.from(
+        new Set(
+          plan.files
+            .filter((file) => file.classification !== "syncable")
+            .flatMap((file) => file.reasons)
+            .slice(0, 24),
+        ),
+      ),
+    };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      changed_file_count: 0,
+      syncable_count: 0,
+      conditional_count: 0,
+      blocked_count: 0,
+      reason_codes: [`git_sync_observation_failed:${safeError(error)}`],
+    };
+  }
+}
+
 async function gitOutput(args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, {
     cwd: DATA_ROOT,
@@ -980,10 +1065,31 @@ type GateContextEvidence = {
   hasContextPack: boolean;
   contextItemCount: number;
   contextPackPath: string | null;
-  verificationStatus: "verified" | "missing" | "not_provided";
+  contextPackId: string | null;
+  contextTraceSha256: string | null;
+  contextCreatedAt: string | null;
+  contextAgeMs: number | null;
+  contextTraceVerified: boolean;
+  contextTraceFresh: boolean;
+  eventOrderVerified: boolean;
+  eventOrder: string[];
+  hookRunId: string | null;
+  promptHash: string | null;
+  verificationStatus: "verified" | "missing" | "not_provided" | "invalid" | "stale" | "unbound";
   declaredHasContextPack: boolean;
   declaredContextItemCount: number;
   declarationMismatch: boolean;
+  reasonCodes: string[];
+};
+
+type TaskPreflightEvidence = {
+  contextPackPath: string | null;
+  contextTraceSha256: string | null;
+  hookRunId: string | null;
+  promptHash: string | null;
+  eventOrderVerified: boolean;
+  eventOrder: string[];
+  reasonCodes: string[];
 };
 
 function makeSourceChunkId(sourceTitle: string): string {
@@ -1171,57 +1277,292 @@ async function writeGateReport(taskId: string, value: Record<string, unknown>): 
   return relDataPath(gatePath);
 }
 
-async function readContextPackEvidence(contextPackPath: string): Promise<{
-  contextPackPath: string;
-  contextItemCount: number;
-} | null> {
-  const normalized = normalizeVaultPath(contextPackPath);
-  const pack = await readJson<Record<string, unknown>>(dataPath(normalized));
-  if (!pack) return null;
-  const items = Array.isArray(pack.items) ? pack.items : [];
-  const contextItemCount = typeof pack.included_item_count === "number" ? pack.included_item_count : items.length;
-  return {
-    contextPackPath: normalized,
-    contextItemCount,
+async function finalizePreflightBlockedTask(params: {
+  taskId: string;
+  taskPath: string;
+  taskRecord: Record<string, unknown>;
+  contextPackPath: string | null;
+  gateReportPath: string;
+  gates: ReturnType<typeof evaluateActionGates>;
+}): Promise<{ record: Record<string, unknown>; trace_path: string; event_log: string }> {
+  const finishedAt = nowIso();
+  const traceRelativePath = `.dino/traces/${safeSlug(params.taskId)}.json`;
+  const tracePath = dataPath(traceRelativePath);
+  const lease = params.taskRecord.lease as Record<string, unknown> | undefined;
+  const terminalOwnerId = firstString(lease?.owner_id, "preflight-gate");
+  const terminalLease = lease
+    ? {
+        ...lease,
+        heartbeat_at: finishedAt,
+        state: "terminal",
+        terminal_at: finishedAt,
+      }
+    : null;
+  const contextPackPaths = params.contextPackPath ? [normalizeVaultPath(params.contextPackPath)] : [];
+  const trace = {
+    task_id: params.taskId,
+    outcome: "blocked",
+    summary: `Pre-response gate blocked the requested action: ${params.gates.reason_codes.join(", ")}`,
+    growth_policy: "trace_only",
+    changed_files: [],
+    decisions: params.gates.reason_codes,
+    next_steps: params.gates.gates.filter((gate) => gate.level === "block").map((gate) => gate.safe_action),
+    used_memory_paths: [],
+    context_pack_paths: contextPackPaths,
+    session_archive_paths: [],
+    candidate_paths: [],
+    search_queries: [],
+    gate_report_path: params.gateReportPath,
+    action_decision: params.gates.action_decision,
+    lease_id: firstString(lease?.lease_id) || null,
+    terminal_owner_id: terminalOwnerId,
+    memory_use: {
+      used_memory_count: 0,
+      context_pack_count: contextPackPaths.length,
+      session_archive_count: 0,
+      candidate_count: 0,
+      search_query_count: 0,
+    },
+    finished_at: finishedAt,
   };
+  const updated = {
+    ...params.taskRecord,
+    status: "blocked",
+    block_reason: "pre_response_action_gate",
+    gate_report_path: params.gateReportPath,
+    action_decision: params.gates.action_decision,
+    gate_reason_codes: params.gates.reason_codes,
+    updated_at: finishedAt,
+    finished_at: finishedAt,
+    trace_path: traceRelativePath,
+    lease: terminalLease,
+    terminal_owner_id: terminalOwnerId,
+  };
+  await writeJson(params.taskPath, updated);
+  await writeJson(tracePath, trace);
+  const taskRelativePath = relDataPath(params.taskPath);
+  await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
+  await upsertOperationTrace(DATA_ROOT, traceRelativePath, trace);
+  await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
+  await upsertSqliteOperationTrace(DATA_ROOT, traceEntryFromRecord(traceRelativePath, trace));
+  const eventLog = await appendEvent({
+    event: "task_finished",
+    task_id: params.taskId,
+    outcome: "blocked",
+    at: finishedAt,
+    trace_path: traceRelativePath,
+    context_pack_paths: contextPackPaths,
+    gate_report_path: params.gateReportPath,
+    action_decision: params.gates.action_decision,
+    gate_reason_codes: params.gates.reason_codes,
+    lease_id: firstString(lease?.lease_id) || null,
+    terminal_owner_id: terminalOwnerId,
+    pre_response_auto_terminal: true,
+  });
+  return { record: updated, trace_path: traceRelativePath, event_log: eventLog };
 }
 
-function eventContextPackPath(event: Record<string, unknown>, taskId: string): string | null {
-  if (event.task_id !== taskId) return null;
-  for (const key of ["context_pack_trace", "context_pack_path"]) {
-    const value = event[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
-}
-
-async function findTaskContextPackPath(taskId: string): Promise<string | null> {
+async function readRecentOsEvents(): Promise<Record<string, unknown>[]> {
   const eventDir = dataPath(".dino", "events");
   let entries: Array<import("node:fs").Dirent>;
   try {
     entries = await fs.readdir(eventDir, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
   const files = entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map((entry) => path.join(eventDir, entry.name))
-    .sort((a, b) => b.localeCompare(a));
-
+    .sort((a, b) => a.localeCompare(b))
+    .slice(-4);
+  const events: Record<string, unknown>[] = [];
   for (const file of files) {
-    const lines = (await fs.readFile(file, "utf8")).split(/\r?\n/).filter(Boolean).reverse();
+    const lines = (await fs.readFile(file, "utf8")).split(/\r?\n/).filter(Boolean);
     for (const line of lines) {
       try {
-        const event = JSON.parse(line) as Record<string, unknown>;
-        const contextPackPath = eventContextPackPath(event, taskId);
-        if (contextPackPath) return contextPackPath;
+        events.push(JSON.parse(line) as Record<string, unknown>);
       } catch {
         continue;
       }
     }
   }
-  return null;
+  return events;
+}
+
+async function findTaskPreflightEvidence(taskId: string, requireCompleted: boolean): Promise<TaskPreflightEvidence> {
+  const events = await readRecentOsEvents();
+  const startedIndex = events.findIndex((event) => event.event === "task_started" && event.task_id === taskId);
+  const started = startedIndex >= 0 ? events[startedIndex] : null;
+  const contextIndex = events.findIndex(
+    (event, index) => index > startedIndex && event.event === "context_pack_created" && event.task_id === taskId,
+  );
+  const contextEvent = contextIndex >= 0 ? events[contextIndex] : null;
+  const completedIndex = events.findIndex(
+    (event, index) =>
+      index > contextIndex &&
+      ["os_begin_task_completed", "manual_preflight_context_ready"].includes(firstString(event.event)) &&
+      event.task_id === taskId,
+  );
+  const completed = completedIndex >= 0 ? events[completedIndex] : null;
+  const hookRunId = firstString(started?.hook_run_id, contextEvent?.hook_run_id, completed?.hook_run_id) || null;
+  const promptHash = firstString(started?.prompt_hash, contextEvent?.prompt_hash, completed?.prompt_hash) || null;
+  const hookSubmissionRequired = firstString(started?.launch_source).toLowerCase().includes("hook");
+  const submittedIndex = hookRunId && hookSubmissionRequired
+    ? events.findIndex(
+        (event, index) =>
+          index < startedIndex &&
+          event.event === "codex_prompt_submitted" &&
+          event.hook_run_id === hookRunId &&
+          (!promptHash || event.prompt_hash === promptHash),
+      )
+    : -1;
+  const reasonCodes: string[] = [];
+  if (!started) reasonCodes.push("task_started_event_missing");
+  if (!contextEvent) reasonCodes.push("context_pack_created_event_missing");
+  if (requireCompleted && !completed) reasonCodes.push("preflight_completion_event_missing");
+  if (hookSubmissionRequired && submittedIndex < 0) reasonCodes.push("codex_prompt_submitted_event_missing");
+  const hashes = [started?.prompt_hash, contextEvent?.prompt_hash, completed?.prompt_hash]
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  if (new Set(hashes).size > 1) reasonCodes.push("preflight_prompt_hash_mismatch");
+  const hookIds = [started?.hook_run_id, contextEvent?.hook_run_id, completed?.hook_run_id]
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+  if (new Set(hookIds).size > 1) reasonCodes.push("preflight_hook_run_mismatch");
+  const orderVerified =
+    reasonCodes.length === 0 &&
+    startedIndex >= 0 &&
+    contextIndex > startedIndex &&
+    (!requireCompleted || completedIndex > contextIndex) &&
+    (!hookSubmissionRequired || submittedIndex < startedIndex);
+  return {
+    contextPackPath: firstString(completed?.context_pack_trace, contextEvent?.path) || null,
+    contextTraceSha256: firstString(completed?.context_trace_sha256, contextEvent?.trace_sha256) || null,
+    hookRunId,
+    promptHash,
+    eventOrderVerified: orderVerified,
+    eventOrder: [
+      ...(hookSubmissionRequired && submittedIndex >= 0 ? ["codex_prompt_submitted"] : []),
+      ...(startedIndex >= 0 ? ["task_started"] : []),
+      ...(contextIndex >= 0 ? ["context_pack_created"] : []),
+      ...(completedIndex >= 0 ? [firstString(completed?.event)] : []),
+    ],
+    reasonCodes,
+  };
+}
+
+async function inspectContextPackEvidence(params: {
+  taskId: string;
+  contextPackPath: string;
+  expectedTraceSha256: string | null;
+  preflight: TaskPreflightEvidence;
+  declaredHasContextPack: boolean;
+  declaredContextItemCount: number;
+}): Promise<GateContextEvidence> {
+  const reasonCodes = [...params.preflight.reasonCodes];
+  let normalized: string;
+  try {
+    normalized = normalizeVaultPath(params.contextPackPath);
+  } catch {
+    return {
+      hasContextPack: false,
+      contextItemCount: 0,
+      contextPackPath: null,
+      contextPackId: null,
+      contextTraceSha256: null,
+      contextCreatedAt: null,
+      contextAgeMs: null,
+      contextTraceVerified: false,
+      contextTraceFresh: false,
+      eventOrderVerified: params.preflight.eventOrderVerified,
+      eventOrder: params.preflight.eventOrder,
+      hookRunId: params.preflight.hookRunId,
+      promptHash: params.preflight.promptHash,
+      verificationStatus: "invalid",
+      declaredHasContextPack: params.declaredHasContextPack,
+      declaredContextItemCount: params.declaredContextItemCount,
+      declarationMismatch: true,
+      reasonCodes: [...reasonCodes, "context_trace_path_invalid"],
+    };
+  }
+  if (!normalized.startsWith(".dino/context-packs/") || !normalized.endsWith(".json")) {
+    reasonCodes.push("context_trace_path_outside_context_pack_root");
+  }
+  let raw: Buffer;
+  try {
+    raw = await fs.readFile(dataPath(normalized));
+  } catch {
+    return {
+      hasContextPack: false,
+      contextItemCount: 0,
+      contextPackPath: normalized,
+      contextPackId: null,
+      contextTraceSha256: null,
+      contextCreatedAt: null,
+      contextAgeMs: null,
+      contextTraceVerified: false,
+      contextTraceFresh: false,
+      eventOrderVerified: params.preflight.eventOrderVerified,
+      eventOrder: params.preflight.eventOrder,
+      hookRunId: params.preflight.hookRunId,
+      promptHash: params.preflight.promptHash,
+      verificationStatus: "missing",
+      declaredHasContextPack: params.declaredHasContextPack,
+      declaredContextItemCount: params.declaredContextItemCount,
+      declarationMismatch: params.declaredHasContextPack || params.declaredContextItemCount > 0,
+      reasonCodes: [...reasonCodes, "context_trace_missing"],
+    };
+  }
+  const traceSha256 = sha256(raw);
+  let pack: Record<string, unknown>;
+  try {
+    pack = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+  } catch {
+    pack = {};
+    reasonCodes.push("context_trace_json_invalid");
+  }
+  const packId = firstString(pack.pack_id) || null;
+  const createdAt = firstString(pack.created_at) || null;
+  const items = Array.isArray(pack.items) ? pack.items : [];
+  const declaredPackItemCount = typeof pack.included_item_count === "number" ? pack.included_item_count : -1;
+  if (!packId || path.basename(normalized, ".json") !== packId) reasonCodes.push("context_trace_pack_id_mismatch");
+  if (pack.task_id !== params.taskId) reasonCodes.push("context_trace_task_binding_mismatch");
+  if (declaredPackItemCount !== items.length) reasonCodes.push("context_trace_item_count_mismatch");
+  if (!params.expectedTraceSha256 || traceSha256 !== params.expectedTraceSha256) {
+    reasonCodes.push("context_trace_hash_mismatch");
+  }
+  const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN;
+  const ageMs = Number.isFinite(createdMs) ? Date.now() - createdMs : null;
+  if (ageMs === null) reasonCodes.push("context_trace_created_at_invalid");
+  if (ageMs !== null && ageMs < -60_000) reasonCodes.push("context_trace_from_future");
+  const maxAgeMs = Math.max(
+    100,
+    Math.min(24 * 60 * 60 * 1000, Number(process.env.DINOBRAIN_GATE_CONTEXT_MAX_AGE_SECONDS ?? 900) * 1000),
+  );
+  const fresh = ageMs !== null && ageMs >= -60_000 && ageMs <= maxAgeMs;
+  if (!fresh) reasonCodes.push("context_trace_stale");
+  const verificationErrors = reasonCodes.filter((code) => code !== "context_trace_stale");
+  const verified = verificationErrors.length === 0 && params.preflight.eventOrderVerified;
+  return {
+    hasContextPack: true,
+    contextItemCount: declaredPackItemCount >= 0 ? declaredPackItemCount : 0,
+    contextPackPath: normalized,
+    contextPackId: packId,
+    contextTraceSha256: traceSha256,
+    contextCreatedAt: createdAt,
+    contextAgeMs: ageMs,
+    contextTraceVerified: verified,
+    contextTraceFresh: fresh,
+    eventOrderVerified: params.preflight.eventOrderVerified,
+    eventOrder: params.preflight.eventOrder,
+    hookRunId: params.preflight.hookRunId,
+    promptHash: params.preflight.promptHash,
+    verificationStatus: verified ? (fresh ? "verified" : "stale") : "invalid",
+    declaredHasContextPack: params.declaredHasContextPack,
+    declaredContextItemCount: params.declaredContextItemCount,
+    declarationMismatch:
+      !params.declaredHasContextPack || params.declaredContextItemCount !== Math.max(0, declaredPackItemCount),
+    reasonCodes,
+  };
 }
 
 async function deriveGateContextEvidence(params: {
@@ -1230,38 +1571,75 @@ async function deriveGateContextEvidence(params: {
   declaredHasContextPack: boolean;
   declaredContextItemCount: number;
 }): Promise<GateContextEvidence> {
-  const candidates = [
-    params.contextPackPath?.trim() || "",
-    params.taskId ? (await findTaskContextPackPath(params.taskId)) ?? "" : "",
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    const verified = await readContextPackEvidence(candidate);
-    if (!verified) continue;
+  const preflight = await findTaskPreflightEvidence(params.taskId, true);
+  const canonicalPath = preflight.contextPackPath;
+  let declaredPath = "";
+  if (params.contextPackPath?.trim()) {
+    try {
+      declaredPath = normalizeVaultPath(params.contextPackPath);
+    } catch {
+      declaredPath = "invalid";
+    }
+  }
+  if (declaredPath && canonicalPath && declaredPath !== canonicalPath) {
     return {
-      hasContextPack: true,
-      contextItemCount: verified.contextItemCount,
-      contextPackPath: verified.contextPackPath,
-      verificationStatus: "verified",
+      hasContextPack: false,
+      contextItemCount: 0,
+      contextPackPath: canonicalPath,
+      contextPackId: null,
+      contextTraceSha256: preflight.contextTraceSha256,
+      contextCreatedAt: null,
+      contextAgeMs: null,
+      contextTraceVerified: false,
+      contextTraceFresh: false,
+      eventOrderVerified: preflight.eventOrderVerified,
+      eventOrder: preflight.eventOrder,
+      hookRunId: preflight.hookRunId,
+      promptHash: preflight.promptHash,
+      verificationStatus: "unbound",
       declaredHasContextPack: params.declaredHasContextPack,
       declaredContextItemCount: params.declaredContextItemCount,
-      declarationMismatch:
-        !params.declaredHasContextPack || params.declaredContextItemCount !== verified.contextItemCount,
+      declarationMismatch: true,
+      reasonCodes: [...preflight.reasonCodes, "declared_context_trace_not_bound_to_task"],
     };
   }
-
+  if (canonicalPath) {
+    return inspectContextPackEvidence({
+      taskId: params.taskId,
+      contextPackPath: canonicalPath,
+      expectedTraceSha256: preflight.contextTraceSha256,
+      preflight,
+      declaredHasContextPack: params.declaredHasContextPack,
+      declaredContextItemCount: params.declaredContextItemCount,
+    });
+  }
   return {
     hasContextPack: false,
     contextItemCount: 0,
     contextPackPath: null,
-    verificationStatus: candidates.length > 0 ? "missing" : "not_provided",
+    contextPackId: null,
+    contextTraceSha256: null,
+    contextCreatedAt: null,
+    contextAgeMs: null,
+    contextTraceVerified: false,
+    contextTraceFresh: false,
+    eventOrderVerified: false,
+    eventOrder: preflight.eventOrder,
+    hookRunId: preflight.hookRunId,
+    promptHash: preflight.promptHash,
+    verificationStatus: params.contextPackPath ? "missing" : "not_provided",
     declaredHasContextPack: params.declaredHasContextPack,
     declaredContextItemCount: params.declaredContextItemCount,
     declarationMismatch: params.declaredHasContextPack || params.declaredContextItemCount > 0,
+    reasonCodes: [...preflight.reasonCodes, "task_bound_context_trace_missing"],
   };
 }
 
-async function buildContextPackRecord(question: string, limit: number): Promise<Record<string, unknown>> {
+async function buildContextPackRecord(
+  question: string,
+  limit: number,
+  linkage: { taskId?: string; hookRunId?: string; promptHash?: string } = {},
+): Promise<Record<string, unknown>> {
   const { records, ranked, stats } = await getContextPackItems(DATA_ROOT, question, limit);
   const packId = makePackId(question);
   const createdAt = nowIso();
@@ -1279,6 +1657,9 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
     pack_id: packId,
     pack_type: "standard",
     os_version: DINOBRAIN_OS_VERSION,
+    task_id: linkage.taskId ?? null,
+    hook_run_id: linkage.hookRunId ?? null,
+    prompt_hash: linkage.promptHash ?? null,
     question,
     created_at: createdAt,
     ranking_inputs: standardRankingInputsForMode(stats.retrieval_mode),
@@ -1300,13 +1681,18 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
   };
   await writeJson(packPath, trace);
   const packRelativePath = relDataPath(packPath);
+  const traceSha256 = sha256(await fs.readFile(packPath));
   await upsertOperationContextPack(DATA_ROOT, packRelativePath, trace);
   await upsertSqliteOperationContextPack(DATA_ROOT, contextPackEntryFromRecord(packRelativePath, trace));
   const eventLog = await appendEvent({
     event: "context_pack_created",
     pack_id: packId,
+    task_id: linkage.taskId ?? null,
+    hook_run_id: linkage.hookRunId ?? null,
+    prompt_hash: linkage.promptHash ?? null,
     at: createdAt,
     path: packRelativePath,
+    trace_sha256: traceSha256,
     item_count: items.length,
     retrieval_mode: stats.retrieval_mode,
     os_version: DINOBRAIN_OS_VERSION,
@@ -1317,8 +1703,10 @@ async function buildContextPackRecord(question: string, limit: number): Promise<
     pack_type: "standard",
     os_version: DINOBRAIN_OS_VERSION,
     question,
+    created_at: createdAt,
     data_root: DATA_ROOT,
     trace_path: packRelativePath,
+    trace_sha256: traceSha256,
     event_log: eventLog,
     ranking_inputs: trace.ranking_inputs,
     scanned_record_count: records.length,
@@ -1355,7 +1743,26 @@ const server = new McpServer({
   version: DINOBRAIN_OS_VERSION,
 });
 
-server.registerTool(
+const disabledOsTools = new Set(
+  envString("DINOBRAIN_DISABLED_OS_TOOLS", "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+const registeredToolNames = new Set<string>();
+const registerTool = ((name: string, config: unknown, callback: unknown) => {
+  const protectedEntrypoint = name === "os_begin_task" || name === "os_gate";
+  if (disabledOsTools.has(name) && !protectedEntrypoint) return undefined;
+  const registered = server.registerTool(name, config as never, callback as never);
+  registeredToolNames.add(name);
+  return registered;
+}) as McpServer["registerTool"];
+
+function observedOsTools(): string[] {
+  return Array.from(registeredToolNames).sort((a, b) => a.localeCompare(b));
+}
+
+registerTool(
   "os_begin_task",
   {
     title: "OS Begin Task",
@@ -1371,10 +1778,13 @@ server.registerTool(
   },
   async ({ request, project, mode, sensitivity, limit, ...launchMetadata }) => {
     const metadata = launchMetadata as TaskLaunchMetadata;
-    const filtered = await filteredTaskLaunch(request, metadata, "os_begin_task");
+    const sanitized = sanitizeTaskRequest(request);
+    const storedRequest = sanitized.request;
+    const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
+    const filtered = await filteredTaskLaunch(storedRequest, metadata, "os_begin_task");
     if (filtered) return jsonResult(filtered);
-    const eligibility = classifyTaskLaunch(request, metadata);
-    const dedupeClaim = await claimTaskStart(metadata, request);
+    const eligibility = classifyTaskLaunch(storedRequest, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, storedRequest);
     if (!dedupeClaim.acquired) {
       if (dedupeClaim.response) {
         return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
@@ -1390,24 +1800,30 @@ server.registerTool(
         safe_action: "Do not perform substantial work; retry from the same trusted client session after the first preflight completes.",
       });
     }
-    const taskId = makeTaskId(request);
+    const taskId = makeTaskId(storedRequest);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
     const createdAt = nowIso();
-    const lease = taskLease(request, metadata, createdAt);
+    const lease = taskLease(storedRequest, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
-      request,
+      request: storedRequest,
+      request_hash: sanitized.request_hash,
+      request_redactions: sanitized.redactions,
+      request_truncated: sanitized.truncated,
       project: project ?? null,
       mode,
-      sensitivity,
+      sensitivity: sensitivityEvidence.sensitivity,
+      reported_sensitivity: sensitivityEvidence.reported,
+      detected_sensitivity: sensitivityEvidence.detected,
+      sensitivity_hits: sensitivityEvidence.hits,
       os_version: DINOBRAIN_OS_VERSION,
       contract: DINOBRAIN_OS_CONTRACT,
       created_at: createdAt,
       updated_at: createdAt,
       data_root: DATA_ROOT,
-      sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
-      ...taskLaunchEvidence(request, metadata, eligibility),
+      sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
+      ...taskLaunchEvidence(storedRequest, metadata, eligibility),
       lease,
       terminal_owner_id: null,
     };
@@ -1423,39 +1839,45 @@ server.registerTool(
       os_version: DINOBRAIN_OS_VERSION,
       prompt_hash: record.prompt_hash,
       prompt_classification: record.prompt_classification,
+      hook_run_id: record.hook_run_id,
+      launch_kind: record.launch_kind,
+      launch_source: record.launch_source,
       lease_id: lease.lease_id,
       owner_id: lease.owner_id,
     });
 
     let contextPack: Record<string, unknown>;
     try {
-      contextPack = await buildContextPackRecord(request, limit);
+      contextPack = await buildContextPackRecord(storedRequest, limit, {
+        taskId,
+        hookRunId: metadata.hook_run_id,
+        promptHash: firstString(record.prompt_hash),
+      });
     } catch (error) {
       const errorMessage = safeError(error);
       const blockedAt = nowIso();
-      const blockedRecord = {
-        ...record,
-        status: "blocked",
-        block_reason: "context_pack_failed",
-        error: errorMessage,
-        updated_at: blockedAt,
-      };
-      await writeJson(taskPath, blockedRecord);
-      await upsertOperationTask(DATA_ROOT, taskRelativePath, blockedRecord);
-      await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, blockedRecord));
+      const syncObservation = await observeGateSyncRisk(request);
       const gates = evaluateActionGates({
         request,
         hasContextPack: false,
         contextItemCount: 0,
-        sensitivity,
-        exposedTools: [...REQUIRED_OS_TOOLS],
+        contextTraceVerified: false,
+        contextTraceFresh: false,
+        preflightEventOrderVerified: false,
+        sensitivity: sensitivityEvidence.sensitivity,
+        exposedTools: observedOsTools(),
+        syncObservation,
       });
       const gateReportPath = await writeGateReport(taskId, {
         task_id: taskId,
-        request,
+        request: storedRequest,
+        request_hash: sanitized.request_hash,
+        request_redactions: sanitized.redactions,
         generated_at: blockedAt,
         context_pack_path: null,
         context_item_count: 0,
+        observed_tools: observedOsTools(),
+        sync_observation: syncObservation,
         error: errorMessage,
         ...gates,
       });
@@ -1464,44 +1886,73 @@ server.registerTool(
         task_id: taskId,
         at: blockedAt,
         gate_status: gates.status,
+        action_decision: gates.action_decision,
         fail_closed: true,
         gate_report_path: gateReportPath,
         error: errorMessage,
         os_version: DINOBRAIN_OS_VERSION,
       });
+      const blocked = await finalizePreflightBlockedTask({
+        taskId,
+        taskPath,
+        taskRecord: { ...record, error: errorMessage },
+        contextPackPath: null,
+        gateReportPath,
+        gates,
+      });
       const response = {
         ok: false,
         os_version: DINOBRAIN_OS_VERSION,
         contract: DINOBRAIN_OS_CONTRACT,
-        fail_closed: true,
         gate_status: gates.status,
-        gates: gates.gates,
+        ...gates,
         task_id: taskId,
         task_path: taskRelativePath,
-        lease,
+        lease: blocked.record.lease,
         event_log: taskEventLog,
         gate_event_log: gateEventLog,
         gate_report_path: gateReportPath,
-        record: blockedRecord,
+        trace_path: blocked.trace_path,
+        terminal_event_log: blocked.event_log,
+        record: blocked.record,
         context_pack: null,
         error: errorMessage,
       };
       await completeTaskStart(dedupeClaim, response);
       return jsonResult(response);
     }
-    const gates = evaluateActionGates({
+    const preliminaryPreflight = await findTaskPreflightEvidence(taskId, false);
+    const contextEvidence = await inspectContextPackEvidence({
+      taskId,
+      contextPackPath: firstString(contextPack.trace_path),
+      expectedTraceSha256: firstString(contextPack.trace_sha256) || null,
+      preflight: preliminaryPreflight,
+      declaredHasContextPack: true,
+      declaredContextItemCount: typeof contextPack.item_count === "number" ? contextPack.item_count : 0,
+    });
+    const syncObservation = await observeGateSyncRisk(request);
+    let gates = evaluateActionGates({
       request,
-      hasContextPack: typeof contextPack.trace_path === "string",
-      contextItemCount: typeof contextPack.item_count === "number" ? contextPack.item_count : 0,
-      sensitivity,
-      exposedTools: [...REQUIRED_OS_TOOLS],
+      hasContextPack: contextEvidence.hasContextPack,
+      contextItemCount: contextEvidence.contextItemCount,
+      contextTraceVerified: contextEvidence.contextTraceVerified,
+      contextTraceFresh: contextEvidence.contextTraceFresh,
+      preflightEventOrderVerified: contextEvidence.eventOrderVerified,
+      sensitivity: sensitivityEvidence.sensitivity,
+      exposedTools: observedOsTools(),
+      syncObservation,
     });
     const gateReportPath = await writeGateReport(taskId, {
       task_id: taskId,
-      request,
+      request: storedRequest,
+      request_hash: sanitized.request_hash,
+      request_redactions: sanitized.redactions,
       generated_at: nowIso(),
       context_pack_path: contextPack.trace_path,
       context_item_count: contextPack.item_count,
+      context_evidence: contextEvidence,
+      observed_tools: observedOsTools(),
+      sync_observation: syncObservation,
       ...gates,
     });
     const gateEventLog = await appendEvent({
@@ -1509,27 +1960,88 @@ server.registerTool(
       task_id: taskId,
       at: nowIso(),
       context_pack_trace: contextPack.trace_path,
+      context_trace_sha256: contextPack.trace_sha256,
       context_item_count: contextPack.item_count,
+      hook_run_id: metadata.hook_run_id ?? null,
+      prompt_hash: record.prompt_hash,
       gate_status: gates.status,
+      action_decision: gates.action_decision,
       fail_closed: gates.fail_closed,
       gate_report_path: gateReportPath,
       os_version: DINOBRAIN_OS_VERSION,
     });
-
+    const finalPreflight = await findTaskPreflightEvidence(taskId, true);
+    if (!finalPreflight.eventOrderVerified) {
+      gates = evaluateActionGates({
+        request,
+        hasContextPack: contextEvidence.hasContextPack,
+        contextItemCount: contextEvidence.contextItemCount,
+        contextTraceVerified: contextEvidence.contextTraceVerified,
+        contextTraceFresh: contextEvidence.contextTraceFresh,
+        preflightEventOrderVerified: false,
+        sensitivity: sensitivityEvidence.sensitivity,
+        exposedTools: observedOsTools(),
+        syncObservation,
+      });
+      await appendEvent({
+        event: "os_begin_task_order_failed_closed",
+        task_id: taskId,
+        at: nowIso(),
+        gate_report_path: gateReportPath,
+        reason_codes: finalPreflight.reasonCodes,
+        os_version: DINOBRAIN_OS_VERSION,
+      });
+    }
+    const existingGateReport = (await readJson<Record<string, unknown>>(dataPath(gateReportPath))) ?? {};
+    await writeJson(dataPath(gateReportPath), {
+      ...existingGateReport,
+      generated_at: nowIso(),
+      context_evidence: { ...contextEvidence, eventOrderVerified: finalPreflight.eventOrderVerified, eventOrder: finalPreflight.eventOrder },
+      preflight_evidence: finalPreflight,
+      ...gates,
+    });
+    const gatedRecord = {
+      ...record,
+      gate_report_path: gateReportPath,
+      gate_status: gates.status,
+      action_decision: gates.action_decision,
+      gate_reason_codes: gates.reason_codes,
+      persistence_policy: gates.persistence_policy,
+      sync_policy: gates.sync_policy,
+      updated_at: nowIso(),
+    };
+    await writeJson(taskPath, gatedRecord);
+    await upsertOperationTask(DATA_ROOT, taskRelativePath, gatedRecord);
+    await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, gatedRecord));
+    const blocked = gates.fail_closed
+      ? await finalizePreflightBlockedTask({
+          taskId,
+          taskPath,
+          taskRecord: gatedRecord,
+          contextPackPath: firstString(contextPack.trace_path) || null,
+          gateReportPath,
+          gates,
+        })
+      : null;
     const response = {
       ok: !gates.fail_closed,
       os_version: DINOBRAIN_OS_VERSION,
       contract: DINOBRAIN_OS_CONTRACT,
-      fail_closed: gates.fail_closed,
       gate_status: gates.status,
-      gates: gates.gates,
+      ...gates,
       task_id: taskId,
       task_path: taskRelativePath,
-      lease,
+      lease: blocked?.record.lease ?? gatedRecord.lease,
       event_log: taskEventLog,
       gate_event_log: gateEventLog,
       gate_report_path: gateReportPath,
-      record,
+      trace_path: blocked?.trace_path ?? null,
+      terminal_event_log: blocked?.event_log ?? null,
+      record: blocked?.record ?? gatedRecord,
+      context_evidence: { ...contextEvidence, eventOrderVerified: finalPreflight.eventOrderVerified, eventOrder: finalPreflight.eventOrder },
+      preflight_evidence: finalPreflight,
+      observed_tools: observedOsTools(),
+      sync_observation: syncObservation,
       context_pack: contextPack,
     };
     await completeTaskStart(dedupeClaim, response);
@@ -1537,7 +2049,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "start_task",
   {
     title: "Start Task",
@@ -1552,10 +2064,13 @@ server.registerTool(
   },
   async ({ request, project, mode, sensitivity, ...launchMetadata }) => {
     const metadata = launchMetadata as TaskLaunchMetadata;
-    const filtered = await filteredTaskLaunch(request, metadata, "start_task");
+    const sanitized = sanitizeTaskRequest(request);
+    const storedRequest = sanitized.request;
+    const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
+    const filtered = await filteredTaskLaunch(storedRequest, metadata, "start_task");
     if (filtered) return jsonResult(filtered);
-    const eligibility = classifyTaskLaunch(request, metadata);
-    const dedupeClaim = await claimTaskStart(metadata, request);
+    const eligibility = classifyTaskLaunch(storedRequest, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, storedRequest);
     if (!dedupeClaim.acquired) {
       if (dedupeClaim.response) {
         return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
@@ -1569,24 +2084,30 @@ server.registerTool(
         error: "task_start_dedupe_timeout",
       });
     }
-    const taskId = makeTaskId(request);
+    const taskId = makeTaskId(storedRequest);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
     const createdAt = nowIso();
-    const lease = taskLease(request, metadata, createdAt);
+    const lease = taskLease(storedRequest, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
-      request,
+      request: storedRequest,
+      request_hash: sanitized.request_hash,
+      request_redactions: sanitized.redactions,
+      request_truncated: sanitized.truncated,
       project: project ?? null,
       mode,
-      sensitivity,
+      sensitivity: sensitivityEvidence.sensitivity,
+      reported_sensitivity: sensitivityEvidence.reported,
+      detected_sensitivity: sensitivityEvidence.detected,
+      sensitivity_hits: sensitivityEvidence.hits,
       os_version: DINOBRAIN_OS_VERSION,
       contract: DINOBRAIN_OS_CONTRACT,
       created_at: createdAt,
       updated_at: createdAt,
       data_root: DATA_ROOT,
-      sync_policy: sensitivity === "normal" ? "conditional" : "blocked_until_review",
-      ...taskLaunchEvidence(request, metadata, eligibility),
+      sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
+      ...taskLaunchEvidence(storedRequest, metadata, eligibility),
       lease,
       terminal_owner_id: null,
     };
@@ -1601,6 +2122,9 @@ server.registerTool(
       path: relDataPath(taskPath),
       prompt_hash: record.prompt_hash,
       prompt_classification: record.prompt_classification,
+      hook_run_id: record.hook_run_id,
+      launch_kind: record.launch_kind,
+      launch_source: record.launch_source,
       lease_id: lease.lease_id,
       owner_id: lease.owner_id,
     });
@@ -1617,7 +2141,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "heartbeat_task",
   {
     title: "Heartbeat Task",
@@ -1670,7 +2194,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "finish_task",
   {
     title: "Finish Task",
@@ -1912,7 +2436,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "audit_memory_use",
   {
     title: "Audit Memory Use",
@@ -1995,7 +2519,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "get_context_pack",
   {
     title: "Get Context Pack",
@@ -2003,14 +2527,41 @@ server.registerTool(
     inputSchema: {
       question: z.string().min(1),
       limit: z.number().int().min(1).max(20).default(7),
+      task_id: z.string().optional(),
     },
   },
-  async ({ question, limit }) => {
-    return jsonResult(await buildContextPackRecord(question, limit));
+  async ({ question, limit, task_id }) => {
+    const linkedTaskId = task_id?.trim() || "";
+    let task: Record<string, unknown> | null = null;
+    if (linkedTaskId) {
+      task = await readJson<Record<string, unknown>>(dataPath(".dino", "tasks", `${safeSlug(linkedTaskId)}.json`));
+      if (!task) throw new Error(`Task does not exist: ${linkedTaskId}`);
+      if (firstString(task.status) !== "started") throw new Error(`Task is not active: ${linkedTaskId}`);
+    }
+    const pack = await buildContextPackRecord(question, limit, linkedTaskId
+      ? {
+          taskId: linkedTaskId,
+          hookRunId: firstString(task?.hook_run_id) || undefined,
+          promptHash: firstString(task?.prompt_hash) || undefined,
+        }
+      : {});
+    if (!linkedTaskId) return jsonResult(pack);
+    const preflightEventLog = await appendEvent({
+      event: "manual_preflight_context_ready",
+      task_id: linkedTaskId,
+      at: nowIso(),
+      context_pack_trace: pack.trace_path,
+      context_trace_sha256: pack.trace_sha256,
+      context_item_count: pack.item_count,
+      hook_run_id: firstString(task?.hook_run_id) || null,
+      prompt_hash: firstString(task?.prompt_hash) || null,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({ ...pack, preflight_event_log: preflightEventLog });
   },
 );
 
-server.registerTool(
+registerTool(
   "wiki_search",
   {
     title: "Wiki Search",
@@ -2025,7 +2576,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "search_memory",
   {
     title: "Search Memory",
@@ -2040,7 +2591,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "os_gate",
   {
     title: "OS Action Gate",
@@ -2052,35 +2603,47 @@ server.registerTool(
       context_item_count: z.number().int().min(0).default(0),
       has_context_pack: z.boolean().default(false),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
-      backup_risk: z.boolean().default(false),
+      backup_risk: z.boolean().optional(),
     },
   },
   async ({ request, task_id, context_pack_path, context_item_count, has_context_pack, sensitivity, backup_risk }) => {
-    const gateTaskId = task_id?.trim() || makeTaskId(request);
+    const sanitized = sanitizeTaskRequest(request);
+    const gateTaskId = task_id?.trim() || makeTaskId(sanitized.request);
     const contextEvidence = await deriveGateContextEvidence({
       taskId: gateTaskId,
       contextPackPath: context_pack_path,
       declaredHasContextPack: has_context_pack,
       declaredContextItemCount: context_item_count,
     });
+    const syncObservation = await observeGateSyncRisk(request);
     const gates = evaluateActionGates({
       request,
       hasContextPack: contextEvidence.hasContextPack,
       contextItemCount: contextEvidence.contextItemCount,
+      contextTraceVerified: contextEvidence.contextTraceVerified,
+      contextTraceFresh: contextEvidence.contextTraceFresh,
+      preflightEventOrderVerified: contextEvidence.eventOrderVerified,
       sensitivity,
-      exposedTools: [...REQUIRED_OS_TOOLS],
-      backupRisk: backup_risk,
+      exposedTools: observedOsTools(),
+      syncObservation,
     });
     const gateReportPath = await writeGateReport(gateTaskId, {
       task_id: gateTaskId,
-      request,
+      request: sanitized.request,
+      request_hash: sanitized.request_hash,
+      request_redactions: sanitized.redactions,
       generated_at: nowIso(),
       context_pack_path: contextEvidence.contextPackPath,
       context_verification_status: contextEvidence.verificationStatus,
+      context_evidence: contextEvidence,
       declared_has_context_pack: contextEvidence.declaredHasContextPack,
       declared_context_item_count: contextEvidence.declaredContextItemCount,
       verified_context_item_count: contextEvidence.contextItemCount,
       context_declaration_mismatch: contextEvidence.declarationMismatch,
+      declared_backup_risk: backup_risk ?? null,
+      backup_risk_source: "os_observed_sync_plan",
+      observed_tools: observedOsTools(),
+      sync_observation: syncObservation,
       ...gates,
     });
     const eventLog = await appendEvent({
@@ -2088,30 +2651,45 @@ server.registerTool(
       task_id: gateTaskId,
       at: nowIso(),
       gate_status: gates.status,
+      action_decision: gates.action_decision,
       fail_closed: gates.fail_closed,
+      reason_codes: gates.reason_codes,
       gate_report_path: gateReportPath,
       context_pack_path: contextEvidence.contextPackPath,
       context_verification_status: contextEvidence.verificationStatus,
+      context_trace_fresh: contextEvidence.contextTraceFresh,
+      preflight_event_order_verified: contextEvidence.eventOrderVerified,
       context_declaration_mismatch: contextEvidence.declarationMismatch,
       os_version: DINOBRAIN_OS_VERSION,
     });
     return jsonResult({
       ok: !gates.fail_closed,
       os_version: DINOBRAIN_OS_VERSION,
+      gate_status: gates.status,
       gate_report_path: gateReportPath,
       event_log: eventLog,
       context_pack_path: contextEvidence.contextPackPath,
       context_verification_status: contextEvidence.verificationStatus,
+      context_trace_sha256: contextEvidence.contextTraceSha256,
+      context_trace_fresh: contextEvidence.contextTraceFresh,
+      context_age_ms: contextEvidence.contextAgeMs,
+      preflight_event_order_verified: contextEvidence.eventOrderVerified,
+      preflight_event_order: contextEvidence.eventOrder,
+      context_evidence_reason_codes: contextEvidence.reasonCodes,
       context_declaration_mismatch: contextEvidence.declarationMismatch,
       declared_has_context_pack: contextEvidence.declaredHasContextPack,
       declared_context_item_count: contextEvidence.declaredContextItemCount,
       verified_context_item_count: contextEvidence.contextItemCount,
+      declared_backup_risk: backup_risk ?? null,
+      backup_risk_source: "os_observed_sync_plan",
+      observed_tools: observedOsTools(),
+      sync_observation: syncObservation,
       ...gates,
     });
   },
 );
 
-server.registerTool(
+registerTool(
   "apply_node_lifecycle",
   {
     title: "Apply Node Lifecycle",
@@ -2144,7 +2722,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "create_source_chunk",
   {
     title: "Create Source Chunk",
@@ -2219,7 +2797,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "record_feedback_correction",
   {
     title: "Record Feedback Correction",
@@ -2296,7 +2874,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "evaluate_behavior",
   {
     title: "Evaluate Behavior",
@@ -2335,7 +2913,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "import_session",
   {
     title: "Import Session",
@@ -2419,7 +2997,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "create_candidate_instance",
   {
     title: "Create Candidate Instance",
@@ -2499,7 +3077,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "review_candidate",
   {
     title: "Review Candidate",
@@ -2612,7 +3190,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "quarantine_record",
   {
     title: "Quarantine Record",
@@ -2686,7 +3264,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "run_compounding_cycle",
   {
     title: "Run Compounding Cycle",
@@ -2718,7 +3296,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "auto_sync",
   {
     title: "Auto Sync",
@@ -2754,7 +3332,7 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+registerTool(
   "git_sync",
   {
     title: "Git Sync Dry Run",

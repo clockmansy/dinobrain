@@ -384,6 +384,7 @@ the current-vault artifacts named above.
 | Atomic writers | `npm run atomic:writers:verify` | HG-03/HG-10 require zero direct production state writers and valid concurrent publication |
 | Status generation | `npm run status:generation:verify` | HG-08/HG-10/HG-12 require crash-safe pointer publication and zero mixed-generation reads |
 | Prompt eligibility | `npm run prompt:eligibility:verify` | HG-01/HG-03/HG-06 require zero durable internal jobs, idempotent duplicate hooks, lease ownership, and visible timeout blocking |
+| Pre-response action gate | `npm run pre-response:gate:verify` | HG-01/HG-02/HG-09 require OS-observed context/tool/freshness/sensitivity/sync evidence, ordered delivery, and fail-closed risk fixtures |
 | Freshness | `npm run status:freshness:verify` | HG-08/HG-12 require fresh coherent evidence |
 | JSON index | `npm run index:verify:operations` | HG-10 requires valid incremental and self-recovery behavior |
 | SQLite | `npm run index:verify:sqlite` | HG-04/HG-10 require valid shards and incremental rows |
@@ -450,6 +451,7 @@ $commands = @(
   'npm run atomic:writers:verify',
   'npm run status:generation:verify',
   'npm run prompt:eligibility:verify',
+  'npm run pre-response:gate:verify',
   'npm run audit:full-memory',
   'npm run status:freshness:verify',
   'npm run index:verify:operations',

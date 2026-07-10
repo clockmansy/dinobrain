@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -396,6 +397,66 @@ function loadLiveReports(since) {
     .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
 }
 
+function verifyOrderedDelivery(events, submitted, completed, report) {
+  const reasons = [];
+  const taskId = completed?.task_id ?? report?.task_id;
+  const hookRunId = submitted?.hook_run_id;
+  const promptHash = submitted?.prompt_hash;
+  const predicates = [
+    (event) => event === submitted,
+    (event) => event.event === "task_started" && event.task_id === taskId && event.hook_run_id === hookRunId,
+    (event) => event.event === "context_pack_created" && event.task_id === taskId && event.hook_run_id === hookRunId,
+    (event) => event.event === "os_begin_task_completed" && event.task_id === taskId && event.hook_run_id === hookRunId,
+    (event) => event === completed,
+  ];
+  const indexes = predicates.map((predicate) => events.findIndex(predicate));
+  if (!indexes.every((index) => index >= 0)) reasons.push("ordered_preflight_event_missing");
+  if (!indexes.every((index, position) => position === 0 || index > indexes[position - 1])) {
+    reasons.push("preflight_event_order_invalid");
+  }
+  if (completed?.preflight_event_order_verified !== true || report?.preflight_event_order_verified !== true) {
+    reasons.push("preflight_event_order_not_verified");
+  }
+  if (completed?.context_delivery_status !== "ready_for_model" || report?.context_delivery_status !== "ready_for_model") {
+    reasons.push("model_context_delivery_not_ready");
+  }
+  if (!completed?.context_delivery_nonce || completed.context_delivery_nonce !== report?.context_delivery_nonce) {
+    reasons.push("context_delivery_nonce_mismatch");
+  }
+  if (!completed?.context_delivery_sha256 || completed.context_delivery_sha256 !== report?.context_delivery_sha256) {
+    reasons.push("context_delivery_hash_mismatch");
+  }
+  if (report?.context_trace_verified !== true || report?.context_trace_fresh !== true) {
+    reasons.push("context_trace_not_verified_fresh");
+  }
+  if (completed?.action_decision === "block" || report?.action_decision === "block" || completed?.fail_closed === true) {
+    reasons.push("live_preflight_action_blocked");
+  }
+  if (completed?.prompt_hash !== promptHash || report?.prompt_hash !== promptHash) reasons.push("live_prompt_hash_mismatch");
+  const tracePath = typeof report?.context_pack_trace === "string"
+    ? path.join(dataRoot, report.context_pack_trace.replace(/\//g, path.sep))
+    : null;
+  if (!tracePath || !existsSync(tracePath)) {
+    reasons.push("context_trace_missing");
+  } else {
+    const traceHash = createHash("sha256").update(readFileSync(tracePath)).digest("hex");
+    if (traceHash !== completed?.context_trace_sha256 || traceHash !== report?.context_trace_sha256) {
+      reasons.push("context_trace_hash_mismatch");
+    }
+  }
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    event_order: [
+      "codex_prompt_submitted",
+      "task_started",
+      "context_pack_created",
+      "os_begin_task_completed",
+      "codex_preflight_completed",
+    ],
+  };
+}
+
 function findLatestCompleteLiveProof(events, reports, snippet) {
   const submittedEvents = events
     .filter(
@@ -425,13 +486,16 @@ function findLatestCompleteLiveProof(events, reports, snippet) {
         item.hook_run_id === completed.hook_run_id &&
         item.prompt_hash === completed.prompt_hash &&
         isCodexDesktopLaunch(item) &&
-        String(item.at ?? "") >= String(completed.at ?? "") &&
+        String(item.at ?? "") >= String(submitted.at ?? "") &&
         typeof item.context_pack_trace === "string" &&
         existsSync(path.join(dataRoot, item.context_pack_trace.replace(/\//g, path.sep))) &&
         Array.isArray(item.context_paths) &&
         item.context_paths.length > 0,
     );
-    if (report) return { submitted, completed, report };
+    if (report) {
+      const delivery = verifyOrderedDelivery(events, submitted, completed, report);
+      if (delivery.ok) return { submitted, completed, report, delivery };
+    }
   }
 
   return null;
@@ -456,6 +520,7 @@ function summarizeLiveProof(proof, since) {
     context_paths: Array.isArray(proof.report.context_paths) ? proof.report.context_paths.slice(0, 20) : [],
     report_path: proof.report._path ?? null,
     event_path: proof.completed._path ?? proof.submitted._path ?? null,
+    ordered_delivery: proof.delivery ?? null,
   };
 }
 
@@ -496,20 +561,23 @@ function main() {
       item.hook_run_id === completed?.hook_run_id &&
       item.prompt_hash === completed?.prompt_hash &&
       isCodexDesktopLaunch(item) &&
-      String(item.at ?? "") >= String(completed?.at ?? "") &&
+      String(item.at ?? "") >= String(submitted?.at ?? "") &&
       typeof item.context_pack_trace === "string" &&
       existsSync(path.join(dataRoot, item.context_pack_trace.replace(/\//g, path.sep))) &&
       Array.isArray(item.context_paths) &&
       item.context_paths.length > 0,
   );
   const hookRegistered = Boolean(userHook.ok || managedHook.ok);
+  const orderedDelivery = submitted && completed && report
+    ? verifyOrderedDelivery(events, submitted, completed, report)
+    : { ok: false, reasons: ["live_preflight_evidence_incomplete"], event_order: [] };
   const staleProof =
     submitted && completed && report
       ? null
       : summarizeLiveProof(findLatestCompleteLiveProof(loadLiveEvents(new Date(0)), loadLiveReports(new Date(0)), snippet), since);
 
   const result = {
-    ok: Boolean(hookRuntime.ok && hookRegistered && submitted && completed && report),
+    ok: Boolean(hookRuntime.ok && hookRegistered && submitted && completed && report && orderedDelivery.ok),
     generated_at: new Date().toISOString(),
     data_root: dataRoot,
     since: since.toISOString(),
@@ -520,6 +588,7 @@ function main() {
     submitted_event: submitted ?? null,
     completed_event: completed ?? null,
     live_report: report ?? null,
+    ordered_delivery: orderedDelivery,
     event_count_after_since: events.length,
     report_count_after_since: reports.length,
     required_launch_kind: "codex_desktop",
@@ -550,7 +619,9 @@ function main() {
             : `no live Codex desktop UserPromptSubmit preflight event found for snippet "${snippet}"`
           : !completed
             ? "no live codex_preflight_completed event found with matching hook_run_id and prompt_hash"
-            : "no matching live hook report with hook_run_id, prompt_hash, context paths, and existing Context Pack trace found";
+            : !report
+              ? "no matching live hook report with hook_run_id, prompt_hash, context paths, and existing Context Pack trace found"
+              : `live pre-response delivery proof failed: ${orderedDelivery.reasons.join(", ")}`;
     throw new Error(reason);
   }
 }

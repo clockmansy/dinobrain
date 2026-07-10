@@ -232,7 +232,7 @@ async function verifyClosedLoop() {
   const hookInput = JSON.stringify({
     hookEventName: "UserPromptSubmit",
     prompt:
-      "Verify the Codex closed loop. Use DinoBrain memory, do a small proof artifact, finish the task, grow knowledge, and push the data repo.",
+      "Verify the Codex closed loop. Use DinoBrain memory, prepare one scoped proof artifact, finish the task, and grow reviewed knowledge.",
     cwd: root,
     session_id: "closed-loop-session",
     turn_id: "turn-1",

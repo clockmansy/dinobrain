@@ -67,7 +67,7 @@ release evidence required by the normative contract.
 The first foundation slice is implemented and remains intentionally
 `NOT_COMPLETE`:
 
-- FND-01 now has a typed 12-gate registry, 60 mandatory command instances,
+- FND-01 now has a typed 12-gate registry, 61 mandatory command instances,
   bounded command-result ledger, hashed artifact manifest, verdict-last atomic
   publication, post-write integrity verification, and tamper regression tests;
 - the first current-vault plan-only evidence pack is
@@ -104,23 +104,39 @@ The first foundation slice is implemented and remains intentionally
   session-turn replays use a local receipt and return the original preflight;
   user tasks carry a lease, heartbeat, and terminal owner; duplicate finishes
   are idempotent; hook timeout produces a visible fail-closed response.
+- LOOP-02 now derives Context Pack presence, task binding, byte hash, freshness,
+  event order, registered tool presence, sensitivity, and DinoBrain data-sync
+  risk from OS-observed state. It emits `allow`, `constrained_action`, or
+  `block` with reason codes; redacts direct MCP requests before persistence;
+  auto-terminals blocked preflight tasks; skips session growth/sync for
+  sensitive prompts; and records `codex_preflight_completed` only after the
+  report, receipt, and hashed model-context payload are ready.
+- `pre-response:gate:verify` proves forged, missing, stale, missing-tool,
+  sensitive-persistence, destructive, and blocked-sync failures plus safe
+  sensitive assistance and strict hook event ordering in independent fixtures.
 - The post-prevention lifecycle migration remains dry-run only. On the current
   546-task vault it classifies 118 stale non-user auto-close candidates (93
   title-generation, 18 diagnostic, four internal-service, and three ambient)
   plus 78 evidence-preserving finish-gate repairs. Every proposed action binds
   the original task/trace SHA-256; no source task or trace was changed.
 - The latest canonical plan-only audit is
-  `completion-20260710-153742683-fe6dacf7-f694-4ff7-bc4b-072da10f1339`.
-  It ledgered all 60 mandatory commands and truthfully returned `NOT_COMPLETE`;
+  `completion-20260710-160911954-e92f07bf-dc24-4798-b046-2a9497453a59`.
+  It ledgered all 61 mandatory commands and truthfully returned `NOT_COMPLETE`;
   all 12 hard gates remain closed until their executable evidence is run and
   passes in a release-candidate audit.
+- `verify:codex-live:recent` correctly remains non-passing after this code
+  change: the current long-running task predates the hook requirements and all
+  three observed MCP processes predate the rebuilt server. A restarted client,
+  fresh trusted Codex task, and matching ordered delivery proof are still
+  required; synthetic fixtures are not substituted for that evidence.
 
 FND-01 is not fully closed until a full current-vault audit, fresh external
 proof imports, final-generation publication, and release-candidate evidence all
 pass. FND-02 now meets its local and current-vault implementation acceptance;
 release-level HG-10 still requires the final release-candidate audit. LOOP-01
 still requires a 24-hour real-client soak before its release acceptance can be
-claimed.
+claimed. LOOP-02 meets fixture acceptance, while its release claim still
+requires a fresh trusted Codex prompt and Claude-equivalent live proof.
 
 ## 3. Implementation Principles
 

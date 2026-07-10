@@ -479,7 +479,7 @@ function sensitivityFor(redactions) {
   if (redactions.length > 0) return "sensitive";
   const configured = process.env.DINOBRAIN_HOOK_SENSITIVITY;
   if (["normal", "sensitive", "unknown"].includes(configured)) return configured;
-  return "unknown";
+  return "normal";
 }
 
 function contextLines(contextPack) {
@@ -515,7 +515,7 @@ function autoSyncLine(autoSync) {
   return `auto_sync: failed (${autoSync.error ?? autoSync.reason ?? "unknown error"})`;
 }
 
-function additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath }) {
+function additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath, deliveryNonce }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
   const usedMemoryPaths = Array.isArray(contextPack.items)
     ? contextPack.items.map((item) => item.path).filter(Boolean)
@@ -536,7 +536,14 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
     `context_pack_trace: ${contextPack.trace_path}`,
     `context_items: ${contextPack.item_count}`,
     `gate_status: ${start.gate_status || "unknown"}`,
+    `action_decision: ${start.action_decision || "unknown"}`,
     `fail_closed: ${start.fail_closed ? "true" : "false"}`,
+    `persistence_policy: ${start.persistence_policy || "unknown"}`,
+    `sync_policy: ${start.sync_policy || "unknown"}`,
+    `context_trace_verified: ${start.context_evidence?.contextTraceVerified === true ? "true" : "false"}`,
+    `context_trace_fresh: ${start.context_evidence?.contextTraceFresh === true ? "true" : "false"}`,
+    `preflight_event_order_verified: ${start.preflight_evidence?.eventOrderVerified === true ? "true" : "false"}`,
+    `context_delivery_nonce: ${deliveryNonce}`,
     `gate_report: ${start.gate_report_path || "unavailable"}`,
     sessionImportLine(sessionImport),
     autoSyncLine(autoSync),
@@ -547,17 +554,22 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
     ...contextLines(contextPack),
     "",
     "Agent protocol:",
-    start.fail_closed
-      ? "- FAIL-CLOSED: do not perform substantial work. Explain the block and restore OS context/gate safety first."
-      : "- OS context is present; proceed with the user request under the gates below.",
+    start.action_decision === "block" || start.fail_closed
+      ? "- FAIL-CLOSED: do not perform the requested operation. Explain the block or restore OS context/gate safety first."
+      : start.action_decision === "constrained_action"
+        ? "- CONSTRAINED ACTION: proceed only within the safe actions named by the gates below."
+        : "- OS context and the independent action gate are verified; proceed with the user request.",
     ...(Array.isArray(start.gates)
       ? start.gates.map((gate) => `- gate:${gate.level}:${gate.id} -> ${gate.safe_action}`)
       : []),
     "- Treat DinoBrain memory as subordinate evidence; the current user message wins.",
+    `- Before any new persistence, sync, or destructive action, call os_gate with task_id ${JSON.stringify(start.task_id)} and context_pack_path ${JSON.stringify(contextPack.trace_path)}; do not trust caller-declared context fields.`,
     `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
     `- finish_task.lease_id = ${JSON.stringify(start.lease?.lease_id || "")}`,
     `- If work runs for a long time, call heartbeat_task with task_id "${start.task_id}" and lease_id ${JSON.stringify(start.lease?.lease_id || "")}.`,
-    "- For read-only audit/review tasks, set finish_task.growth_policy = \"trace_only\" so no auto-growth, compounding, or auto-sync push runs.",
+    start.persistence_policy === "metadata_only_no_growth"
+      ? "- This task is sensitive: finish with growth_policy = \"trace_only\" and do not persist or sync the sensitive value."
+      : "- For read-only audit/review tasks, set finish_task.growth_policy = \"trace_only\" so no auto-growth, compounding, or auto-sync push runs.",
     `- finish_task.context_pack_paths = ${JSON.stringify(contextPackPaths)}`,
     `- finish_task.used_memory_paths = ${JSON.stringify(usedMemoryPaths)}`,
     `- finish_task.session_archive_paths = ${JSON.stringify(sessionArchivePaths)}`,
@@ -591,7 +603,12 @@ function siblingContext({ report, reportPath }) {
     `context_pack_trace: ${report.context_pack_trace || "unavailable"}`,
     `context_items: ${report.context_item_count ?? "unknown"}`,
     `gate_status: ${report.gate_status || "unknown"}`,
+    `action_decision: ${report.action_decision || "unknown"}`,
     `fail_closed: ${failClosed ? "true" : "false"}`,
+    `persistence_policy: ${report.persistence_policy || "unknown"}`,
+    `sync_policy: ${report.sync_policy || "unknown"}`,
+    `preflight_event_order_verified: ${report.preflight_event_order_verified === true ? "true" : "false"}`,
+    `context_delivery_nonce: ${report.context_delivery_nonce || "unavailable"}`,
     `gate_report: ${report.gate_report_path || "unavailable"}`,
     `hook_report: ${reportRel}`,
     "",
@@ -601,9 +618,11 @@ function siblingContext({ report, reportPath }) {
       : ["- Sibling preflight did not expose individual memory paths."]),
     "",
     "Agent protocol:",
-    failClosed
+    failClosed || report.action_decision === "block"
       ? "- FAIL-CLOSED: do not perform substantial work. Explain the block and restore OS context/gate safety first."
-      : "- OS context is present; proceed with the user request under the gates below.",
+      : report.action_decision === "constrained_action"
+        ? "- CONSTRAINED ACTION: proceed only within the safe actions recorded by the gate report."
+        : "- OS context and the independent action gate are verified; proceed with the user request.",
     `- When the work is finished, call finish_task for task_id "${report.task_id || "unavailable"}".`,
     `- finish_task.lease_id = ${JSON.stringify(report.lease_id || "")}`,
   ].join("\n");
@@ -807,9 +826,21 @@ async function main() {
       }
       const contextResult = beginResult.context_pack;
       if (!contextResult?.trace_path) throw new Error("Interactive preflight returned no Context Pack trace");
+      if (
+        startResult.fail_closed !== true &&
+        (startResult.context_evidence?.contextTraceVerified !== true ||
+          startResult.context_evidence?.contextTraceFresh !== true ||
+          startResult.preflight_evidence?.eventOrderVerified !== true)
+      ) {
+        throw new Error("Interactive preflight did not return independently verified fresh ordered evidence");
+      }
 
       let importResult;
-      if (envFlag("DINOBRAIN_HOOK_IMPORT_SESSION", true)) {
+      if (
+        envFlag("DINOBRAIN_HOOK_IMPORT_SESSION", true) &&
+        startResult.fail_closed !== true &&
+        startResult.persistence_policy === "normal"
+      ) {
         try {
           importResult = parseTool(
             await client.callTool({
@@ -840,7 +871,12 @@ async function main() {
       } else {
         importResult = {
           skipped: true,
-          reason: "DINOBRAIN_HOOK_IMPORT_SESSION disabled",
+          reason:
+            startResult.fail_closed === true
+              ? "pre_response_gate_blocked"
+              : startResult.persistence_policy !== "normal"
+                ? "sensitive_metadata_only_policy"
+                : "DINOBRAIN_HOOK_IMPORT_SESSION disabled",
         };
       }
 
@@ -848,36 +884,12 @@ async function main() {
     });
 
     let autoSync;
-    await appendDataEvent({
-      event: "codex_preflight_completed",
-      source: "codex_hook",
-      hook_run_id: hookRunId,
-      at: nowIso(),
-      task_id: start.task_id,
-      task_path: start.task_path,
-      lease_id: start.lease?.lease_id ?? null,
-      lease_owner_id: start.lease?.owner_id ?? null,
-      lease_expires_at: start.lease?.expires_at ?? null,
-      context_pack_trace: contextPack.trace_path,
-      context_item_count: contextPack.item_count,
-      context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
-      session_import: sessionImport?.ok
-        ? {
-            session_id: sessionImport.session_id,
-            archive_path: sessionImport.archive_path,
-            candidate_count: sessionImport.candidate_count,
-            review_paths: sessionImport.review_paths,
-          }
-        : sessionImport,
-      prompt_hash: promptHash,
-      prompt_classification: eligibility.classification,
-      hook_dedupe_key: hookLock.key,
-      client_session_hash: identity.clientSessionHash || null,
-      launch_provenance: launchProvenance,
-      redactions,
-    });
-
-    if (envFlag("DINOBRAIN_HOOK_AUTO_SYNC", true)) {
+    if (
+      envFlag("DINOBRAIN_HOOK_AUTO_SYNC", true) &&
+      start.fail_closed !== true &&
+      start.persistence_policy === "normal" &&
+      start.sync_policy !== "blocked"
+    ) {
       try {
         const allowedPaths = [
           start.task_path,
@@ -909,10 +921,18 @@ async function main() {
     } else {
       autoSync = {
         skipped: true,
-        reason: "DINOBRAIN_HOOK_AUTO_SYNC disabled",
+        reason:
+          start.fail_closed === true
+            ? "pre_response_gate_blocked"
+            : start.persistence_policy !== "normal"
+              ? "sensitive_metadata_only_policy"
+              : start.sync_policy === "blocked"
+                ? "sync_policy_blocked"
+                : "DINOBRAIN_HOOK_AUTO_SYNC disabled",
       };
     }
 
+    const deliveryNonce = `delivery-${randomUUID()}`;
     const reportPath = await writeReport({
       event: "codex_preflight_completed",
       hook_run_id: hookRunId,
@@ -936,7 +956,18 @@ async function main() {
       context_pack_trace: contextPack.trace_path,
       context_item_count: contextPack.item_count,
       gate_status: start.gate_status || "unknown",
+      action_decision: start.action_decision || "unknown",
       fail_closed: start.fail_closed === true,
+      gate_reason_codes: start.reason_codes ?? [],
+      persistence_policy: start.persistence_policy || "unknown",
+      sync_policy: start.sync_policy || "unknown",
+      context_trace_verified: start.context_evidence?.contextTraceVerified === true,
+      context_trace_fresh: start.context_evidence?.contextTraceFresh === true,
+      context_trace_sha256: start.context_evidence?.contextTraceSha256 ?? contextPack.trace_sha256 ?? null,
+      preflight_event_order_verified: start.preflight_evidence?.eventOrderVerified === true,
+      preflight_event_order: start.preflight_evidence?.eventOrder ?? [],
+      context_delivery_nonce: deliveryNonce,
+      context_delivery_status: "preparing",
       gate_report_path: start.gate_report_path || null,
       context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
       session_import: sessionImport?.ok
@@ -954,7 +985,7 @@ async function main() {
       redactions,
     });
 
-    await writeHookReceipt(identity, {
+    const receiptPath = await writeHookReceipt(identity, {
       status: "completed",
       completed_at: nowIso(),
       prompt_hash: promptHash,
@@ -963,9 +994,66 @@ async function main() {
       report_path: path.relative(root, reportPath).split(path.sep).join("/"),
     });
 
-    const context = additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath });
+    const context = additionalContext({
+      start,
+      contextPack,
+      sessionImport,
+      autoSync,
+      redactions,
+      reportPath,
+      deliveryNonce,
+    });
+    const contextSha256 = sha256(context);
+    const existingReport = (await readJsonSafe(reportPath)) ?? {};
+    await atomicWriteJson(reportPath, {
+      ...existingReport,
+      context_delivery_status: "ready_for_model",
+      context_delivery_sha256: contextSha256,
+      receipt_path: receiptPath ? path.relative(dataRoot, receiptPath).split(path.sep).join("/") : null,
+    });
+    await appendDataEvent({
+      event: "codex_preflight_completed",
+      source: "codex_hook",
+      hook_run_id: hookRunId,
+      at: nowIso(),
+      task_id: start.task_id,
+      task_path: start.task_path,
+      lease_id: start.lease?.lease_id ?? null,
+      lease_owner_id: start.lease?.owner_id ?? null,
+      lease_expires_at: start.lease?.expires_at ?? null,
+      context_pack_trace: contextPack.trace_path,
+      context_trace_sha256: start.context_evidence?.contextTraceSha256 ?? contextPack.trace_sha256 ?? null,
+      context_item_count: contextPack.item_count,
+      context_paths: Array.isArray(contextPack.items) ? contextPack.items.map((item) => item.path) : [],
+      prompt_hash: promptHash,
+      prompt_classification: eligibility.classification,
+      hook_dedupe_key: hookLock.key,
+      client_session_hash: identity.clientSessionHash || null,
+      launch_provenance: launchProvenance,
+      gate_status: start.gate_status || "unknown",
+      action_decision: start.action_decision || "unknown",
+      fail_closed: start.fail_closed === true,
+      gate_reason_codes: start.reason_codes ?? [],
+      persistence_policy: start.persistence_policy || "unknown",
+      sync_policy: start.sync_policy || "unknown",
+      preflight_event_order_verified: start.preflight_evidence?.eventOrderVerified === true,
+      preflight_event_order: [...(start.preflight_evidence?.eventOrder ?? []), "codex_preflight_completed"],
+      context_delivery_status: "ready_for_model",
+      context_delivery_nonce: deliveryNonce,
+      context_delivery_sha256: contextSha256,
+      hook_report: path.relative(root, reportPath).split(path.sep).join("/"),
+      receipt_path: receiptPath ? path.relative(dataRoot, receiptPath).split(path.sep).join("/") : null,
+      redactions,
+    });
     process.stdout.write(
-      `${JSON.stringify(hookOutput(context, start.fail_closed ? "DinoBrain OS gates failed closed before response." : ""))}\n`,
+      `${JSON.stringify(
+        hookOutput(
+          context,
+          start.fail_closed || start.action_decision === "block"
+            ? "DinoBrain OS gates failed closed before response."
+            : "",
+        ),
+      )}\n`,
     );
   } finally {
     await releaseHookLock(hookLock);

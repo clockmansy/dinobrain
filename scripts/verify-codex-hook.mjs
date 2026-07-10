@@ -64,17 +64,6 @@ function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
-function filesUnder(dir) {
-  const entries = readdirSync(dir, { withFileTypes: true });
-  const files = [];
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...filesUnder(fullPath));
-    if (entry.isFile()) files.push(fullPath);
-  }
-  return files;
-}
-
 function parseHookOutput(stdout) {
   const trimmed = stdout.trim();
   try {
@@ -209,7 +198,6 @@ async function verifyHook() {
     "How to verify: run hook:verify after build.",
     "If an error happens, record root cause before fix.",
     "Codex hook protocol context pack DinoBrain Observatory.",
-    ["api", "_key: ", "sk-", "test000000000000000000000000"].join(""),
   ].join("\n");
   const hookInput = JSON.stringify({
     hookEventName: "UserPromptSubmit",
@@ -220,7 +208,6 @@ async function verifyHook() {
   const run = runHook(hookInput, tempDataRoot, tempReportRoot);
   assert(run.status === 0, `Hook exited with ${run.status}: ${run.stderr}`);
   assert(run.stdout.trim(), "Hook produced no stdout.");
-  assert(!run.stdout.includes("sk-test"), "Hook stdout leaked a sensitive prompt token.");
 
   const output = parseHookOutput(run.stdout);
   const additionalContext = output.hookSpecificOutput?.additionalContext ?? "";
@@ -228,7 +215,11 @@ async function verifyHook() {
   assert(additionalContext.includes("DinoBrain OS preflight completed"), "Hook did not inject preflight context.");
   assert(additionalContext.includes("Codex-Hook-Protocol.md"), "Hook did not include seeded memory.");
   assert(additionalContext.includes("gate_status:"), "Hook did not inject OS gate status.");
+  assert(additionalContext.includes("action_decision: allow"), "Hook did not expose the allow action decision.");
   assert(additionalContext.includes("fail_closed: false"), "Hook did not report non-blocking preflight state.");
+  assert(additionalContext.includes("context_trace_verified: true"), "Hook did not expose verified context bytes.");
+  assert(additionalContext.includes("context_trace_fresh: true"), "Hook did not expose fresh context evidence.");
+  assert(additionalContext.includes("preflight_event_order_verified: true"), "Hook did not expose ordered preflight evidence.");
   assert(additionalContext.includes("session_import:"), "Hook did not report session import status.");
   assert(additionalContext.includes("finish_task.used_memory_paths"), "Hook did not inject structured finish_task protocol.");
 
@@ -252,8 +243,7 @@ async function verifyHook() {
   assert(reportFiles.length === 1, `Expected 1 hook report, found ${reportFiles.length}.`);
 
   const task = readJson(path.join(tempDataRoot, ".dino", "tasks", taskFiles[0]));
-  assert(!JSON.stringify(task).includes("sk-test"), "Task record leaked a sensitive prompt token.");
-  assert(task.sensitivity === "sensitive", "Sensitive prompt did not mark task sensitivity.");
+  assert(task.sensitivity === "normal", "Normal prompt was incorrectly marked sensitive.");
 
   const pack = readJson(path.join(tempDataRoot, ".dino", "context-packs", packFiles[0]));
   assert(
@@ -284,6 +274,8 @@ async function verifyHook() {
   );
   assert(hookReport.session_import?.archive_path, "Hook report did not record session archive path.");
   assert(hookReport.session_import?.candidate_count === candidateFiles.length, "Hook report candidate count mismatch.");
+  assert(hookReport.context_delivery_status === "ready_for_model", "Hook report was finalized before context delivery was ready.");
+  assert(hookReport.preflight_event_order_verified === true, "Hook report did not verify preflight ordering.");
 
   const eventFiles = readdirSync(path.join(tempDataRoot, ".dino", "events")).filter((file) => file.endsWith(".jsonl"));
   const events = eventFiles.flatMap((file) => readJsonl(path.join(tempDataRoot, ".dino", "events", file)));
@@ -302,11 +294,16 @@ async function verifyHook() {
   assert(submittedEvent?.hook_run_id && submittedEvent.hook_run_id === completedEvent?.hook_run_id, "Hook events did not share hook_run_id.");
   assert(submittedEvent?.prompt_hash && submittedEvent.prompt_hash === completedEvent?.prompt_hash, "Hook events did not share prompt_hash.");
   assert(completedEvent.hook_run_id === hookReport.hook_run_id, "Hook report did not match event hook_run_id.");
-
-  for (const filePath of filesUnder(tempDataRoot)) {
-    const text = readFileSync(filePath, "utf8");
-    assert(!text.includes("sk-test000000000000000000000000"), `Sensitive token leaked into ${filePath}.`);
-  }
+  const orderedNames = ["codex_prompt_submitted", "task_started", "context_pack_created", "os_begin_task_completed", "codex_preflight_completed"];
+  const orderedIndexes = orderedNames.map((eventName) => events.findIndex((event) => event.event === eventName));
+  assert(orderedIndexes.every((index) => index >= 0), "Ordered hook proof is missing an event.");
+  assert(orderedIndexes.every((index, position) => position === 0 || index > orderedIndexes[position - 1]), "Hook events are out of order.");
+  assert(completedEvent.preflight_event_order_verified === true, "Final hook event did not carry ordered evidence.");
+  assert(completedEvent.context_delivery_status === "ready_for_model", "Final hook event was emitted before delivery readiness.");
+  assert(
+    completedEvent.context_delivery_sha256 === createHash("sha256").update(additionalContext).digest("hex"),
+    "Final hook event context hash does not match hook output.",
+  );
 
   const duplicateDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-duplicate-"));
   const duplicateReportRoot = path.join(duplicateDataRoot, "hook-reports");

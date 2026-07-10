@@ -38,6 +38,7 @@ npm run check
 npm run smoke
 npm run session:verify
 npm run hook:verify
+npm run pre-response:gate:verify
 npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
@@ -58,6 +59,30 @@ npm run index:verify
 `npm run index:sqlite` rebuilds the Wiki and operations SQLite shards.
 
 ## Tools
+
+### `os_begin_task`
+
+Creates one durable user task, builds a task-bound Context Pack, and evaluates
+the independent pre-response action gate. The server verifies the Context Pack
+path, task binding, SHA-256, age, ordered event chain, and its actually
+registered tool set. DinoBrain data-sync requests additionally run the real
+sync policy in dry-run mode.
+
+The response includes `action_decision` (`allow`, `constrained_action`, or
+`block`), reason codes, persistence/sync policies, context evidence, and event
+ordering evidence. A blocked preflight is immediately closed with a
+`trace_only` terminal trace so hook-level blocking cannot leave stale active
+tasks. Direct MCP request text is redacted and bounded before any durable write.
+
+### `os_gate`
+
+Re-evaluates an action against the task-bound Context Pack and OS-observed
+state. Caller-supplied `has_context_pack`, item counts, context paths, and
+`backup_risk` are declaration telemetry only; they are not trusted as proof.
+Forged, missing, stale, or task-unbound traces and missing required tools fail
+closed. Sensitive assistance may continue as `constrained_action`, while
+sensitive persistence/sync, destructive actions, and policy-blocked data sync
+are blocked.
 
 ### `start_task`
 
@@ -123,6 +148,11 @@ Creates:
 
 - `.dino/context-packs/<pack_id>.json`
 - `.dino/events/<date>.jsonl`
+
+Passing `task_id` binds the pack to an active `start_task` record and writes a
+`manual_preflight_context_ready` event. This is the explicit fallback path;
+`os_gate` must still verify that task-bound trace before work begins. An
+unbound `get_context_pack` result is search output, not pre-response authority.
 
 The Context Pack trace records:
 

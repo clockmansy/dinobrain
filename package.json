@@ -58,6 +58,7 @@
     "graph:vault": "node scripts/export-vault-graph.mjs",
     "hook:verify": "node scripts/verify-codex-hook.mjs",
     "prompt:eligibility:verify": "node scripts/verify-prompt-eligibility.mjs",
+    "pre-response:gate:verify": "node scripts/verify-pre-response-action-gate.mjs",
     "installer:win": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-installer.ps1",
     "installer:verify:version": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-version-alignment.ps1",
     "installer:verify:path-ux": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-path-ux.ps1",

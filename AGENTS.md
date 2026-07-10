@@ -4,9 +4,16 @@
 
 - Treat DinoBrain as a local-first memory OS for this repository.
 - At the beginning of nontrivial work, use the DinoBrain preflight context injected by the Codex `UserPromptSubmit` hook when it is present.
-- If no preflight context is present and DinoBrain MCP tools are available, call `start_task` and then `get_context_pack` before implementation or analysis.
+- If no preflight context is present and DinoBrain MCP tools are available, call
+  `os_begin_task`. If the explicit fallback is required, call `start_task`, then
+  `get_context_pack` with that `task_id`, and finally `os_gate` with the returned
+  trace before implementation or analysis.
 - If neither injected preflight context nor DinoBrain MCP preflight is available for nontrivial work, stop before substantive work and report the session as degraded/fail-closed.
 - Current user instructions always outrank stored DinoBrain memory.
+- Before persistence, sync, release, deployment, or destructive execution, use
+  `os_gate` with the active task id and Context Pack trace. Treat its
+  `action_decision` as authoritative: obey `constrained_action` scopes and do
+  not continue an operation that returns `block`.
 - Use `wiki_search` only when the initial Context Pack is not enough and the needed memory can be searched narrowly.
 - At completion, call `finish_task` with the active `task_id`, its `lease_id` when present, summary, changed files, decisions, next steps, every Context Pack trace path, and the memory paths actually used from the pack.
 - For work that outlives the task lease window, call `heartbeat_task` with the active `task_id` and `lease_id` before the lease expires.
