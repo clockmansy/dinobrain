@@ -129,6 +129,13 @@ function isIgnoredDirectory(name: string): boolean {
   return name === ".git" || name === "node_modules";
 }
 
+function isIgnoredVaultDirectory(dataRoot: string, fullPath: string): boolean {
+  const relative = relDataPath(dataRoot, fullPath);
+  return [".dino/tmp", ".dino/hook-locks", ".dino/cache"].some(
+    (prefix) => relative === prefix || relative.startsWith(`${prefix}/`),
+  );
+}
+
 function parseKind(relativePath: string): FileParseKind {
   const extension = path.extname(relativePath).toLowerCase();
   if (extension === ".json") return "json";
@@ -247,6 +254,7 @@ async function walkFiles(dataRoot: string, dir: string, files: string[] = []): P
     if (isIgnoredDirectory(entry.name)) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (isIgnoredVaultDirectory(dataRoot, fullPath)) continue;
       await walkFiles(dataRoot, fullPath, files);
     } else if (entry.isFile()) {
       files.push(relDataPath(dataRoot, fullPath));
@@ -282,6 +290,9 @@ function classifyDrift(vaultPath: string): DriftClass {
     normalized.startsWith(".dino/index/") ||
     normalized.startsWith(".dino/provenance/") ||
     normalized.startsWith(".dino/quarantine/") ||
+    normalized.startsWith(".dino/tmp/") ||
+    normalized.startsWith(".dino/hook-locks/") ||
+    normalized.startsWith(".dino/cache/") ||
     normalized.startsWith("10_Conversations/raw/") ||
     normalized.startsWith("60_Operations/task-summaries/") ||
     normalized.startsWith("60_Operations/behavior-rules/") ||
