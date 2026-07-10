@@ -398,6 +398,8 @@ the current-vault artifacts named above.
 | Lifecycle regression | `npm run task:lifecycle:verify` | HG-03 regression coverage |
 | Lifecycle settlement | `npm run task:lifecycle:settle` | HG-03 requires no pending deterministic repair |
 | Settlement regression | `npm run task:lifecycle:settle:verify` | HG-03 regression coverage |
+| Memory lifecycle | `npm run memory:lifecycle` | HG-05/HG-06/HG-10 require a healthy current-vault lifecycle report |
+| Memory lifecycle regression | `npm run memory:lifecycle:verify` | HG-05/HG-06/HG-10 require atomic, reversible, idempotent transitions |
 | Review settlement | `npm run review:settle` | HG-06 requires bounded classified queues |
 | Review worklist | `npm run review:worklist` | HG-06 requires explicit remaining work |
 | Review actions | `npm run review:worklist:actions` | HG-06 requires safe actions or justified manual debt |
@@ -465,6 +467,8 @@ $commands = @(
   'npm run task:lifecycle:verify',
   'npm run task:lifecycle:settle',
   'npm run task:lifecycle:settle:verify',
+  'npm run memory:lifecycle',
+  'npm run memory:lifecycle:verify',
   'npm run review:settle',
   'npm run review:worklist',
   'npm run review:worklist:actions',

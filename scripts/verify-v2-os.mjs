@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +22,10 @@ const expectedTools = [
   "os_begin_task",
   "os_gate",
   "record_feedback_correction",
+  "restore_memory_node",
   "run_compounding_cycle",
   "search_memory",
+  "transition_memory_node",
 ];
 
 function assert(condition, message) {
@@ -43,6 +46,10 @@ function parseTool(result) {
   const text = result.content?.find((part) => part.type === "text")?.text;
   assert(text, "Tool did not return text content");
   return JSON.parse(text);
+}
+
+function git(args) {
+  return execFileSync("git", ["-C", dataRoot, ...args], { encoding: "utf8", windowsHide: true }).trim();
 }
 
 for (const dir of [
@@ -165,6 +172,12 @@ json(path.join(dataRoot, "50_Instances", "candidates", "rejected-one.json"), {
   last_verified: "2026-07-05",
   tags: ["rejected"],
 });
+
+git(["init"]);
+git(["config", "user.email", "verify-v2@example.local"]);
+git(["config", "user.name", "DinoBrain v2 Verifier"]);
+git(["add", "-A"]);
+git(["commit", "-m", "v2 lifecycle fixture"]);
 
 const client = new Client({ name: "dinobrain-v2-verify", version: DINOBRAIN_VERSION });
 const transport = new StdioClientTransport({
@@ -341,7 +354,21 @@ try {
       },
     }),
   );
-  assert(existsSync(path.join(dataRoot, feedback.accepted_path)), "feedback accepted record missing");
+  assert(feedback.accepted_path === null, "feedback correction bypassed review");
+  assert(existsSync(path.join(dataRoot, feedback.candidate_path)), "feedback candidate missing");
+  assert(existsSync(path.join(dataRoot, feedback.review_path)), "feedback review missing");
+  const reviewedFeedback = parseTool(
+    await client.callTool({
+      name: "review_candidate",
+      arguments: {
+        candidate_id: feedback.feedback_id,
+        decision: "approve",
+        reviewer: "verify-v2-os",
+        notes: "Direct user correction passed conflict, scope, and sensitivity review.",
+      },
+    }),
+  );
+  assert(existsSync(path.join(dataRoot, reviewedFeedback.accepted_path)), "reviewed feedback accepted record missing");
 
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
     version: 1,
@@ -351,7 +378,7 @@ try {
       {
         id: "feedback-pre-response",
         request: "OS v2 fail-closed pre-response context gates",
-        expected_memory_paths: [feedback.accepted_path],
+        expected_memory_paths: [reviewedFeedback.accepted_path],
         expected_behavior_terms: ["fail-closed", "pre-response", "gates"],
       },
     ],
@@ -378,17 +405,24 @@ try {
   );
   assert(lifecycle.counts.provenance_repairs >= 1, "lifecycle did not find missing provenance");
   assert(lifecycle.counts.merge_candidates >= 1, "lifecycle did not find duplicate accepted nodes");
-  assert(lifecycle.counts.delete_candidates >= 1, "lifecycle did not find rejected candidates");
+  assert(lifecycle.counts.delete_candidates === 0, "lifecycle incorrectly treated MEM-02 backlog as deletion work");
   assert(lifecycle.counts.hold_or_exclude >= 1, "lifecycle did not find quarantined accepted nodes");
   assert(lifecycle.counts.applied_actions === lifecycle.counts.actions, "lifecycle did not apply all detected actions");
   assert(
-    lifecycle.actions.some((action) => action.type === "provenance_repair" && action.applied === true && action.operation_path),
-    "lifecycle did not write provenance repair record",
+    lifecycle.actions.some((action) => action.target_path.endsWith("missing-source.json") && action.to_state === "held" && action.applied === true),
+    "lifecycle did not hold unsupported accepted memory",
   );
-  assert(existsSync(path.join(dataRoot, "50_Instances", "archive", "merged", "duplicate-b.json")), "lifecycle did not archive merged duplicate");
-  assert(existsSync(path.join(dataRoot, "50_Instances", "archive", "rejected", "rejected-one.json")), "lifecycle did not archive rejected candidate");
+  assert(
+    lifecycle.actions.some((action) => action.target_path.endsWith("hold-me.json") && action.to_state === "quarantined"),
+    "lifecycle did not honor an existing quarantine record",
+  );
+  assert(readFileSync(path.join(dataRoot, "50_Instances", "accepted", "duplicate-b.json"), "utf8").includes('"lifecycle_state": "accepted"'), "lifecycle did not preserve supported duplicate for MEM-02 merge review");
+  assert(existsSync(path.join(dataRoot, "50_Instances", "candidates", "rejected-one.json")), "MEM-01 consumed deferred candidate backlog");
   const heldRecord = JSON.parse(readFileSync(path.join(dataRoot, "50_Instances", "accepted", "hold-me.json"), "utf8"));
-  assert(heldRecord.status === "hold" && heldRecord.quarantine === true, "lifecycle did not hold quarantined accepted node");
+  assert(
+    heldRecord.status === "quarantined" && heldRecord.lifecycle_state === "quarantined" && heldRecord.quarantine === true,
+    "lifecycle did not quarantine the excluded accepted node",
+  );
 
   const finish = parseTool(
     await client.callTool({

@@ -53,6 +53,20 @@ function seedBehaviorMemory(dataRoot) {
   });
 }
 
+function seedConversationRegistry(dataRoot) {
+  write(
+    path.join(dataRoot, "20_Wiki", "Conversation-Registry.md"),
+    `---
+title: Conversation Registry
+tags: [chatgpt, sessions, conversation-registry, llm-wiki, provenance]
+---
+# Conversation Registry
+
+This is a privacy-preserving internal catalog of supplied session evidence.
+`,
+  );
+}
+
 function seedFactualProject(dataRoot, sourceStatus = "verified_summary") {
   write(
     path.join(dataRoot, "40_Projects", "Factual-Project.md"),
@@ -141,6 +155,7 @@ async function expectSignal(seed, signal) {
 await withFixture(async (dataRoot) => {
   seedWikiClaim(dataRoot);
   seedBehaviorMemory(dataRoot);
+  seedConversationRegistry(dataRoot);
   seedSourceChunk(dataRoot);
   seedFactualAcceptedInstance(dataRoot, {
     source_paths: ["20_Wiki/RAG-Knowledge.md"],
@@ -149,6 +164,7 @@ await withFixture(async (dataRoot) => {
   assert(report.status === "healthy", `clean fixture should be healthy, got ${report.status}`);
   assert(report.counts.verified_source_chunks === 1, "clean fixture should count verified source chunk");
   assert(report.counts.behavior_memory_records === 1, "behavior memory without external source should be allowed");
+  assert(report.counts.internal_session_evidence_records === 1, "conversation registry was not classified as internal session evidence");
   assert(report.claim_records.some((claim) => claim.item_class === "verified_claim_support"), "wiki claim was not supported");
   assert(
     report.claim_records.some(

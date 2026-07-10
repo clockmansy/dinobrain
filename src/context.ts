@@ -7,6 +7,7 @@ import {
   rankingInputsForMode,
   rankRecordsHybridV2,
 } from "./hybrid-retrieval.js";
+import { isAcceptedMemoryRetrievable } from "./node-lifecycle.js";
 import { collectRecentTaskRecordsFromIndex } from "./operations-index.js";
 
 type RecordValue = string | number | boolean | null | Record<string, unknown> | unknown[];
@@ -244,6 +245,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
       const jsonRecord = parsed as Record<string, unknown>;
       if (isQuarantinedRecord(jsonRecord, relativePath, quarantinedPaths)) continue;
+      if (!(await isAcceptedMemoryRetrievable(dataRoot, relativePath, jsonRecord))) continue;
       const claim = firstString(jsonRecord.claim);
       const reusableRule = firstString(jsonRecord.reusable_rule, jsonRecord.rule, jsonRecord.decision);
       const evidence = evidenceSnippet(jsonRecord);
@@ -279,6 +281,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       continue;
     }
 
+    if (relativePath.startsWith("50_Instances/accepted/")) continue;
     const { metadata, body } = parseFrontmatter(raw);
     if (isQuarantinedRecord(metadata, relativePath, quarantinedPaths)) continue;
     const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));

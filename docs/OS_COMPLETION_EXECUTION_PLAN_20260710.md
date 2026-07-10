@@ -392,6 +392,19 @@ real-client soak remains pending, so LOOP-04 is not yet fully certified.
 **Acceptance:** every accepted record has a valid review path and lifecycle
 history; every transition is idempotent and verifier-readable.
 
+**Execution evidence (2026-07-11):** `node_lifecycle_v3` now enforces all nine
+states, append-only evidence-bearing history, accepted review/provenance gates,
+pressure scoring, atomic multi-record writes, exact local backups, immutable
+transition artifacts, Git recovery refs, tombstones, and tamper-resistant
+rollback. The live 17-record accepted set was dry-run, applied, actually rolled
+back across 70 paths, and reapplied: 15 records are retrievable, 2 unsupported
+external RAG records are held, and lifecycle blockers are zero. A follow-up
+dry-run produced zero actions while preserving the last applied transaction and
+recovery ref. SQLite retrieval excluded both held records; Source Lineage is
+blocker-free; Graph Health is 100; full-memory audit has zero parse errors and
+zero unclassified drift. The 1,550 candidate backlog was deliberately left for
+MEM-02. See `docs/MEMORY_NODE_LIFECYCLE.md`.
+
 #### MEM-02: Review queue backpressure and cold partitioning
 
 **Hard gates:** HG-04, HG-06

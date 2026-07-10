@@ -131,7 +131,7 @@ function isIgnoredDirectory(name: string): boolean {
 
 function isIgnoredVaultDirectory(dataRoot: string, fullPath: string): boolean {
   const relative = relDataPath(dataRoot, fullPath);
-  return [".dino/tmp", ".dino/locks", ".dino/hook-locks", ".dino/cache"].some(
+  return [".dino/tmp", ".dino/locks", ".dino/hook-locks", ".dino/cache", ".dino/local-backups"].some(
     (prefix) => relative === prefix || relative.startsWith(`${prefix}/`),
   );
 }
@@ -272,8 +272,31 @@ async function readPreviousManifest(dataRoot: string): Promise<FullMemoryManifes
   }
 }
 
-function classifyDrift(vaultPath: string): DriftClass {
+async function lifecycleAuthorizedPaths(dataRoot: string): Promise<Set<string>> {
+  const result = new Set<string>();
+  try {
+    const report = JSON.parse(
+      await fs.readFile(dataPath(dataRoot, ".dino", "state", "node_lifecycle.json"), "utf8"),
+    ) as Record<string, unknown>;
+    if (report.status !== "healthy") return result;
+    const transaction = report.transaction && typeof report.transaction === "object"
+      ? report.transaction as Record<string, unknown>
+      : {};
+    for (const value of [transaction.changed_paths, transaction.transition_paths]) {
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (typeof item === "string" && item.trim()) result.add(item.replace(/\\/g, "/").replace(/^\/+/, ""));
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+  }
+  return result;
+}
+
+function classifyDrift(vaultPath: string, lifecyclePaths: Set<string>): DriftClass {
   const normalized = vaultPath.replace(/\\/g, "/");
+  if (lifecyclePaths.has(normalized)) return "live_os_write";
   if (normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`)) {
     return "audit_artifact";
   }
@@ -292,10 +315,12 @@ function classifyDrift(vaultPath: string): DriftClass {
     normalized.startsWith(".dino/provenance/") ||
     normalized.startsWith(".dino/proofs/") ||
     normalized.startsWith(".dino/quarantine/") ||
+    normalized.startsWith(".dino/lifecycle/") ||
     normalized.startsWith(".dino/tmp/") ||
     normalized.startsWith(".dino/locks/") ||
     normalized.startsWith(".dino/hook-locks/") ||
     normalized.startsWith(".dino/cache/") ||
+    normalized.startsWith(".dino/local-backups/") ||
     normalized.startsWith("10_Conversations/raw/") ||
     normalized.startsWith("60_Operations/task-summaries/") ||
     normalized.startsWith("60_Operations/behavior-rules/") ||
@@ -366,6 +391,7 @@ export async function buildFullMemoryAudit(
   }
 
   const previousManifest = await readPreviousManifest(dataRoot);
+  const authorizedLifecyclePaths = await lifecycleAuthorizedPaths(dataRoot);
   const previousByPath = new Map((previousManifest?.entries ?? []).map((entry) => [entry.path, entry]));
   const currentByPath = new Map(entries.map((entry) => [entry.path, entry]));
   const added: DriftEntry[] = [];
@@ -379,7 +405,7 @@ export async function buildFullMemoryAudit(
         added.push({
           path: entry.path,
           change: "added",
-          drift_class: classifyDrift(entry.path),
+          drift_class: classifyDrift(entry.path, authorizedLifecyclePaths),
           current_sha256: entry.sha256,
           current_bytes: entry.bytes,
           current_encoding_class: entry.encoding_class,
@@ -401,7 +427,7 @@ export async function buildFullMemoryAudit(
         changed.push({
           path: entry.path,
           change: "changed",
-          drift_class: classifyDrift(entry.path),
+          drift_class: classifyDrift(entry.path, authorizedLifecyclePaths),
           previous_sha256: previous.sha256,
           current_sha256: entry.sha256,
           previous_bytes: previous.bytes,
@@ -421,7 +447,7 @@ export async function buildFullMemoryAudit(
         removed.push({
           path: previous.path,
           change: "removed",
-          drift_class: classifyDrift(previous.path),
+          drift_class: classifyDrift(previous.path, authorizedLifecyclePaths),
           previous_sha256: previous.sha256,
           previous_bytes: previous.bytes,
           previous_encoding_class: previous.encoding_class,

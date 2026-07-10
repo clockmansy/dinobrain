@@ -3,8 +3,42 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { atomicWriteJson } from "./concurrency.js";
+import { getNodeLifecycleState } from "./node-lifecycle.js";
+import {
+  currentNodeRecord,
+  initializeLifecycleWrite,
+  transitionLifecycleWrite,
+  writeNodeLifecycleBatch,
+} from "./node-lifecycle-store.js";
 
 type JsonObject = Record<string, unknown>;
+
+const NODE_LIFECYCLE_FIELDS = [
+  "node_id",
+  "lifecycle_version",
+  "lifecycle_state",
+  "lifecycle_state_entered_at",
+  "lifecycle_last_transition_id",
+  "lifecycle_history",
+  "predecessor_paths",
+  "successor_paths",
+] as const;
+
+function withoutNodeLifecycle(record: JsonObject): JsonObject {
+  const result = { ...record };
+  for (const field of NODE_LIFECYCLE_FIELDS) delete result[field];
+  return result;
+}
+
+function mergePreservingNodeLifecycle(existing: JsonObject | null, next: JsonObject): JsonObject {
+  if (!existing) return next;
+  const merged = { ...existing, ...next };
+  for (const field of NODE_LIFECYCLE_FIELDS) {
+    if (existing[field] !== undefined) merged[field] = existing[field];
+  }
+  if (typeof existing.created_at === "string") merged.created_at = existing.created_at;
+  return merged;
+}
 
 type BehaviorSignal = {
   task_id: string;
@@ -254,7 +288,9 @@ async function promoteSignal(
   const reviewPath = dataPath(dataRoot, "80_Review_Queue", "promotion", `${id}.json`);
   const acceptedPath = dataPath(dataRoot, "50_Instances", "accepted", `${id}.json`);
   const relativePath = relDataPath(dataRoot, candidatePath);
+  const relativeReviewPath = relDataPath(dataRoot, reviewPath);
   const existingCandidate = await readJson<JsonObject>(candidatePath);
+  const existingReview = await readJson<JsonObject>(reviewPath);
   const existingAccepted = await readJson<JsonObject>(acceptedPath);
   const existing = existingCandidate ?? existingAccepted;
   const newSource = evidenceSource(signal);
@@ -277,8 +313,8 @@ async function promoteSignal(
   }
 
   if (action !== "unchanged") {
-    const record = {
-      ...(existing ?? {}),
+    const candidateBase = existingCandidate ?? (existingAccepted ? withoutNodeLifecycle(existingAccepted) : null);
+    const record = mergePreservingNodeLifecycle(candidateBase, {
       candidate_id: id,
       behavior_rule_id: id,
       type: "behavior_rule",
@@ -310,9 +346,8 @@ async function promoteSignal(
       created_at: firstString(existing?.created_at, options.at),
       updated_at: options.at,
       last_seen_at: options.at,
-    };
-    await writeJson(candidatePath, record);
-    await writeJson(reviewPath, {
+    });
+    const review = mergePreservingNodeLifecycle(existingReview, {
       review_id: id,
       type: "promotion",
       status: "pending",
@@ -324,6 +359,33 @@ async function promoteSignal(
       created_at: firstString(existingCandidate?.created_at, options.at),
       updated_at: options.at,
     });
+    await writeNodeLifecycleBatch(
+      dataRoot,
+      [
+        initializeLifecycleWrite(relativePath, record, {
+          to_state: getNodeLifecycleState(record, relativePath),
+          reason_code: "compounding_candidate_created",
+          reason: "A behavior signal entered review-gated compounding.",
+          actor: options.reviewer,
+          evidence_paths: [signal.trace_path],
+          predecessor_paths: [signal.trace_path],
+          at: options.at,
+          idempotency_key: `compounding-candidate|${id}`,
+        }).write,
+        initializeLifecycleWrite(relativeReviewPath, review, {
+          to_state: getNodeLifecycleState(review, relativeReviewPath),
+          reason_code: "compounding_review_opened",
+          reason: "A behavior signal requires manual promotion review.",
+          actor: options.reviewer,
+          evidence_paths: [relativePath, signal.trace_path],
+          predecessor_paths: [relativePath],
+          at: options.at,
+          idempotency_key: `compounding-review|${id}`,
+          sync_status: false,
+        }).write,
+      ],
+      { actor: options.reviewer, reason: `Create or update compounding candidate ${id}.` },
+    );
   }
 
   return {
@@ -353,22 +415,12 @@ function hasValidEvidence(record: JsonObject): boolean {
   return Boolean(firstString((evidence as JsonObject).source) && firstString((evidence as JsonObject).snippet));
 }
 
-async function archiveRecord(dataRoot: string, sourcePath: string, archiveDir: string, updates: JsonObject): Promise<string> {
-  const sourceAbsolute = dataPath(dataRoot, ...sourcePath.split("/"));
-  const existing = await readJson<JsonObject>(sourceAbsolute);
-  if (!existing) return "";
-  const destination = dataPath(dataRoot, archiveDir, path.basename(sourcePath));
-  await writeJson(destination, { ...existing, ...updates });
-  await fs.unlink(sourceAbsolute);
-  return relDataPath(dataRoot, destination);
-}
-
 async function cleanupBehaviorRules(
   dataRoot: string,
   options: Required<Pick<CompoundingCycleOptions, "apply" | "reviewer">> & { at: string },
 ): Promise<CleanupAction[]> {
   const accepted = (await listJsonRecords(dataRoot, "50_Instances/accepted")).filter((entry) =>
-    isBehaviorRecord(entry.record),
+    isBehaviorRecord(entry.record) && getNodeLifecycleState(entry.record, entry.path) === "accepted",
   );
   const actions: CleanupAction[] = [];
 
@@ -410,45 +462,80 @@ async function cleanupBehaviorRules(
 
   for (const action of actions) {
     if (action.type === "hold_invalid") {
-      const absolutePath = dataPath(dataRoot, ...action.target_path.split("/"));
-      const record = await readJson<JsonObject>(absolutePath);
-      if (!record) continue;
-      await writeJson(absolutePath, {
-        ...record,
-        status: "hold",
+      const state = await currentNodeRecord(dataRoot, action.target_path);
+      const heldRecord = {
+        ...state.record,
+        status: "held",
         quarantine: true,
         hold_reason: action.reason,
         held_by: options.reviewer,
         held_at: options.at,
         updated_at: options.at,
+      };
+      const held = transitionLifecycleWrite(action.target_path, heldRecord, {
+        to_state: "held",
+        reason_code: "compounding_rule_held",
+        reason: action.reason,
+        actor: options.reviewer,
+        at: options.at,
+        idempotency_key: `compounding-hold|${action.target_path}`,
+      });
+      held.write.expected_before_sha256 = state.sha256;
+      await writeNodeLifecycleBatch(dataRoot, [held.write], {
+        actor: options.reviewer,
+        reason: `Hold invalid behavior rule ${action.target_path}.`,
       });
       action.applied = true;
     }
 
     if (action.type === "merge_duplicate" && action.kept_path) {
-      const keeperPath = dataPath(dataRoot, ...action.kept_path.split("/"));
-      const duplicatePath = dataPath(dataRoot, ...action.target_path.split("/"));
-      const keeper = await readJson<JsonObject>(keeperPath);
-      const duplicate = await readJson<JsonObject>(duplicatePath);
-      if (!keeper || !duplicate) continue;
+      const keeperState = await currentNodeRecord(dataRoot, action.kept_path);
+      const duplicateState = await currentNodeRecord(dataRoot, action.target_path);
+      const keeper = keeperState.record;
+      const duplicate = duplicateState.record;
       const sources = uniqueEvidenceSources([
         ...(Array.isArray(keeper.evidence_sources) ? keeper.evidence_sources : []),
         ...(Array.isArray(duplicate.evidence_sources) ? duplicate.evidence_sources : []),
       ]);
-      await writeJson(keeperPath, {
+      const keeperRecord = {
         ...keeper,
         evidence_sources: sources,
         support_count: sources.length,
         merged_from: Array.from(new Set([...(Array.isArray(keeper.merged_from) ? keeper.merged_from.map(String) : []), action.target_path])),
         updated_at: options.at,
-      });
-      action.archive_path = await archiveRecord(dataRoot, action.target_path, "50_Instances/archive/merged", {
-        status: "archived_merged",
+      };
+      const duplicateRecord = {
+        ...duplicate,
         merged_into: action.kept_path,
         archived_at: options.at,
         lifecycle_action: "merge_duplicate_behavior_rule",
+        updated_at: options.at,
+      };
+      const archived = transitionLifecycleWrite(action.target_path, duplicateRecord, {
+        to_state: "archived",
+        reason_code: "compounding_duplicate_merged",
+        reason: action.reason,
+        actor: options.reviewer,
+        successor_paths: [action.kept_path],
+        at: options.at,
+        idempotency_key: `compounding-merge|${action.target_path}|${action.kept_path}`,
       });
-      action.applied = Boolean(action.archive_path);
+      archived.write.expected_before_sha256 = duplicateState.sha256;
+      await writeNodeLifecycleBatch(
+        dataRoot,
+        [
+          {
+            target_path: action.kept_path,
+            record: keeperRecord,
+            transitions: [],
+            expected_before_sha256: keeperState.sha256,
+          },
+          archived.write,
+        ],
+        { actor: options.reviewer, reason: `Merge duplicate behavior rule ${action.target_path}.` },
+      );
+      action.archive_path = action.target_path;
+      action.applied = true;
     }
   }
 
@@ -457,7 +544,7 @@ async function cleanupBehaviorRules(
 
 async function writeBehaviorRuleIndex(dataRoot: string, at: string): Promise<string> {
   const accepted = (await listJsonRecords(dataRoot, "50_Instances/accepted")).filter((entry) =>
-    isBehaviorRecord(entry.record),
+    isBehaviorRecord(entry.record) && getNodeLifecycleState(entry.record, entry.path) === "accepted",
   );
   const indexPath = dataPath(dataRoot, "60_Operations", "behavior-rules", "behavior-rule-index.json");
   await writeJson(indexPath, {

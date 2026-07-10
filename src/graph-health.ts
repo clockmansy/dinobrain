@@ -4,6 +4,7 @@ import path from "node:path";
 import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 import { ensureWikiIndex, type WikiIndex } from "./wiki-index.js";
+import { getNodeLifecycleState } from "./node-lifecycle.js";
 
 export const GRAPH_HEALTH_VERSION = "graph_health_v1";
 export const GRAPH_HEALTH_RELATIVE_PATH = ".dino/index/graph-health.json";
@@ -154,12 +155,13 @@ async function lifecycleHealth(dataRoot: string): Promise<{
   acceptedMissingSourceCount: number;
   candidateWithoutReviewCount: number;
 }> {
-  const [accepted, candidates, reviews, quarantines] = await Promise.all([
+  const [allAccepted, candidates, reviews, quarantines] = await Promise.all([
     readJsonDir(dataRoot, "50_Instances/accepted"),
     readJsonDir(dataRoot, "50_Instances/candidates"),
     readJsonDir(dataRoot, "80_Review_Queue/promotion"),
     readJsonDir(dataRoot, ".dino/quarantine"),
   ]);
+  const accepted = allAccepted.filter((entry) => getNodeLifecycleState(entry.record, entry.path) === "accepted");
 
   const acceptedWithoutSource = accepted.filter((entry) => sourcePaths(entry.record).length === 0);
   const acceptedWithMissingSource = (

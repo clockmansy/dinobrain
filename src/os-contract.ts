@@ -62,10 +62,12 @@ export const REQUIRED_OS_TOOLS = [
   "os_gate",
   "quarantine_record",
   "record_feedback_correction",
+  "restore_memory_node",
   "review_candidate",
   "run_compounding_cycle",
   "search_memory",
   "start_task",
+  "transition_memory_node",
   "wiki_search",
 ] as const;
 

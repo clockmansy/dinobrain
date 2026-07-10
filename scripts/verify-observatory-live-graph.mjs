@@ -218,6 +218,20 @@ tags: [context-pack]
     counts: { finish_gate_repairs_before: 0 },
     warnings: [],
   });
+  writeJson(".dino/state/node_lifecycle.json", {
+    version: "node_lifecycle_report_v3",
+    status: "healthy",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    counts: {
+      accepted: 1,
+      retrievable_accepted: 1,
+      held_or_excluded: 0,
+      lifecycle_blockers: 0,
+      deferred_candidate_backlog: 0,
+      promotion_reviews: 0,
+    },
+    post_audit: { invalid: [] },
+  });
   writeJson(".dino/state/rag_proof_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -285,6 +299,7 @@ tags: [context-pack]
       { id: "live_semantic_query", artifact_path: ".dino/state/live_semantic_query_status.json", status: "needs_attention" },
       { id: "answer_quality", artifact_path: ".dino/state/answer_quality_status.json", status: "needs_attention" },
       { id: "release_manifest", artifact_path: ".dino/state/release_manifest_status.json", status: "healthy" },
+      { id: "node_lifecycle", artifact_path: ".dino/state/node_lifecycle.json", status: "healthy" },
     ],
     warnings: [],
   });
@@ -338,6 +353,8 @@ tags: [context-pack]
     assert(state.summary.active_task_count === 1, "State endpoint did not report active task count");
     assert(state.graph_health && typeof state.graph_health.score === "number", "State endpoint did not include graph health");
     assert(state.lifecycle && state.lifecycle.counts, "State endpoint did not include node lifecycle");
+    assert(state.lifecycle.node_status === "healthy", "State endpoint did not expose healthy node lifecycle status");
+    assert(state.lifecycle.counts.retrievable_accepted === 1, "State endpoint did not expose retrievable accepted count");
     assert(state.read_trace && state.read_trace.status, "State endpoint did not include read trace");
     assert(state.sync_risk && state.sync_risk.status, "State endpoint did not include sync risk");
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
@@ -347,6 +364,7 @@ tags: [context-pack]
     const readiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(readiness.ok === false, "Readiness should fail while direct MCP and semantic RAG blockers exist");
     assert(readiness.health_status && Array.isArray(readiness.health_status.checks), "Readiness did not expose health checks");
+    assert(readiness.node_lifecycle_status?.status === "healthy", "Readiness did not expose node lifecycle status");
     assert(readiness.client_mcp_direct_status?.agents?.length === 1, "Readiness did not expose direct MCP agents");
     assert(
       readiness.lanes.blockers.some((gate) => gate.id === "client_mcp_direct_status"),

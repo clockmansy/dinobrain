@@ -4,6 +4,7 @@ import path from "node:path";
 import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
+import { getNodeLifecycleState } from "./node-lifecycle.js";
 
 export const SOURCE_LINEAGE_VERSION = "source_lineage_v1";
 export const SOURCE_LINEAGE_STATUS_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/source_lineage_status.json`;
@@ -279,6 +280,7 @@ function isInternalSessionEvidence(relativePath: string, record: JsonObject): bo
   return (
     sourceStatus === "internal_session_evidence" ||
     tags.includes("internal-session-evidence") ||
+    tags.includes("conversation-registry") ||
     tags.includes("task-trace") ||
     tags.includes("conversation-derived") ||
     relativePath.startsWith("50_Instances/accepted/task-memory-")
@@ -364,6 +366,12 @@ async function collectClaimRecords(dataRoot: string): Promise<Array<{ path: stri
       if (ext === ".json") {
         const record = await readJson(file);
         if (!record) continue;
+        if (
+          relativePath.startsWith("50_Instances/accepted/") &&
+          getNodeLifecycleState(record, relativePath) !== "accepted"
+        ) {
+          continue;
+        }
         claims.push({
           path: relativePath,
           record,

@@ -17,6 +17,7 @@ import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "
 import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
+import { NODE_LIFECYCLE_STATUS_PATH } from "./lifecycle.js";
 
 export const HEALTH_STATUS_VERSION = "health_status_v1";
 export const HEALTH_STATUS_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/health_status.json`;
@@ -120,6 +121,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     id: "task_lifecycle_settlement",
     artifactPath: TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
     authorityRank: 85,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "node_lifecycle",
+    artifactPath: NODE_LIFECYCLE_STATUS_PATH,
+    authorityRank: 89,
     healthyStatuses: ["healthy"],
   },
   {

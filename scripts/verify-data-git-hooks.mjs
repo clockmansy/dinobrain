@@ -110,6 +110,18 @@ function verifyLocalOnlyBlocked() {
   }
 }
 
+function verifyLocalLifecycleBackupBlocked() {
+  const repo = initRepo("local-lifecycle-backup");
+  try {
+    mkdirSync(path.join(repo, ".dino", "local-backups", "node-lifecycle", "tx"), { recursive: true });
+    writeFileSync(path.join(repo, ".dino", "local-backups", "node-lifecycle", "tx", "before.bin"), "private-before-bytes", "utf8");
+    const commit = commitAll(repo, "local lifecycle backup");
+    assert(commit.status !== 0, "pre-commit allowed local lifecycle backup path");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function verifyReviewedAcceptedAllowedAndPrePushChecked() {
   const repo = initRepo("reviewed-accepted");
   try {
@@ -133,6 +145,7 @@ verifyConfiguredDataRepo();
 verifyBadAcceptedBlocked();
 verifyAcceptedAtOnlyBlocked();
 verifyLocalOnlyBlocked();
+verifyLocalLifecycleBackupBlocked();
 verifyReviewedAcceptedAllowedAndPrePushChecked();
 
 console.log(
@@ -146,6 +159,7 @@ console.log(
         "bad_accepted_blocked",
         "accepted_at_only_blocked",
         "local_only_blocked",
+        "local_lifecycle_backup_blocked",
         "reviewed_accepted_allowed",
         "pre_push_clean_head",
       ],

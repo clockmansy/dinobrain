@@ -257,10 +257,14 @@ try {
   );
 
   const held = JSON.parse(readFileSync(path.join(dataRoot, "50_Instances", "accepted", "invalid-behavior-rule.json"), "utf8"));
-  assert(held.status === "hold" && held.quarantine === true, "invalid behavior rule was not held out");
   assert(
-    existsSync(path.join(dataRoot, "50_Instances", "archive", "merged", "duplicate-behavior-rule.json")),
-    "duplicate behavior rule was not archived after merge",
+    held.status === "held" && held.lifecycle_state === "held" && held.quarantine === true,
+    "invalid behavior rule was not held out",
+  );
+  assert(
+    JSON.parse(readFileSync(path.join(dataRoot, "50_Instances", "accepted", "duplicate-behavior-rule.json"), "utf8"))
+      .lifecycle_state === "archived",
+    "duplicate behavior rule was not archived in place after merge",
   );
 
   console.log(
@@ -277,7 +281,7 @@ try {
         average_memory_lift: behavior.average_memory_lift,
         cleanup_cycle_path: cleanup.cycle_path,
         held_invalid_rule: held.status,
-        duplicate_archived: "50_Instances/archive/merged/duplicate-behavior-rule.json",
+        duplicate_archived: "50_Instances/accepted/duplicate-behavior-rule.json#lifecycle=archived",
       },
       null,
       2,

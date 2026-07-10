@@ -91,6 +91,14 @@ summary: Stable memory record
     );
     assert(result.report.counts.unclassified_drift === 0, "ephemeral hook receipt created content drift");
 
+    text(path.join(dataRoot, ".dino", "local-backups", "node-lifecycle", "tx", "before.bin"), "private exact bytes");
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(
+      !result.manifest.entries.some((entry) => entry.path.startsWith(".dino/local-backups/")),
+      "local lifecycle backup was included in the full-memory manifest",
+    );
+    assert(result.report.counts.unclassified_drift === 0, "local lifecycle backup created content drift");
+
     text(path.join(dataRoot, "20_Wiki", "New-Decision.md"), "# New Decision\n\nThis is unclassified content drift.\n");
     result = await buildAndWriteFullMemoryAudit(dataRoot);
     assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);

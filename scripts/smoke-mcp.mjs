@@ -139,10 +139,12 @@ try {
     "os_gate",
     "quarantine_record",
     "record_feedback_correction",
+    "restore_memory_node",
     "review_candidate",
     "run_compounding_cycle",
     "search_memory",
     "start_task",
+    "transition_memory_node",
     "wiki_search",
   ];
   for (const name of expected) {
@@ -296,6 +298,29 @@ try {
   );
   if (!existsSync(path.join(tempDataRoot, quarantine.quarantine_path))) {
     throw new Error(`Missing quarantine record: ${quarantine.quarantine_path}`);
+  }
+  const quarantineSidecarBefore = JSON.parse(
+    readFileSync(path.join(tempDataRoot, quarantine.target_lifecycle_path), "utf8"),
+  );
+  const quarantineReplay = parseTool(
+    await client.callTool({
+      name: "quarantine_record",
+      arguments: {
+        target_path: "20_Wiki/Quarantine-Test-Memory.md",
+        reason: "Smoke test quarantine exclusion.",
+        reviewer: "smoke-test",
+      },
+    }),
+  );
+  const quarantineSidecarAfter = JSON.parse(
+    readFileSync(path.join(tempDataRoot, quarantineReplay.target_lifecycle_path), "utf8"),
+  );
+  if (
+    quarantineReplay.quarantine_id !== quarantine.quarantine_id ||
+    quarantineReplay.target_lifecycle_path !== quarantine.target_lifecycle_path ||
+    quarantineSidecarAfter.lifecycle_history.length !== quarantineSidecarBefore.lifecycle_history.length
+  ) {
+    throw new Error("Repeated quarantine was not idempotent");
   }
 
   const quarantinedPack = parseTool(

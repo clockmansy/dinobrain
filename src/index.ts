@@ -23,6 +23,22 @@ import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
+import {
+  evaluateAcceptedEligibility,
+  getNodeLifecycleState,
+  NODE_LIFECYCLE_STATES,
+  type LifecycleMutationInput,
+  type NodeLifecycleState,
+} from "./node-lifecycle.js";
+import {
+  currentNodeRecord,
+  initializeLifecycleWrite,
+  restoreDeletedNode,
+  transitionLifecycleWrite,
+  transitionNodeLifecycleFile,
+  writeNodeLifecycleBatch,
+  type LifecycleBatchWrite,
+} from "./node-lifecycle-store.js";
 import { classifyPromptLaunch } from "./prompt-eligibility.js";
 import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
 import { writeTerminalTaskAndTrace, writeTerminalTaskAndTraceUnlocked } from "./task-terminal-store.js";
@@ -97,7 +113,7 @@ function makeCandidateId(claim: string): string {
 }
 
 function makeQuarantineId(targetPath: string): string {
-  return makeUniqueId("quarantine", targetPath, 36);
+  return `quarantine-${sha256(targetPath).slice(0, 32)}`;
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -475,6 +491,96 @@ function jsonResult(value: unknown): CallToolResult {
   };
 }
 
+const NODE_LIFECYCLE_FIELDS = [
+  "node_id",
+  "lifecycle_version",
+  "lifecycle_state",
+  "lifecycle_state_entered_at",
+  "lifecycle_last_transition_id",
+  "lifecycle_history",
+  "predecessor_paths",
+  "successor_paths",
+] as const;
+
+function mergePreservingNodeLifecycle(
+  existing: Record<string, unknown> | null,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return next;
+  const merged = { ...existing, ...next };
+  for (const field of NODE_LIFECYCLE_FIELDS) {
+    if (existing[field] !== undefined) merged[field] = existing[field];
+  }
+  if (typeof existing.created_at === "string") merged.created_at = existing.created_at;
+  return merged;
+}
+
+function withoutNodeLifecycle(record: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...record };
+  for (const field of NODE_LIFECYCLE_FIELDS) delete result[field];
+  return result;
+}
+
+function combineLifecycleStages(
+  stages: Array<{ write: LifecycleBatchWrite; mutation: { record: Record<string, unknown> } }>,
+  expectedBeforeSha256?: string | null,
+): LifecycleBatchWrite {
+  const first = stages[0];
+  const last = stages.at(-1);
+  if (!first || !last) throw new Error("Lifecycle stage list cannot be empty");
+  return {
+    target_path: last.write.target_path,
+    record: last.mutation.record,
+    transitions: stages.flatMap((stage) => stage.write.transitions ?? []),
+    ...(expectedBeforeSha256 !== undefined ? { expected_before_sha256: expectedBeforeSha256 } : {}),
+  };
+}
+
+function transitionThroughLifecycleStates(
+  targetPath: string,
+  record: Record<string, unknown>,
+  states: NodeLifecycleState[],
+  input: Omit<LifecycleMutationInput, "target_path" | "to_state" | "idempotency_key"> & {
+    idempotency_key: string;
+  },
+  expectedBeforeSha256?: string | null,
+): LifecycleBatchWrite {
+  const stages: Array<{ write: LifecycleBatchWrite; mutation: { record: Record<string, unknown> } }> = [];
+  let current = record;
+  for (const state of states) {
+    const stage = transitionLifecycleWrite(targetPath, current, {
+      ...input,
+      to_state: state,
+      idempotency_key: `${input.idempotency_key}|${state}`,
+    });
+    stages.push(stage);
+    current = stage.mutation.record;
+  }
+  return combineLifecycleStages(stages, expectedBeforeSha256);
+}
+
+async function upsertLifecycleStateWrite(
+  targetPath: string,
+  record: Record<string, unknown>,
+  state: NodeLifecycleState,
+  input: Omit<LifecycleMutationInput, "target_path" | "to_state" | "idempotency_key"> & {
+    idempotency_key: string;
+  },
+): Promise<LifecycleBatchWrite> {
+  try {
+    const existing = await currentNodeRecord(DATA_ROOT, targetPath);
+    const merged = mergePreservingNodeLifecycle(existing.record, record);
+    return transitionThroughLifecycleStates(targetPath, merged, [state], input, existing.sha256);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return initializeLifecycleWrite(targetPath, record, {
+      ...input,
+      to_state: state,
+      idempotency_key: `${input.idempotency_key}|${state}`,
+    }).write;
+  }
+}
+
 function safeError(error: unknown): string {
   return String((error as Error | undefined)?.message ?? error).replace(/\s+/g, " ").slice(0, 500);
 }
@@ -556,6 +662,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/cache/",
     ".dino/tmp/",
     ".dino/locks/",
+    ".dino/local-backups/",
     ".dino/events/",
   ];
   const blockedExact = new Set([".env", ".dino/secrets.json", ".dino/local.json"]);
@@ -2860,24 +2967,31 @@ registerTool(
   "apply_node_lifecycle",
   {
     title: "Apply Node Lifecycle",
-    description: "Apply DinoBrain OS v2 lifecycle checks and write merge/hold/delete/provenance review records.",
+    description: "Dry-run, apply, or exactly roll back DinoBrain memory lifecycle migrations.",
     inputSchema: {
       apply: z.boolean().default(false),
-      reviewer: z.string().default("node-lifecycle-v2"),
+      reviewer: z.string().default("node-lifecycle-v3"),
+      rollback_transaction_id: z.string().regex(/^node-lifecycle-[A-Za-z0-9-]+$/).optional(),
     },
   },
-  async ({ apply, reviewer }) => {
-    const report = await applyNodeLifecycle(DATA_ROOT, { apply, reviewer });
-    if (apply) {
+  async ({ apply, reviewer, rollback_transaction_id }) => {
+    if (apply && rollback_transaction_id) throw new Error("Use apply or rollback_transaction_id, not both.");
+    const report = await applyNodeLifecycle(DATA_ROOT, {
+      apply,
+      reviewer,
+      rollbackTransactionId: rollback_transaction_id,
+    });
+    if (apply || rollback_transaction_id) {
       await invalidateWikiIndex(DATA_ROOT);
       await invalidateSqliteWikiShard(DATA_ROOT);
     }
     const eventLog = await appendEvent({
-      event: "node_lifecycle_applied",
+      event: rollback_transaction_id ? "node_lifecycle_rolled_back" : apply ? "node_lifecycle_applied" : "node_lifecycle_checked",
       at: nowIso(),
       lifecycle_id: report.lifecycle_id,
       lifecycle_path: report.lifecycle_path,
       apply,
+      rollback_transaction_id: rollback_transaction_id ?? null,
       status: report.status,
       counts: report.counts,
       os_version: DINOBRAIN_OS_VERSION,
@@ -2886,6 +3000,101 @@ registerTool(
       ...report,
       event_log: eventLog,
     });
+  },
+);
+
+registerTool(
+  "transition_memory_node",
+  {
+    title: "Transition Memory Node",
+    description: "Apply one verified lifecycle transition to a JSON memory node.",
+    inputSchema: {
+      target_path: z.string().min(1),
+      to_state: z.enum(NODE_LIFECYCLE_STATES),
+      reason_code: z.string().min(1),
+      reason: z.string().min(1),
+      actor: z.string().default("manual-lifecycle-review"),
+      evidence_paths: z.array(z.string()).default([]),
+      predecessor_paths: z.array(z.string()).default([]),
+      successor_paths: z.array(z.string()).default([]),
+      expected_before_sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+    },
+  },
+  async ({
+    target_path,
+    to_state,
+    reason_code,
+    reason,
+    actor,
+    evidence_paths,
+    predecessor_paths,
+    successor_paths,
+    expected_before_sha256,
+  }) => {
+    const targetPath = normalizeVaultPath(target_path);
+    const result = await transitionNodeLifecycleFile(DATA_ROOT, {
+      target_path: targetPath,
+      to_state,
+      reason_code,
+      reason,
+      actor,
+      evidence_paths: normalizeVaultPaths(evidence_paths),
+      predecessor_paths: normalizeVaultPaths(predecessor_paths),
+      successor_paths: normalizeVaultPaths(successor_paths),
+      expected_before_sha256,
+    });
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const eventLog = await appendEvent({
+      event: "memory_node_transitioned",
+      at: nowIso(),
+      target_path: targetPath,
+      to_state,
+      transition_id: result.transition_id,
+      transaction_id: result.transaction_id,
+      idempotent: result.idempotent,
+      actor,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({ ok: true, ...result, event_log: eventLog });
+  },
+);
+
+registerTool(
+  "restore_memory_node",
+  {
+    title: "Restore Memory Node",
+    description: "Restore a deleted tombstone from its exact local backup into deletion-proposed review state.",
+    inputSchema: {
+      target_path: z.string().min(1),
+      deletion_transition_id: z.string().min(1),
+      reason: z.string().min(1),
+      actor: z.string().default("manual-lifecycle-review"),
+      evidence_paths: z.array(z.string()).default([]),
+    },
+  },
+  async ({ target_path, deletion_transition_id, reason, actor, evidence_paths }) => {
+    const targetPath = normalizeVaultPath(target_path);
+    const result = await restoreDeletedNode(DATA_ROOT, {
+      target_path: targetPath,
+      deletion_transition_id,
+      reason,
+      actor,
+      evidence_paths: normalizeVaultPaths(evidence_paths),
+    });
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const eventLog = await appendEvent({
+      event: "memory_node_restored",
+      at: nowIso(),
+      target_path: targetPath,
+      deletion_transition_id,
+      restore_transition_id: result.transition_id,
+      transaction_id: result.transaction_id,
+      actor,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({ ok: true, ...result, event_log: eventLog });
   },
 );
 
@@ -2968,7 +3177,7 @@ registerTool(
   "record_feedback_correction",
   {
     title: "Record Feedback Correction",
-    description: "Promote direct user correction into accepted behavior memory for future sessions.",
+    description: "Create a provenance-backed review candidate from direct user correction.",
     inputSchema: {
       correction: z.string().min(1),
       applies_to: z.string().default("agent_behavior"),
@@ -2979,64 +3188,104 @@ registerTool(
   async ({ correction, applies_to, task_id, tags }) => {
     const feedbackId = makeFeedbackId(correction);
     const createdAt = nowIso();
-    const acceptedPath = dataPath("50_Instances", "accepted", `${feedbackId}.json`);
-    const record = {
+    const candidatePath = dataPath("50_Instances", "candidates", `${feedbackId}.json`);
+    const reviewPath = dataPath("80_Review_Queue", "promotion", `${feedbackId}.json`);
+    const provenancePath = dataPath(".dino", "provenance", `${feedbackId}.json`);
+    const candidateRelativePath = relDataPath(candidatePath);
+    const reviewRelativePath = relDataPath(reviewPath);
+    const provenanceRelativePath = relDataPath(provenancePath);
+    const provenanceRecord = {
+      provenance_id: feedbackId,
+      type: "user_feedback_provenance",
+      status: "active",
+      source_kind: "direct_user_correction",
+      task_id: task_id ?? null,
+      correction_sha256: sha256(correction),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const candidate = {
+      candidate_id: feedbackId,
       feedback_id: feedbackId,
       type: "feedback_correction",
-      status: "accepted",
+      status: "pending_review",
       claim: correction,
       behavior_rule: correction,
       applies_to,
       evidence: {
-        source: "user_feedback",
+        source: provenanceRelativePath,
         snippet: correction.slice(0, 600),
       },
+      provenance_paths: [provenanceRelativePath],
       source_status: "internal",
       confidence: "high",
       last_verified: dateStamp(),
       tags: Array.from(new Set(["feedback", "correction", "behavior", ...tags])),
       task_id: task_id ?? null,
-      accepted_at: createdAt,
+      auto_promote: false,
+      promotion_blockers: ["manual_review_required", "correction_conflict_review_required"],
       created_at: createdAt,
       updated_at: createdAt,
     };
-    await writeJson(acceptedPath, record);
-    await invalidateWikiIndex(DATA_ROOT);
-    await invalidateSqliteWikiShard(DATA_ROOT);
-    const behaviorRecall = await recordFeedbackCorrectionRecall(DATA_ROOT, {
-      feedbackId,
-      correction,
-      appliesTo: applies_to,
-      taskId: task_id ?? null,
-      acceptedPath: relDataPath(acceptedPath),
-      createdAt,
-    });
+    const review = {
+      review_id: feedbackId,
+      type: "correction_promotion",
+      status: "pending",
+      candidate_path: candidateRelativePath,
+      provenance_path: provenanceRelativePath,
+      required_checks: ["direct_user_correction", "conflicting_memory_review", "scope", "sensitivity"],
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const lifecycleTransaction = await writeNodeLifecycleBatch(
+      DATA_ROOT,
+      [
+        { target_path: provenanceRelativePath, record: provenanceRecord },
+        initializeLifecycleWrite(candidateRelativePath, candidate, {
+          to_state: "candidate",
+          reason_code: "feedback_correction_candidate_created",
+          reason: "Direct user correction entered review before durable promotion.",
+          actor: "record_feedback_correction",
+          evidence_paths: [provenanceRelativePath],
+          predecessor_paths: task_id ? [`.dino/tasks/${safeSlug(task_id)}.json`] : [],
+          at: createdAt,
+          idempotency_key: `feedback-candidate|${feedbackId}`,
+        }).write,
+        initializeLifecycleWrite(reviewRelativePath, review, {
+          to_state: "review",
+          reason_code: "feedback_correction_review_opened",
+          reason: "Direct user correction requires conflict and scope review.",
+          actor: "record_feedback_correction",
+          evidence_paths: [candidateRelativePath, provenanceRelativePath],
+          predecessor_paths: [candidateRelativePath],
+          at: createdAt,
+          idempotency_key: `feedback-review|${feedbackId}`,
+          sync_status: false,
+        }).write,
+      ],
+      { actor: "record_feedback_correction", reason: `Create feedback correction candidate ${feedbackId}.` },
+    );
     const eventLog = await appendEvent({
-      event: "feedback_correction_accepted",
+      event: "feedback_correction_candidate_created",
       feedback_id: feedbackId,
       at: createdAt,
-      accepted_path: relDataPath(acceptedPath),
+      candidate_path: candidateRelativePath,
+      review_path: reviewRelativePath,
+      provenance_path: provenanceRelativePath,
       task_id: task_id ?? null,
-      behavior_recall_ledger_path: behaviorRecall.ledger_path,
-      behavior_recall_id: behaviorRecall.entry.recall_id,
-      conflicting_memory_paths: behaviorRecall.conflicting_memory_paths,
-      quarantine_paths: behaviorRecall.quarantine_paths,
-      review_path: behaviorRecall.review_path,
+      lifecycle_transaction_id: lifecycleTransaction.transaction_id,
       os_version: DINOBRAIN_OS_VERSION,
     });
     return jsonResult({
       ok: true,
       feedback_id: feedbackId,
-      accepted_path: relDataPath(acceptedPath),
+      candidate_path: candidateRelativePath,
+      review_path: reviewRelativePath,
+      provenance_path: provenanceRelativePath,
+      accepted_path: null,
+      lifecycle_transaction: lifecycleTransaction,
       event_log: eventLog,
-      behavior_recall: {
-        ledger_path: behaviorRecall.ledger_path,
-        recall_id: behaviorRecall.entry.recall_id,
-        conflicting_memory_paths: behaviorRecall.conflicting_memory_paths,
-        quarantine_paths: behaviorRecall.quarantine_paths,
-        review_path: behaviorRecall.review_path,
-      },
-      next_context_effect: "included_in_default_context_packs_after_index_rebuild",
+      next_context_effect: "available only after review_candidate approves the correction",
     });
   },
 );
@@ -3124,12 +3373,41 @@ registerTool(
       });
     }
 
-    await writeJson(dataPath(plan.archivePath), plan.archive);
-    for (const candidate of plan.candidates) {
-      await writeJson(dataPath(candidate.candidatePath), candidate.candidate);
-      await writeJson(dataPath(candidate.reviewPath), candidate.review);
-    }
     const importedAt = typeof plan.archive.imported_at === "string" ? plan.archive.imported_at : nowIso();
+    const lifecycleWrites: LifecycleBatchWrite[] = [{ target_path: plan.archivePath, record: plan.archive }];
+    for (const candidate of plan.candidates) {
+      const existingCandidate = await readJson<Record<string, unknown>>(dataPath(candidate.candidatePath));
+      const existingReview = await readJson<Record<string, unknown>>(dataPath(candidate.reviewPath));
+      const candidateRecord = mergePreservingNodeLifecycle(existingCandidate, candidate.candidate);
+      const reviewRecord = mergePreservingNodeLifecycle(existingReview, candidate.review);
+      lifecycleWrites.push(
+        initializeLifecycleWrite(candidate.candidatePath, candidateRecord, {
+          to_state: getNodeLifecycleState(candidateRecord, candidate.candidatePath),
+          reason_code: "session_candidate_created",
+          reason: "Session extraction created a review-gated memory candidate.",
+          actor: "import_session",
+          evidence_paths: [plan.archivePath],
+          predecessor_paths: [plan.archivePath],
+          at: importedAt,
+          idempotency_key: `session-candidate|${candidate.candidateId}`,
+        }).write,
+        initializeLifecycleWrite(candidate.reviewPath, reviewRecord, {
+          to_state: getNodeLifecycleState(reviewRecord, candidate.reviewPath),
+          reason_code: "session_review_opened",
+          reason: "Session extraction opened a mandatory promotion review.",
+          actor: "import_session",
+          evidence_paths: [plan.archivePath, candidate.candidatePath],
+          predecessor_paths: [candidate.candidatePath],
+          at: importedAt,
+          idempotency_key: `session-review|${candidate.candidateId}`,
+          sync_status: false,
+        }).write,
+      );
+    }
+    const lifecycleTransaction = await writeNodeLifecycleBatch(DATA_ROOT, lifecycleWrites, {
+      actor: "import_session",
+      reason: `Register session ${plan.sessionId} and its review-gated candidates.`,
+    });
     const eventLog = await appendEvent({
       event: "session_imported",
       session_id: plan.sessionId,
@@ -3156,6 +3434,7 @@ registerTool(
       candidate_count: plan.candidates.length,
       candidate_paths: plan.candidates.map((candidate) => candidate.candidatePath),
       review_paths: plan.candidates.map((candidate) => candidate.reviewPath),
+      lifecycle_transaction: lifecycleTransaction,
       temperature_counts: plan.stats.temperature_counts,
       category_counts: plan.stats.category_counts,
       redaction_hits: plan.stats.redaction_hits,
@@ -3176,6 +3455,7 @@ registerTool(
       confidence: z.enum(["low", "medium", "high"]),
       last_verified: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       source_status: z.enum(["internal", "external", "mixed", "unknown"]).default("unknown"),
+      provenance_paths: z.array(z.string()).default([]),
       tags: z.array(z.string()).default([]),
       task_id: z.string().optional(),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
@@ -3188,6 +3468,7 @@ registerTool(
     confidence,
     last_verified,
     source_status,
+    provenance_paths,
     tags,
     task_id,
     sensitivity,
@@ -3207,6 +3488,7 @@ registerTool(
       confidence,
       last_verified,
       source_status,
+      provenance_paths: normalizeVaultPaths(provenance_paths),
       tags,
       task_id: task_id ?? null,
       sensitivity,
@@ -3224,14 +3506,41 @@ registerTool(
       created_at: createdAt,
       updated_at: createdAt,
     };
-    await writeJson(candidatePath, candidate);
-    await writeJson(reviewPath, review);
+    const candidateRelativePath = relDataPath(candidatePath);
+    const reviewRelativePath = relDataPath(reviewPath);
+    const lifecycleTransaction = await writeNodeLifecycleBatch(
+      DATA_ROOT,
+      [
+        initializeLifecycleWrite(candidateRelativePath, candidate, {
+          to_state: "candidate",
+          reason_code: "candidate_created",
+          reason: "A new memory candidate entered mandatory review.",
+          actor: "create_candidate_instance",
+          evidence_paths: normalizeVaultPaths(provenance_paths),
+          at: createdAt,
+          idempotency_key: `candidate-created|${candidateId}`,
+        }).write,
+        initializeLifecycleWrite(reviewRelativePath, review, {
+          to_state: "review",
+          reason_code: "promotion_review_opened",
+          reason: "A promotion review was opened for the new candidate.",
+          actor: "create_candidate_instance",
+          evidence_paths: [candidateRelativePath, ...normalizeVaultPaths(provenance_paths)],
+          predecessor_paths: [candidateRelativePath],
+          at: createdAt,
+          idempotency_key: `candidate-review-opened|${candidateId}`,
+          sync_status: false,
+        }).write,
+      ],
+      { actor: "create_candidate_instance", reason: `Create candidate and review ${candidateId}.` },
+    );
     await appendEvent({
       event: "candidate_instance_created",
       candidate_id: candidateId,
       at: createdAt,
       candidate_path: relDataPath(candidatePath),
       review_path: relDataPath(reviewPath),
+      lifecycle_transaction: lifecycleTransaction,
     });
     return jsonResult({
       ok: true,
@@ -3260,15 +3569,57 @@ registerTool(
     const candidateId = safeSlug(candidate_id);
     const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
     const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);
-    const candidate = await readJson<Record<string, unknown>>(candidatePath);
-    if (!candidate) {
+    const candidateRelativePath = relDataPath(candidatePath);
+    const reviewRelativePath = relDataPath(reviewPath);
+    const acceptedPath = dataPath("50_Instances", "accepted", `${candidateId}.json`);
+    const acceptedRelativePath = relDataPath(acceptedPath);
+    let candidateState;
+    let reviewState;
+    try {
+      candidateState = await currentNodeRecord(DATA_ROOT, candidateRelativePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       return jsonResult({
         ok: false,
         candidate_id: candidateId,
         error: "candidate_not_found",
       });
     }
+    try {
+      reviewState = await currentNodeRecord(DATA_ROOT, reviewRelativePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return jsonResult({
+        ok: false,
+        candidate_id: candidateId,
+        error: "promotion_review_not_found",
+      });
+    }
 
+    const existingAccepted = await readJson<Record<string, unknown>>(acceptedPath);
+    if (decision === "approve" && existingAccepted) {
+      const eligibility = await evaluateAcceptedEligibility(DATA_ROOT, acceptedRelativePath, existingAccepted);
+      if (!eligibility.eligible) {
+        return jsonResult({
+          ok: false,
+          candidate_id: candidateId,
+          error: "existing_accepted_record_failed_lifecycle_gate",
+          blockers: eligibility.issues,
+          accepted_path: acceptedRelativePath,
+        });
+      }
+      return jsonResult({
+        ok: true,
+        idempotent: true,
+        candidate_id: candidateId,
+        decision,
+        candidate_path: candidateRelativePath,
+        review_path: reviewRelativePath,
+        accepted_path: acceptedRelativePath,
+      });
+    }
+
+    const candidate = candidateState.record;
     const evidence = candidate.evidence;
     const hasEvidence =
       typeof evidence === "object" &&
@@ -3278,81 +3629,213 @@ registerTool(
     const hasConfidence = ["low", "medium", "high"].includes(String(candidate.confidence));
     const hasLastVerified = /^\d{4}-\d{2}-\d{2}$/.test(String(candidate.last_verified ?? ""));
     const reviewedAt = nowIso();
-
-    if (decision === "approve" && (!hasEvidence || !hasConfidence || !hasLastVerified)) {
-      await writeJson(reviewPath, {
-        review_id: candidateId,
-        type: "promotion",
-        status: "blocked",
-        candidate_path: relDataPath(candidatePath),
-        decision,
-        reviewer,
-        notes,
-        blockers: [
-          !hasEvidence ? "missing_evidence_snippet" : null,
-          !hasConfidence ? "missing_confidence" : null,
-          !hasLastVerified ? "missing_last_verified" : null,
-        ].filter(Boolean),
-        reviewed_at: reviewedAt,
-        updated_at: reviewedAt,
-      });
-      return jsonResult({
-        ok: false,
-        candidate_id: candidateId,
-        status: "blocked",
-        reason: "Claims without evidence, confidence, and last_verified cannot be promoted.",
-      });
-    }
-
-    const updatedCandidate = {
-      ...candidate,
-      status: decision === "approve" ? "accepted" : "rejected",
-      reviewed_by: reviewer,
-      review_notes: notes,
-      reviewed_at: reviewedAt,
-      updated_at: reviewedAt,
-    };
-    await writeJson(candidatePath, updatedCandidate);
-
-    let acceptedPath: string | null = null;
-    if (decision === "approve") {
-      acceptedPath = dataPath("50_Instances", "accepted", `${candidateId}.json`);
-      await writeJson(acceptedPath, {
-        ...updatedCandidate,
-        accepted_at: reviewedAt,
-        source_candidate_path: relDataPath(candidatePath),
-      });
-      await invalidateWikiIndex(DATA_ROOT);
-      await invalidateSqliteWikiShard(DATA_ROOT);
-    }
-
-    await writeJson(reviewPath, {
+    const staticBlockers = [
+      !hasEvidence ? "missing_evidence_snippet" : null,
+      !hasConfidence ? "missing_confidence" : null,
+      !hasLastVerified ? "missing_last_verified" : null,
+      String(candidate.sensitivity ?? "unknown").toLowerCase() === "sensitive" ? "sensitive_candidate_cannot_be_hot" : null,
+    ].filter((value): value is string => Boolean(value));
+    const reviewBase = mergePreservingNodeLifecycle(reviewState.record, {
+      ...reviewState.record,
       review_id: candidateId,
-      type: "promotion",
-      status: decision === "approve" ? "approved" : "rejected",
-      candidate_path: relDataPath(candidatePath),
-      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+      type: firstString(reviewState.record.type, "promotion"),
+      candidate_path: candidateRelativePath,
+      accepted_path: decision === "approve" ? acceptedRelativePath : null,
       decision,
       reviewer,
       notes,
       reviewed_at: reviewedAt,
       updated_at: reviewedAt,
     });
+
+    if (decision === "approve") {
+      const acceptedBase = {
+        ...withoutNodeLifecycle(candidate),
+        status: "accepted",
+        review_status: "accepted_by_agent_review",
+        reviewed_by: reviewer,
+        review_notes: notes,
+        reviewed_at: reviewedAt,
+        accepted_at: reviewedAt,
+        source_candidate_path: candidateRelativePath,
+        source_review_path: reviewRelativePath,
+        promotion_blockers: [],
+        predecessor_paths: [candidateRelativePath, reviewRelativePath],
+        updated_at: reviewedAt,
+      };
+      const acceptedStage = initializeLifecycleWrite(acceptedRelativePath, acceptedBase, {
+        to_state: "accepted",
+        reason_code: "candidate_review_approved",
+        reason: "A reviewer approved the candidate after evidence and provenance checks.",
+        actor: reviewer,
+        evidence_paths: [reviewRelativePath],
+        predecessor_paths: [candidateRelativePath, reviewRelativePath],
+        at: reviewedAt,
+        idempotency_key: `candidate-approved|${candidateId}`,
+      });
+      const approvedReview = { ...reviewBase, status: "approved", blockers: [] };
+      const eligibility = await evaluateAcceptedEligibility(DATA_ROOT, acceptedRelativePath, acceptedStage.mutation.record, {
+        staged_records: { [reviewRelativePath]: approvedReview },
+      });
+      const blockers = [...staticBlockers, ...eligibility.issues];
+      if (blockers.length > 0) {
+        const blockedReview = { ...reviewBase, status: "blocked", blockers: Array.from(new Set(blockers)) };
+        const blockedCandidate = mergePreservingNodeLifecycle(candidate, {
+          ...candidate,
+          reviewed_by: reviewer,
+          review_notes: notes,
+          reviewed_at: reviewedAt,
+          hold_reason: blockers.join(","),
+          updated_at: reviewedAt,
+        });
+        const lifecycleTransaction = await writeNodeLifecycleBatch(
+          DATA_ROOT,
+          [
+            transitionThroughLifecycleStates(candidateRelativePath, blockedCandidate, ["held"], {
+              reason_code: "promotion_blocked",
+              reason: `Promotion blocked: ${blockers.join(", ")}`,
+              actor: reviewer,
+              evidence_paths: [reviewRelativePath],
+              at: reviewedAt,
+              idempotency_key: `promotion-blocked|${candidateId}`,
+            }, candidateState.sha256),
+            transitionThroughLifecycleStates(reviewRelativePath, blockedReview, ["held"], {
+              reason_code: "promotion_blocked",
+              reason: `Promotion blocked: ${blockers.join(", ")}`,
+              actor: reviewer,
+              evidence_paths: [candidateRelativePath],
+              at: reviewedAt,
+              idempotency_key: `promotion-review-blocked|${candidateId}`,
+              sync_status: false,
+            }, reviewState.sha256),
+          ],
+          { actor: reviewer, reason: `Block unsupported promotion ${candidateId}.` },
+        );
+        return jsonResult({
+          ok: false,
+          candidate_id: candidateId,
+          status: "blocked",
+          blockers: Array.from(new Set(blockers)),
+          lifecycle_transaction: lifecycleTransaction,
+          reason: "Accepted memory requires lifecycle, review, and durable provenance evidence.",
+        });
+      }
+
+      const candidateForReview = mergePreservingNodeLifecycle(candidate, {
+        ...candidate,
+        reviewed_by: reviewer,
+        review_notes: notes,
+        reviewed_at: reviewedAt,
+        updated_at: reviewedAt,
+      });
+      const reviewSequence: NodeLifecycleState[] = candidateState.state === "review" ? [] : ["review"];
+      reviewSequence.push("archived");
+      const candidateWrite = transitionThroughLifecycleStates(candidateRelativePath, candidateForReview, reviewSequence, {
+        reason_code: "promoted_to_accepted",
+        reason: "The reviewed candidate was promoted to a successor accepted node.",
+        actor: reviewer,
+        evidence_paths: [reviewRelativePath],
+        successor_paths: [acceptedRelativePath],
+        at: reviewedAt,
+        idempotency_key: `candidate-promoted|${candidateId}`,
+      }, candidateState.sha256);
+      const reviewSequenceStates: NodeLifecycleState[] = reviewState.state === "review" ? ["archived"] : ["review", "archived"];
+      const reviewWrite = transitionThroughLifecycleStates(reviewRelativePath, approvedReview, reviewSequenceStates, {
+        reason_code: "promotion_review_completed",
+        reason: "The promotion review approved an accepted successor node.",
+        actor: reviewer,
+        evidence_paths: [candidateRelativePath],
+        successor_paths: [acceptedRelativePath],
+        at: reviewedAt,
+        idempotency_key: `promotion-review-completed|${candidateId}`,
+        sync_status: false,
+      }, reviewState.sha256);
+      acceptedStage.write.expected_before_sha256 = null;
+      const lifecycleTransaction = await writeNodeLifecycleBatch(
+        DATA_ROOT,
+        [candidateWrite, reviewWrite, acceptedStage.write],
+        { actor: reviewer, reason: `Approve candidate ${candidateId} into accepted memory.` },
+      );
+      await invalidateWikiIndex(DATA_ROOT);
+      await invalidateSqliteWikiShard(DATA_ROOT);
+      if (candidate.type === "feedback_correction") {
+        await recordFeedbackCorrectionRecall(DATA_ROOT, {
+          feedbackId: candidateId,
+          correction: firstString(candidate.claim, candidate.behavior_rule),
+          appliesTo: firstString(candidate.applies_to, "agent_behavior"),
+          taskId: firstString(candidate.task_id) || null,
+          acceptedPath: acceptedRelativePath,
+          createdAt: reviewedAt,
+        });
+      }
+      await appendEvent({
+        event: "candidate_instance_reviewed",
+        candidate_id: candidateId,
+        decision,
+        at: reviewedAt,
+        accepted_path: acceptedRelativePath,
+        lifecycle_transaction_id: lifecycleTransaction.transaction_id,
+      });
+      return jsonResult({
+        ok: true,
+        candidate_id: candidateId,
+        decision,
+        candidate_path: candidateRelativePath,
+        review_path: reviewRelativePath,
+        accepted_path: acceptedRelativePath,
+        lifecycle_transaction: lifecycleTransaction,
+      });
+    }
+
+    const rejectedCandidate = mergePreservingNodeLifecycle(candidate, {
+      ...candidate,
+      reviewed_by: reviewer,
+      review_notes: notes,
+      reviewed_at: reviewedAt,
+      rejection_reason: notes || "reviewer_rejected",
+      updated_at: reviewedAt,
+    });
+    const rejectedReview = { ...reviewBase, status: "rejected", blockers: [] };
+    const lifecycleTransaction = await writeNodeLifecycleBatch(
+      DATA_ROOT,
+      [
+        transitionThroughLifecycleStates(candidateRelativePath, rejectedCandidate, ["archived"], {
+          reason_code: "candidate_rejected",
+          reason: notes || "The reviewer rejected the candidate.",
+          actor: reviewer,
+          evidence_paths: [reviewRelativePath],
+          at: reviewedAt,
+          idempotency_key: `candidate-rejected|${candidateId}`,
+        }, candidateState.sha256),
+        transitionThroughLifecycleStates(reviewRelativePath, rejectedReview, ["archived"], {
+          reason_code: "promotion_review_rejected",
+          reason: notes || "The promotion review rejected the candidate.",
+          actor: reviewer,
+          evidence_paths: [candidateRelativePath],
+          at: reviewedAt,
+          idempotency_key: `promotion-review-rejected|${candidateId}`,
+          sync_status: false,
+        }, reviewState.sha256),
+      ],
+      { actor: reviewer, reason: `Reject candidate ${candidateId}.` },
+    );
     await appendEvent({
       event: "candidate_instance_reviewed",
       candidate_id: candidateId,
       decision,
       at: reviewedAt,
-      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+      accepted_path: null,
+      lifecycle_transaction_id: lifecycleTransaction.transaction_id,
     });
 
     return jsonResult({
       ok: true,
       candidate_id: candidateId,
       decision,
-      candidate_path: relDataPath(candidatePath),
-      review_path: relDataPath(reviewPath),
-      accepted_path: acceptedPath ? relDataPath(acceptedPath) : null,
+      candidate_path: candidateRelativePath,
+      review_path: reviewRelativePath,
+      accepted_path: null,
+      lifecycle_transaction: lifecycleTransaction,
     });
   },
 );
@@ -3371,9 +3854,12 @@ registerTool(
   },
   async ({ target_path, reason, reviewer, replacement_path }) => {
     const targetPath = normalizeVaultPath(target_path);
-    const targetAbsolutePath = dataPath(targetPath);
+    const targetIsJson = path.extname(targetPath).toLowerCase() === ".json";
+    let targetState: Awaited<ReturnType<typeof currentNodeRecord>> | null = null;
+    let targetBytes: Buffer | null = null;
     try {
-      await fs.stat(targetAbsolutePath);
+      if (targetIsJson) targetState = await currentNodeRecord(DATA_ROOT, targetPath);
+      else targetBytes = await fs.readFile(dataPath(targetPath));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return jsonResult({
@@ -3389,33 +3875,122 @@ registerTool(
     const createdAt = nowIso();
     const quarantinePath = dataPath(".dino", "quarantine", `${quarantineId}.json`);
     const reviewPath = dataPath("80_Review_Queue", "demotion", `${quarantineId}.json`);
+    const quarantineRelativePath = relDataPath(quarantinePath);
+    const reviewRelativePath = relDataPath(reviewPath);
+    const normalizedReplacementPath = replacement_path ? normalizeVaultPath(replacement_path) : null;
+    const targetLifecyclePath = targetIsJson
+      ? targetPath
+      : `.dino/lifecycle/nodes/${quarantineId}.json`;
     const record = {
       quarantine_id: quarantineId,
       status: "quarantined",
       target_path: targetPath,
       reason,
       reviewer,
-      replacement_path: replacement_path ? normalizeVaultPath(replacement_path) : null,
+      replacement_path: normalizedReplacementPath,
       created_at: createdAt,
       updated_at: createdAt,
     };
-    await writeJson(quarantinePath, record);
-    await writeJson(reviewPath, {
+    const reviewRecord = {
       review_id: quarantineId,
       type: "demotion",
       status: "quarantined",
       target_path: targetPath,
-      quarantine_path: relDataPath(quarantinePath),
+      quarantine_path: quarantineRelativePath,
       reason,
       reviewer,
       created_at: createdAt,
       updated_at: createdAt,
-    });
+    };
+    let targetLifecycleWrite: LifecycleBatchWrite;
+    if (targetIsJson && targetState) {
+      const targetRecord = mergePreservingNodeLifecycle(targetState.record, {
+        ...targetState.record,
+        quarantine: true,
+        quarantine_reason: reason,
+        quarantined_by: reviewer,
+        quarantined_at: createdAt,
+        replacement_path: normalizedReplacementPath,
+        updated_at: createdAt,
+      });
+      targetLifecycleWrite = transitionThroughLifecycleStates(targetPath, targetRecord, ["quarantined"], {
+        reason_code: "record_quarantined",
+        reason,
+        actor: reviewer,
+        evidence_paths: [reviewRelativePath, quarantineRelativePath],
+        successor_paths: normalizedReplacementPath ? [normalizedReplacementPath] : [],
+        at: createdAt,
+        idempotency_key: `record-quarantined|${quarantineId}`,
+      }, targetState.sha256);
+    } else {
+      const sidecar = {
+        type: "node_lifecycle_sidecar",
+        status: "quarantined",
+        target_path: targetPath,
+        target_content_sha256: sha256(targetBytes ?? Buffer.alloc(0)),
+        quarantine_reason: reason,
+        quarantined_by: reviewer,
+        quarantined_at: createdAt,
+        replacement_path: normalizedReplacementPath,
+        created_at: createdAt,
+        updated_at: createdAt,
+      };
+      targetLifecycleWrite = await upsertLifecycleStateWrite(targetLifecyclePath, sidecar, "quarantined", {
+        reason_code: "non_json_record_quarantined",
+        reason,
+        actor: reviewer,
+        evidence_paths: [targetPath, reviewRelativePath, quarantineRelativePath],
+        predecessor_paths: [targetPath],
+        successor_paths: normalizedReplacementPath ? [normalizedReplacementPath] : [],
+        at: createdAt,
+        idempotency_key: `record-quarantined|${quarantineId}`,
+      });
+    }
+    const quarantineLifecycleWrite = await upsertLifecycleStateWrite(
+      quarantineRelativePath,
+      record,
+      "quarantined",
+      {
+        reason_code: "quarantine_record_created",
+        reason,
+        actor: reviewer,
+        evidence_paths: [targetPath, reviewRelativePath],
+        predecessor_paths: [targetPath],
+        successor_paths: normalizedReplacementPath ? [normalizedReplacementPath] : [],
+        at: createdAt,
+        idempotency_key: `quarantine-record|${quarantineId}`,
+      },
+    );
+    const reviewLifecycleWrite = await upsertLifecycleStateWrite(
+      reviewRelativePath,
+      reviewRecord,
+      "review",
+      {
+        reason_code: "demotion_review_opened",
+        reason,
+        actor: reviewer,
+        evidence_paths: [targetPath, quarantineRelativePath],
+        predecessor_paths: [targetPath],
+        at: createdAt,
+        idempotency_key: `demotion-review|${quarantineId}`,
+        sync_status: false,
+      },
+    );
+    const lifecycleTransaction = await writeNodeLifecycleBatch(
+      DATA_ROOT,
+      [
+        targetLifecycleWrite,
+        quarantineLifecycleWrite,
+        reviewLifecycleWrite,
+      ],
+      { actor: reviewer, reason: `Quarantine ${targetPath}.` },
+    );
     await appendEvent({
       event: "record_quarantined",
       quarantine_id: quarantineId,
       target_path: targetPath,
       at: createdAt,
+      lifecycle_transaction_id: lifecycleTransaction.transaction_id,
     });
     await invalidateWikiIndex(DATA_ROOT);
     await invalidateSqliteWikiShard(DATA_ROOT);
@@ -3424,8 +3999,10 @@ registerTool(
       ok: true,
       quarantine_id: quarantineId,
       target_path: targetPath,
+      target_lifecycle_path: targetLifecyclePath,
       quarantine_path: relDataPath(quarantinePath),
       review_path: relDataPath(reviewPath),
+      lifecycle_transaction: lifecycleTransaction,
       context_pack_effect: "excluded_from_default_context_packs",
     });
   },

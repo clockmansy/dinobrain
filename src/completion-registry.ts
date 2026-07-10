@@ -83,6 +83,8 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("task:lifecycle:verify", ["HG-03"]),
   command("task:lifecycle:settle", ["HG-03"]),
   command("task:lifecycle:settle:verify", ["HG-03"]),
+  command("memory:lifecycle", ["HG-05", "HG-06", "HG-10"]),
+  command("memory:lifecycle:verify", ["HG-05", "HG-06", "HG-10"]),
   command("review:settle", ["HG-06"]),
   command("review:worklist", ["HG-06"]),
   command("review:worklist:actions", ["HG-06"]),
@@ -220,6 +222,13 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     relative_path: ".dino/state/source_lineage_status.json",
     kind: "json",
     gates: ["HG-05"],
+    accepted_statuses: ["healthy"],
+  },
+  {
+    id: "node_lifecycle",
+    relative_path: ".dino/state/node_lifecycle.json",
+    kind: "json",
+    gates: ["HG-05", "HG-06", "HG-10"],
     accepted_statuses: ["healthy"],
   },
   {

@@ -537,16 +537,17 @@ async function readBehaviorRecallStatus() {
 }
 
 async function readOsV2Status() {
-  const [gates, lifecycleReports, behaviorEvals, provenance, sourceChunks] = await Promise.all([
+  const [gates, lifecycleReports, lifecycleStatus, behaviorEvals, provenance, sourceChunks] = await Promise.all([
     readJsonDir(".dino/gates", 20),
     readJsonDir(".dino/lifecycle", 20),
+    readStatusArtifact(".dino/state/node_lifecycle.json"),
     readJsonDir(".dino/evaluations", 20),
     readJsonDir(".dino/provenance", 20),
     readJsonDir("30_Sources/chunks", 20),
   ]);
   const latestGate = gates[0] ?? null;
   const latestBehavior = behaviorEvals.find((entry) => String(entry.evaluation_id ?? "").startsWith("behavior-eval-")) ?? null;
-  const latestLifecycle = lifecycleReports[0] ?? null;
+  const latestLifecycle = lifecycleStatus.value ?? lifecycleReports[0] ?? null;
   const failClosed = latestGate?.fail_closed === true;
   const status = failClosed ? "blocked" : latestGate ? String(latestGate.status ?? "ready") : "pending";
   return {
@@ -588,7 +589,8 @@ function sourcePaths(record) {
 }
 
 async function readLifecycleQueue() {
-  const [candidates, accepted, reviews, quarantines] = await Promise.all([
+  const [lifecycleArtifact, candidates, accepted, reviews, quarantines] = await Promise.all([
+    readStatusArtifact(".dino/state/node_lifecycle.json"),
     readJsonDir("50_Instances/candidates", 60),
     readJsonDir("50_Instances/accepted", 80),
     readJsonDir("80_Review_Queue/promotion", 60),
@@ -608,14 +610,39 @@ async function readLifecycleQueue() {
     }
   }
   const retryCandidates = [...candidateWithoutReview, ...acceptedWithoutSource, ...acceptedMissingSource].slice(0, 10);
-  const status = retryCandidates.length > 0 || reviews.length > 0 ? "warning" : "ready";
+  const lifecycleReport = lifecycleArtifact.value ?? null;
+  const reportCounts = lifecycleReport?.counts ?? {};
+  const lifecycleBlockers = Number(reportCounts.lifecycle_blockers ?? lifecycleReport?.post_audit?.invalid?.length ?? 0);
+  const queuePending = Number(reportCounts.deferred_candidate_backlog ?? candidates.length) > 0 || Number(reportCounts.promotion_reviews ?? reviews.length) > 0;
+  const status = lifecycleArtifact.artifact_parse_status !== "ok"
+    ? "missing"
+    : lifecycleReport?.status !== "healthy" || lifecycleBlockers > 0
+      ? String(lifecycleReport?.status ?? "blocked")
+      : queuePending
+        ? "review_pending"
+        : "healthy";
+  const reportBlockers = Array.isArray(lifecycleReport?.post_audit?.invalid)
+    ? lifecycleReport.post_audit.invalid.map((entry) => ({
+        _path: entry.path,
+        claim: Array.isArray(entry.issues) ? entry.issues.join(", ") : "lifecycle blocker",
+      }))
+    : [];
   return {
     status,
+    node_status: lifecycleReport?.status ?? "missing",
+    queue_status: queuePending ? "pending" : "clear",
+    artifact_path: lifecycleArtifact.artifact_path,
+    transaction_id: lifecycleReport?.transaction?.transaction_id ?? lifecycleReport?.last_applied_transaction?.transaction_id ?? null,
+    recovery_ref: lifecycleReport?.git?.recovery_ref ?? lifecycleReport?.last_recovery_ref ?? null,
     counts: {
-      candidates: candidates.length,
-      accepted: accepted.length,
-      promotion_reviews: reviews.length,
+      candidates: Number(reportCounts.deferred_candidate_backlog ?? candidates.length),
+      accepted: Number(reportCounts.accepted ?? accepted.length),
+      promotion_reviews: Number(reportCounts.promotion_reviews ?? reviews.length),
       quarantined: quarantines.length,
+      retrievable_accepted: Number(reportCounts.retrievable_accepted ?? 0),
+      held_or_excluded: Number(reportCounts.held_or_excluded ?? 0),
+      lifecycle_blockers: lifecycleBlockers,
+      applied_actions: Number(reportCounts.applied_actions ?? 0),
       candidate_without_review: candidateWithoutReview.length,
       accepted_without_source: acceptedWithoutSource.length,
       accepted_missing_source: acceptedMissingSource.length,
@@ -624,7 +651,7 @@ async function readLifecycleQueue() {
     promotion_reviews: reviews.slice(0, 12),
     accepted: accepted.slice(0, 12),
     quarantines: quarantines.slice(0, 8),
-    retry_candidates: retryCandidates,
+    retry_candidates: [...reportBlockers, ...retryCandidates].slice(0, 10),
   };
 }
 
@@ -773,6 +800,7 @@ async function readiness(existingState = null) {
     recallArtifact,
     taskArtifact,
     settlementArtifact,
+    nodeLifecycleArtifact,
     ragProofArtifact,
     ragEvalArtifact,
     liveSemanticQueryArtifact,
@@ -789,6 +817,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/behavior_recall_status.json"),
     readStatusArtifact(".dino/state/task_sessions.json"),
     readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
+    readStatusArtifact(".dino/state/node_lifecycle.json"),
     readStatusArtifact(".dino/state/rag_proof_status.json"),
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
@@ -871,6 +900,12 @@ async function readiness(existingState = null) {
       id: "task_lifecycle_settlement",
       label: "Lifecycle Settlement",
       artifact: settlementArtifact,
+      expectedStatuses: ["healthy"],
+    }),
+    hardGateFromArtifact({
+      id: "node_lifecycle",
+      label: "Memory Node Lifecycle",
+      artifact: nodeLifecycleArtifact,
       expectedStatuses: ["healthy"],
     }),
     hardGateFromArtifact({
@@ -967,6 +1002,14 @@ async function readiness(existingState = null) {
       status: healthArtifact.value?.status ?? "missing",
       checks: Array.isArray(healthArtifact.value?.checks) ? healthArtifact.value.checks : [],
       warnings: artifactWarnings(healthArtifact),
+    },
+    node_lifecycle_status: {
+      artifact_path: nodeLifecycleArtifact.artifact_path,
+      artifact_parse_status: nodeLifecycleArtifact.artifact_parse_status,
+      status: nodeLifecycleArtifact.value?.status ?? "missing",
+      counts: nodeLifecycleArtifact.value?.counts ?? {},
+      transaction: nodeLifecycleArtifact.value?.transaction ?? nodeLifecycleArtifact.value?.last_applied_transaction ?? null,
+      recovery_ref: nodeLifecycleArtifact.value?.git?.recovery_ref ?? nodeLifecycleArtifact.value?.last_recovery_ref ?? null,
     },
     client_mcp_direct_status: {
       artifact_path: clientArtifact.artifact_path,
@@ -2719,7 +2762,7 @@ function html() {
         chips.lifecycle,
         "Nodes",
         lifecycle.status || "--",
-        "review " + (lifecycle.counts?.promotion_reviews ?? 0) + " / accepted " + (lifecycle.counts?.accepted ?? 0),
+        "hot " + (lifecycle.counts?.retrievable_accepted ?? 0) + " / excluded " + (lifecycle.counts?.held_or_excluded ?? 0),
         healthTone(lifecycle.status),
       );
       renderChip(
@@ -2791,18 +2834,23 @@ function html() {
         : '<p class="muted">No grounded read trace yet.</p>';
       kv(nodeLifecycleEl, [
         ["status", lifecycle.status],
+        ["node gate", lifecycle.node_status],
+        ["queue", lifecycle.queue_status],
         ["candidates", lifecycle.counts?.candidates],
         ["review", lifecycle.counts?.promotion_reviews],
         ["accepted", lifecycle.counts?.accepted],
         ["quarantined", lifecycle.counts?.quarantined],
-        ["source missing", lifecycle.counts?.accepted_without_source],
-        ["retry", Array.isArray(lifecycle.retry_candidates) ? lifecycle.retry_candidates.length : 0],
+        ["retrievable", lifecycle.counts?.retrievable_accepted],
+        ["held / excluded", lifecycle.counts?.held_or_excluded],
+        ["blockers", lifecycle.counts?.lifecycle_blockers],
+        ["transaction", lifecycle.transaction_id],
+        ["path", lifecycle.artifact_path],
       ]);
       lifecycleRetryEl.innerHTML = Array.isArray(lifecycle.retry_candidates) && lifecycle.retry_candidates.length
         ? lifecycle.retry_candidates.slice(0, 6).map((item) => \`
           <div class="item"><code>\${esc(item._path || item.path || item.candidate_id || item.review_id || "")}</code><div class="muted">\${esc(compact(item.claim || item.title || item.notes || "", 140))}</div></div>
         \`).join("")
-        : '<p class="muted">No retry candidates.</p>';
+        : '<p class="muted">No lifecycle blockers or retry candidates.</p>';
       kv(sourceLineageEl, [
         ["status", sourceLineage.status],
         ["verified chunks", sourceLineage.counts?.verified_source_chunks],
