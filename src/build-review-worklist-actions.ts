@@ -10,7 +10,9 @@ async function main(): Promise<void> {
   const applyAll = process.argv.includes("--apply-all");
   const applyHolds = applyAll || process.argv.includes("--apply-holds");
   const applyMergeReviews = applyAll || process.argv.includes("--apply-merge-reviews");
-  const result = await buildReviewWorklistActions(dataRoot, { applyHolds, applyMergeReviews });
+  const rollbackIndex = process.argv.indexOf("--rollback");
+  const rollbackTransactionId = rollbackIndex >= 0 ? process.argv[rollbackIndex + 1] : undefined;
+  const result = await buildReviewWorklistActions(dataRoot, { applyHolds, applyMergeReviews, rollbackTransactionId });
   console.log(
     JSON.stringify(
       {

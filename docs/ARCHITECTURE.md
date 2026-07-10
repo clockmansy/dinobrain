@@ -46,12 +46,15 @@ The MCP server exposes the approved write/read surface:
 - `finish_task`
 - `get_context_pack`
 - `wiki_search`
+- `search_cold_memory`
 - `import_session`
 - `audit_memory_use`
 - `git_sync` as dry-run only
 - `create_candidate_instance`
 - `review_candidate`
 - `quarantine_record`
+- `apply_review_backpressure`
+- `apply_cold_partitions`
 
 The server is implemented as a stdio MCP server in `src/index.ts`.
 
@@ -104,6 +107,16 @@ The tool stores only redacted local-only archives under `10_Conversations/raw`, 
 
 Raw archives, candidates, and review records are excluded from default retrieval. Only reviewed accepted instances can become normal Context Pack input. See `docs/SESSION_INGEST.md`.
 
+## Review Backpressure And Cold Boundary
+
+The review queue is bounded before candidate/review publication. One serialized
+admission ledger applies lane and global budgets; overflow is durable cold hold,
+not silent loss and not hot growth. Exact and high-confidence near duplicates
+become one provenance-complete merge review through a hash-preconditioned,
+rollback-capable transaction. Logical monthly cold partitions exclude old
+operations and obsolete rules from normal prompt retrieval without moving
+source truth. See `docs/REVIEW_QUEUE_BACKPRESSURE.md`.
+
 ## Trace Boundary
 
 Every context decision should eventually leave a trace record explaining:
@@ -119,7 +132,6 @@ Every context decision should eventually leave a trace record explaining:
 
 The following are intentionally deferred:
 
-- Observatory visual UI
 - multi-user permission model
 - external fact ingestion
 - automatic push without policy checks

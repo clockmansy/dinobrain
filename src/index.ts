@@ -15,6 +15,7 @@ import {
   recordFeedbackCorrectionRecall,
 } from "./behavior-recall.js";
 import { ClientMcpProofRuntime } from "./client-mcp-proof.js";
+import { applyColdPartitions, searchColdPartitions } from "./cold-partitions.js";
 import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import { runCompoundingCycle } from "./compounding.js";
@@ -40,6 +41,8 @@ import {
   type LifecycleBatchWrite,
 } from "./node-lifecycle-store.js";
 import { classifyPromptLaunch } from "./prompt-eligibility.js";
+import { buildReviewQueueBackpressure, writeReviewGatedBatch } from "./review-backpressure.js";
+import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
 import { writeTerminalTaskAndTrace, writeTerminalTaskAndTraceUnlocked } from "./task-terminal-store.js";
 import {
@@ -663,6 +666,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     ".dino/tmp/",
     ".dino/locks/",
     ".dino/local-backups/",
+    ".dino/review-admissions/",
     ".dino/events/",
   ];
   const blockedExact = new Set([".env", ".dino/secrets.json", ".dino/local.json"]);
@@ -1315,9 +1319,28 @@ async function writeFinishGrowthRecords(params: {
     updated_at: params.finishedAt,
   };
 
-  await writeJson(operationPath, operationRecord);
-  await writeJson(candidatePath, candidateRecord);
-  await writeJson(reviewPath, reviewRecord);
+  const candidateRelativePath = relDataPath(candidatePath);
+  const reviewRelativePath = relDataPath(reviewPath);
+  const operationRelativePath = relDataPath(operationPath);
+  const reviewAdmission = await writeReviewGatedBatch(DATA_ROOT, {
+    items: [
+      {
+        idempotency_key: `task-growth|${growthId}`,
+        lane: "manual_semantic",
+        candidate_path: candidateRelativePath,
+        candidate_record: candidateRecord,
+        review_path: reviewRelativePath,
+        review_record: reviewRecord,
+        candidate_evidence_paths: [params.tracePath, operationRelativePath],
+        review_evidence_paths: [candidateRelativePath, params.tracePath, operationRelativePath],
+        predecessor_paths: [params.tracePath],
+        at: params.finishedAt,
+      },
+    ],
+    extra_writes: [{ target_path: operationRelativePath, record: operationRecord }],
+    actor: "finish_task:auto_growth",
+    reason: `Create bounded task memory candidate ${growthId}.`,
+  });
   await invalidateWikiIndex(DATA_ROOT);
   await invalidateSqliteWikiShard(DATA_ROOT);
   const eventLog = await appendEvent({
@@ -1334,11 +1357,13 @@ async function writeFinishGrowthRecords(params: {
     ok: true,
     enabled: true,
     memory_id: growthId,
-    destination: "candidate_review",
+    destination: reviewAdmission.decisions[0]?.destination ?? "cold_hold",
     created_paths: [relDataPath(operationPath), relDataPath(candidatePath), relDataPath(reviewPath)],
     operation_path: relDataPath(operationPath),
     candidate_path: relDataPath(candidatePath),
     review_path: relDataPath(reviewPath),
+    queue_admission: reviewAdmission.decisions[0],
+    lifecycle_transaction: reviewAdmission.lifecycle_transaction,
     event_log: eventLog,
   };
 }
@@ -2866,6 +2891,29 @@ registerTool(
 );
 
 registerTool(
+  "search_cold_memory",
+  {
+    title: "Search Cold Memory",
+    description: "Search metadata for time-partitioned cold records excluded from normal prompt retrieval.",
+    inputSchema: {
+      query: z.string().default(""),
+      limit: z.number().int().min(1).max(100).default(20),
+    },
+  },
+  async ({ query, limit }) => {
+    const results = await searchColdPartitions(DATA_ROOT, query, limit);
+    return jsonResult({
+      ok: true,
+      query,
+      result_count: results.length,
+      retrieval_mode: "cold_partition_metadata_only",
+      excluded_from_default_context: true,
+      results,
+    });
+  },
+);
+
+registerTool(
   "os_gate",
   {
     title: "OS Action Gate",
@@ -3000,6 +3048,77 @@ registerTool(
       ...report,
       event_log: eventLog,
     });
+  },
+);
+
+registerTool(
+  "apply_review_backpressure",
+  {
+    title: "Apply Review Backpressure",
+    description: "Dry-run, apply, or roll back deterministic holds and provenance-preserving duplicate review merges.",
+    inputSchema: {
+      apply_holds: z.boolean().default(false),
+      apply_merge_reviews: z.boolean().default(false),
+      reviewer: z.string().default("review-backpressure"),
+      rollback_transaction_id: z.string().regex(/^node-lifecycle-[A-Za-z0-9-]+$/).optional(),
+    },
+  },
+  async ({ apply_holds, apply_merge_reviews, reviewer, rollback_transaction_id }) => {
+    if (rollback_transaction_id && (apply_holds || apply_merge_reviews)) {
+      throw new Error("Use apply flags or rollback_transaction_id, not both.");
+    }
+    const result = await buildReviewWorklistActions(DATA_ROOT, {
+      applyHolds: apply_holds,
+      applyMergeReviews: apply_merge_reviews,
+      reviewer,
+      rollbackTransactionId: rollback_transaction_id,
+    });
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const queue = await buildReviewQueueBackpressure(DATA_ROOT, { reconcileAdmission: true });
+    const eventLog = await appendEvent({
+      event: rollback_transaction_id
+        ? "review_backpressure_rolled_back"
+        : apply_holds || apply_merge_reviews
+          ? "review_backpressure_applied"
+          : "review_backpressure_checked",
+      at: nowIso(),
+      status: result.report.status,
+      transaction_id: result.report.transaction_id,
+      rollback_transaction_id: rollback_transaction_id ?? null,
+      counts: result.report.counts,
+      queue_status: queue.report.status,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({ ok: result.report.counts.skipped === 0, ...result.report, queue: queue.report, event_log: eventLog });
+  },
+);
+
+registerTool(
+  "apply_cold_partitions",
+  {
+    title: "Apply Cold Partitions",
+    description: "Dry-run, apply, or roll back logical time partitioning for old operations and obsolete rules.",
+    inputSchema: {
+      apply: z.boolean().default(false),
+      rollback_transaction_id: z.string().regex(/^node-lifecycle-[A-Za-z0-9-]+$/).optional(),
+    },
+  },
+  async ({ apply, rollback_transaction_id }) => {
+    if (apply && rollback_transaction_id) throw new Error("Use apply or rollback_transaction_id, not both.");
+    const result = await applyColdPartitions(DATA_ROOT, { apply, rollbackTransactionId: rollback_transaction_id });
+    await invalidateWikiIndex(DATA_ROOT);
+    await invalidateSqliteWikiShard(DATA_ROOT);
+    const eventLog = await appendEvent({
+      event: rollback_transaction_id ? "cold_partitions_rolled_back" : apply ? "cold_partitions_applied" : "cold_partitions_checked",
+      at: nowIso(),
+      status: result.report.status,
+      transaction_id: result.report.transaction_id,
+      rollback_transaction_id: rollback_transaction_id ?? null,
+      counts: result.report.counts,
+      os_version: DINOBRAIN_OS_VERSION,
+    });
+    return jsonResult({ ok: result.report.status !== "needs_apply", ...result.report, event_log: eventLog });
   },
 );
 
@@ -3237,34 +3356,25 @@ registerTool(
       created_at: createdAt,
       updated_at: createdAt,
     };
-    const lifecycleTransaction = await writeNodeLifecycleBatch(
-      DATA_ROOT,
-      [
-        { target_path: provenanceRelativePath, record: provenanceRecord },
-        initializeLifecycleWrite(candidateRelativePath, candidate, {
-          to_state: "candidate",
-          reason_code: "feedback_correction_candidate_created",
-          reason: "Direct user correction entered review before durable promotion.",
-          actor: "record_feedback_correction",
-          evidence_paths: [provenanceRelativePath],
+    const reviewAdmission = await writeReviewGatedBatch(DATA_ROOT, {
+      items: [
+        {
+          idempotency_key: `feedback-candidate|${feedbackId}`,
+          lane: "correction",
+          candidate_path: candidateRelativePath,
+          candidate_record: candidate,
+          review_path: reviewRelativePath,
+          review_record: review,
+          candidate_evidence_paths: [provenanceRelativePath],
+          review_evidence_paths: [candidateRelativePath, provenanceRelativePath],
           predecessor_paths: task_id ? [`.dino/tasks/${safeSlug(task_id)}.json`] : [],
           at: createdAt,
-          idempotency_key: `feedback-candidate|${feedbackId}`,
-        }).write,
-        initializeLifecycleWrite(reviewRelativePath, review, {
-          to_state: "review",
-          reason_code: "feedback_correction_review_opened",
-          reason: "Direct user correction requires conflict and scope review.",
-          actor: "record_feedback_correction",
-          evidence_paths: [candidateRelativePath, provenanceRelativePath],
-          predecessor_paths: [candidateRelativePath],
-          at: createdAt,
-          idempotency_key: `feedback-review|${feedbackId}`,
-          sync_status: false,
-        }).write,
+        },
       ],
-      { actor: "record_feedback_correction", reason: `Create feedback correction candidate ${feedbackId}.` },
-    );
+      extra_writes: [{ target_path: provenanceRelativePath, record: provenanceRecord }],
+      actor: "record_feedback_correction",
+      reason: `Create feedback correction candidate ${feedbackId}.`,
+    });
     const eventLog = await appendEvent({
       event: "feedback_correction_candidate_created",
       feedback_id: feedbackId,
@@ -3273,7 +3383,8 @@ registerTool(
       review_path: reviewRelativePath,
       provenance_path: provenanceRelativePath,
       task_id: task_id ?? null,
-      lifecycle_transaction_id: lifecycleTransaction.transaction_id,
+      lifecycle_transaction_id: reviewAdmission.lifecycle_transaction.transaction_id,
+      queue_destination: reviewAdmission.decisions[0]?.destination,
       os_version: DINOBRAIN_OS_VERSION,
     });
     return jsonResult({
@@ -3283,7 +3394,8 @@ registerTool(
       review_path: reviewRelativePath,
       provenance_path: provenanceRelativePath,
       accepted_path: null,
-      lifecycle_transaction: lifecycleTransaction,
+      lifecycle_transaction: reviewAdmission.lifecycle_transaction,
+      queue_admission: reviewAdmission.decisions[0],
       event_log: eventLog,
       next_context_effect: "available only after review_candidate approves the correction",
     });
@@ -3374,37 +3486,28 @@ registerTool(
     }
 
     const importedAt = typeof plan.archive.imported_at === "string" ? plan.archive.imported_at : nowIso();
-    const lifecycleWrites: LifecycleBatchWrite[] = [{ target_path: plan.archivePath, record: plan.archive }];
+    const reviewItems = [];
     for (const candidate of plan.candidates) {
       const existingCandidate = await readJson<Record<string, unknown>>(dataPath(candidate.candidatePath));
       const existingReview = await readJson<Record<string, unknown>>(dataPath(candidate.reviewPath));
       const candidateRecord = mergePreservingNodeLifecycle(existingCandidate, candidate.candidate);
       const reviewRecord = mergePreservingNodeLifecycle(existingReview, candidate.review);
-      lifecycleWrites.push(
-        initializeLifecycleWrite(candidate.candidatePath, candidateRecord, {
-          to_state: getNodeLifecycleState(candidateRecord, candidate.candidatePath),
-          reason_code: "session_candidate_created",
-          reason: "Session extraction created a review-gated memory candidate.",
-          actor: "import_session",
-          evidence_paths: [plan.archivePath],
-          predecessor_paths: [plan.archivePath],
-          at: importedAt,
-          idempotency_key: `session-candidate|${candidate.candidateId}`,
-        }).write,
-        initializeLifecycleWrite(candidate.reviewPath, reviewRecord, {
-          to_state: getNodeLifecycleState(reviewRecord, candidate.reviewPath),
-          reason_code: "session_review_opened",
-          reason: "Session extraction opened a mandatory promotion review.",
-          actor: "import_session",
-          evidence_paths: [plan.archivePath, candidate.candidatePath],
-          predecessor_paths: [candidate.candidatePath],
-          at: importedAt,
-          idempotency_key: `session-review|${candidate.candidateId}`,
-          sync_status: false,
-        }).write,
-      );
+      reviewItems.push({
+        idempotency_key: `session-candidate|${candidate.candidateId}`,
+        lane: "manual_semantic" as const,
+        candidate_path: candidate.candidatePath,
+        candidate_record: candidateRecord,
+        review_path: candidate.reviewPath,
+        review_record: reviewRecord,
+        candidate_evidence_paths: [plan.archivePath],
+        review_evidence_paths: [plan.archivePath, candidate.candidatePath],
+        predecessor_paths: [plan.archivePath],
+        at: importedAt,
+      });
     }
-    const lifecycleTransaction = await writeNodeLifecycleBatch(DATA_ROOT, lifecycleWrites, {
+    const reviewAdmission = await writeReviewGatedBatch(DATA_ROOT, {
+      items: reviewItems,
+      extra_writes: [{ target_path: plan.archivePath, record: plan.archive }],
       actor: "import_session",
       reason: `Register session ${plan.sessionId} and its review-gated candidates.`,
     });
@@ -3434,7 +3537,8 @@ registerTool(
       candidate_count: plan.candidates.length,
       candidate_paths: plan.candidates.map((candidate) => candidate.candidatePath),
       review_paths: plan.candidates.map((candidate) => candidate.reviewPath),
-      lifecycle_transaction: lifecycleTransaction,
+      lifecycle_transaction: reviewAdmission.lifecycle_transaction,
+      queue_admission: reviewAdmission.decisions,
       temperature_counts: plan.stats.temperature_counts,
       category_counts: plan.stats.category_counts,
       redaction_hits: plan.stats.redaction_hits,
@@ -3508,39 +3612,31 @@ registerTool(
     };
     const candidateRelativePath = relDataPath(candidatePath);
     const reviewRelativePath = relDataPath(reviewPath);
-    const lifecycleTransaction = await writeNodeLifecycleBatch(
-      DATA_ROOT,
-      [
-        initializeLifecycleWrite(candidateRelativePath, candidate, {
-          to_state: "candidate",
-          reason_code: "candidate_created",
-          reason: "A new memory candidate entered mandatory review.",
-          actor: "create_candidate_instance",
-          evidence_paths: normalizeVaultPaths(provenance_paths),
-          at: createdAt,
+    const reviewAdmission = await writeReviewGatedBatch(DATA_ROOT, {
+      items: [
+        {
           idempotency_key: `candidate-created|${candidateId}`,
-        }).write,
-        initializeLifecycleWrite(reviewRelativePath, review, {
-          to_state: "review",
-          reason_code: "promotion_review_opened",
-          reason: "A promotion review was opened for the new candidate.",
-          actor: "create_candidate_instance",
-          evidence_paths: [candidateRelativePath, ...normalizeVaultPaths(provenance_paths)],
-          predecessor_paths: [candidateRelativePath],
+          lane: "manual_semantic",
+          candidate_path: candidateRelativePath,
+          candidate_record: candidate,
+          review_path: reviewRelativePath,
+          review_record: review,
+          candidate_evidence_paths: normalizeVaultPaths(provenance_paths),
+          review_evidence_paths: [candidateRelativePath, ...normalizeVaultPaths(provenance_paths)],
           at: createdAt,
-          idempotency_key: `candidate-review-opened|${candidateId}`,
-          sync_status: false,
-        }).write,
+        },
       ],
-      { actor: "create_candidate_instance", reason: `Create candidate and review ${candidateId}.` },
-    );
+      actor: "create_candidate_instance",
+      reason: `Create candidate and bounded review ${candidateId}.`,
+    });
     await appendEvent({
       event: "candidate_instance_created",
       candidate_id: candidateId,
       at: createdAt,
       candidate_path: relDataPath(candidatePath),
       review_path: relDataPath(reviewPath),
-      lifecycle_transaction: lifecycleTransaction,
+      lifecycle_transaction: reviewAdmission.lifecycle_transaction,
+      queue_admission: reviewAdmission.decisions[0],
     });
     return jsonResult({
       ok: true,
@@ -3548,7 +3644,11 @@ registerTool(
       candidate_path: relDataPath(candidatePath),
       review_path: relDataPath(reviewPath),
       auto_promote: false,
-      reason: "Candidate instances always enter Review Queue first.",
+      destination: reviewAdmission.decisions[0]?.destination,
+      reason:
+        reviewAdmission.decisions[0]?.destination === "hot_review"
+          ? "Candidate entered the bounded Review Queue."
+          : "Candidate was preserved in cold hold because the Review Queue is constrained.",
     });
   },
 );
@@ -3660,6 +3760,10 @@ registerTool(
         source_candidate_path: candidateRelativePath,
         source_review_path: reviewRelativePath,
         promotion_blockers: [],
+        quarantine: false,
+        temperature: "hot",
+        hold_reason: null,
+        queue_destination: "accepted",
         predecessor_paths: [candidateRelativePath, reviewRelativePath],
         updated_at: reviewedAt,
       };

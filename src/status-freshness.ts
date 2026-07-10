@@ -5,6 +5,7 @@ import { atomicWriteJson } from "./concurrency.js";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_LEDGER_RELATIVE_PATH, BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
+import { COLD_PARTITION_INDEX_RELATIVE_PATH, COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
@@ -20,6 +21,9 @@ import {
   REVIEW_SETTLEMENT_ACTIONS_RELATIVE_PATH,
   SEMANTIC_JOBS_RELATIVE_PATH,
 } from "./review-settlement.js";
+import { REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH } from "./review-backpressure.js";
+import { REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH } from "./review-worklist-actions.js";
+import { REVIEW_WORKLIST_STATE_RELATIVE_PATH } from "./review-worklist.js";
 import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
@@ -130,6 +134,10 @@ const ARTIFACTS: ArtifactSpec[] = [
       BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
+      REVIEW_WORKLIST_STATE_RELATIVE_PATH,
+      REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH,
+      REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH,
+      COLD_PARTITION_STATUS_RELATIVE_PATH,
       TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
       TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
       RAG_PROOF_STATUS_RELATIVE_PATH,
@@ -330,6 +338,46 @@ const ARTIFACTS: ArtifactSpec[] = [
     required: true,
   },
   {
+    id: "review_worklist",
+    label: "review worklist clustering",
+    artifactPath: REVIEW_WORKLIST_STATE_RELATIVE_PATH,
+    sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "80_Review_Queue/merge"],
+    required: true,
+  },
+  {
+    id: "review_worklist_actions",
+    label: "review worklist migration actions",
+    artifactPath: REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH,
+    sourceRoots: ["50_Instances/candidates", "80_Review_Queue/promotion", "80_Review_Queue/merge"],
+    required: true,
+  },
+  {
+    id: "review_queue_backpressure",
+    label: "review queue budgets and admission",
+    artifactPath: REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH,
+    sourceRoots: [
+      "50_Instances/candidates",
+      "80_Review_Queue/promotion",
+      "80_Review_Queue/merge",
+      REVIEW_WORKLIST_STATE_RELATIVE_PATH,
+    ],
+    required: true,
+  },
+  {
+    id: "cold_partitions",
+    label: "cold time partition index",
+    artifactPath: COLD_PARTITION_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/tasks",
+      ".dino/traces",
+      ".dino/context-packs",
+      "60_Operations",
+      "50_Instances/accepted",
+      COLD_PARTITION_INDEX_RELATIVE_PATH,
+    ],
+    required: true,
+  },
+  {
     id: "release_manifest",
     label: "release manifest proof",
     artifactPath: RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
@@ -348,7 +396,9 @@ function isIgnoredDirectory(name: string): boolean {
 
 function isGeneratedStatusArtifact(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
-  return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) || normalized.startsWith(".dino/generations/");
+  return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) ||
+    normalized.startsWith(".dino/generations/") ||
+    normalized.startsWith("60_Operations/cold-partitions/");
 }
 
 function toMillis(value: string | null): number | null {

@@ -22,6 +22,14 @@ for (const dir of [
 }
 
 spawnSync("git", ["init"], { cwd: tempDataRoot, stdio: "ignore" });
+const pressureSeed = spawnSync(process.execPath, [path.join(root, "dist", "build-review-backpressure.js")], {
+  cwd: root,
+  env: { ...process.env, DINOBRAIN_DATA_DIR: tempDataRoot },
+  encoding: "utf8",
+});
+if (pressureSeed.status !== 0) {
+  throw new Error(`Could not seed review admission state: ${pressureSeed.stderr || pressureSeed.stdout}`);
+}
 
 const client = new Client({
   name: "dinobrain-session-ingest-verify",

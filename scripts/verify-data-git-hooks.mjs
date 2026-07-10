@@ -122,6 +122,36 @@ function verifyLocalLifecycleBackupBlocked() {
   }
 }
 
+function verifyLocalAdmissionReceiptBlocked() {
+  const repo = initRepo("local-review-admission");
+  try {
+    mkdirSync(path.join(repo, ".dino", "review-admissions", "2026-07"), { recursive: true });
+    writeFileSync(
+      path.join(repo, ".dino", "review-admissions", "2026-07", "decision.json"),
+      '{"idempotency_key":"local-review-decision"}\n',
+      "utf8",
+    );
+    const commit = commitAll(repo, "local review admission");
+    assert(commit.status !== 0, "pre-commit allowed local review admission receipt path");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyUnsafeReviewWorklistSummaryBlocked() {
+  const repo = initRepo("unsafe-review-worklist-summary");
+  try {
+    writeJson(path.join(repo, "60_Operations", "review-worklists", "unsafe.json"), {
+      status: "needs_review",
+      clusters: [{ representative_claim: "private user preference", candidate_paths: ["private-candidate.json"] }],
+    });
+    const commit = commitAll(repo, "unsafe review worklist summary");
+    assert(commit.status !== 0, "pre-commit allowed a review worklist summary with private fields");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function verifyReviewedAcceptedAllowedAndPrePushChecked() {
   const repo = initRepo("reviewed-accepted");
   try {
@@ -146,6 +176,8 @@ verifyBadAcceptedBlocked();
 verifyAcceptedAtOnlyBlocked();
 verifyLocalOnlyBlocked();
 verifyLocalLifecycleBackupBlocked();
+verifyLocalAdmissionReceiptBlocked();
+verifyUnsafeReviewWorklistSummaryBlocked();
 verifyReviewedAcceptedAllowedAndPrePushChecked();
 
 console.log(
@@ -160,6 +192,8 @@ console.log(
         "accepted_at_only_blocked",
         "local_only_blocked",
         "local_lifecycle_backup_blocked",
+        "local_review_admission_blocked",
+        "unsafe_review_worklist_summary_blocked",
         "reviewed_accepted_allowed",
         "pre_push_clean_head",
       ],

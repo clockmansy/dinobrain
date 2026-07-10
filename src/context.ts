@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { collectColdPartitionPaths } from "./cold-partitions.js";
 import {
   LEXICAL_FALLBACK_RETRIEVAL_MODE,
   type RetrievalMode,
@@ -179,8 +180,14 @@ function evidenceSnippet(value: Record<string, unknown>): string {
 
 function isQuarantinedRecord(value: Record<string, unknown>, relativePath: string, quarantinedPaths: Set<string>): boolean {
   const status = String(value.status ?? "").toLowerCase();
+  const temperature = String(value.temperature ?? "").toLowerCase();
   const quarantineFlag = value.quarantine === true || String(value.quarantine ?? "").toLowerCase() === "true";
-  return ["quarantined", "quarantine", "hold", "held"].includes(status) || quarantineFlag || quarantinedPaths.has(relativePath);
+  return (
+    ["quarantined", "quarantine", "hold", "held", "archived", "demoted", "deleted-tombstone"].includes(status) ||
+    temperature === "cold" ||
+    quarantineFlag ||
+    quarantinedPaths.has(relativePath)
+  );
 }
 
 export function isDefaultRetrievalExcludedPath(relativePath: string): boolean {
@@ -220,6 +227,7 @@ async function walkSupportedRecords(dir: string, records: string[] = []): Promis
 export async function collectCuratedRecords(dataRoot: string): Promise<RankedRecord[]> {
   const files: string[] = [];
   const quarantinedPaths = await collectQuarantinedPaths(dataRoot);
+  const coldPartitionPaths = await collectColdPartitionPaths(dataRoot);
   for (const root of SEARCH_ROOTS) {
     await walkSupportedRecords(dataPath(dataRoot, root), files);
   }
@@ -231,6 +239,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
 
     const relativePath = relDataPath(dataRoot, file);
     if (isDefaultRetrievalExcludedPath(relativePath)) continue;
+    if (coldPartitionPaths.has(relativePath)) continue;
 
     const raw = await fs.readFile(file, "utf8");
     const extension = path.extname(file).toLowerCase();

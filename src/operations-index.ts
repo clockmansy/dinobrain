@@ -1,11 +1,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { collectColdPartitionPaths } from "./cold-partitions.js";
 import { atomicWriteJson, withFileLock } from "./concurrency.js";
 import type { RankedRecord } from "./context.js";
 import { withOperationsWriteLock } from "./operation-lock.js";
 
-export const OPERATIONS_INDEX_VERSION = 1;
+export const OPERATIONS_INDEX_VERSION = 2;
 export const OPERATIONS_INDEX_RELATIVE_PATH = ".dino/index/operations-index.json";
 const RECENT_TASK_LIMIT = 200;
 const RECENT_TRACE_LIMIT = 200;
@@ -71,6 +72,7 @@ export type OperationsIndex = {
     traces: number;
     context_packs: number;
     events: number;
+    cold_records: number;
   };
   active_tasks: OperationTaskEntry[];
   recent_tasks: OperationTaskEntry[];
@@ -342,6 +344,11 @@ export async function collectOperationEntries(dataRoot: string): Promise<Operati
 
 export async function buildOperationsIndex(dataRoot: string): Promise<OperationsIndex> {
   const { tasks, traces, context_packs: packs, events } = await collectOperationEntries(dataRoot);
+  const coldPaths = await collectColdPartitionPaths(dataRoot);
+  const hotTasks = tasks.filter((task) => !coldPaths.has(task.path));
+  const hotTraces = traces.filter((trace) => !coldPaths.has(trace.path));
+  const hotPacks = packs.filter((pack) => !coldPaths.has(pack.path));
+  const hotEvents = events.filter((event) => !coldPaths.has(event._path));
   return {
     version: OPERATIONS_INDEX_VERSION,
     generated_at: nowIso(),
@@ -352,12 +359,13 @@ export async function buildOperationsIndex(dataRoot: string): Promise<Operations
       traces: traces.length,
       context_packs: packs.length,
       events: events.length,
+      cold_records: coldPaths.size,
     },
-    active_tasks: tasks.filter((task) => task.status === "started"),
-    recent_tasks: tasks.slice(0, RECENT_TASK_LIMIT),
-    recent_traces: traces.slice(0, RECENT_TRACE_LIMIT),
-    recent_context_packs: packs.slice(0, RECENT_PACK_LIMIT),
-    recent_events: events.slice(0, RECENT_EVENT_LIMIT),
+    active_tasks: hotTasks.filter((task) => task.status === "started"),
+    recent_tasks: hotTasks.slice(0, RECENT_TASK_LIMIT),
+    recent_traces: hotTraces.slice(0, RECENT_TRACE_LIMIT),
+    recent_context_packs: hotPacks.slice(0, RECENT_PACK_LIMIT),
+    recent_events: hotEvents.slice(0, RECENT_EVENT_LIMIT),
   };
 }
 
@@ -470,8 +478,9 @@ export async function collectRecentTaskRecordsFromIndex(
 ): Promise<RankedRecord[] | null> {
   const index = await readOperationsIndex(dataRoot);
   if (!index) return null;
+  const coldPaths = await collectColdPartitionPaths(dataRoot);
   const records: RankedRecord[] = [];
-  for (const task of index.recent_tasks.slice(0, limit)) {
+  for (const task of index.recent_tasks.filter((entry) => !coldPaths.has(entry.path)).slice(0, limit)) {
     const trace = task.trace_path ? await readJson<JsonObject>(dataPath(dataRoot, task.trace_path)) : null;
     const traceSummary = trace && typeof trace.summary === "string" ? trace.summary : "";
     records.push({

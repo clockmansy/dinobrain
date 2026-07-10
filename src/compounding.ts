@@ -10,6 +10,7 @@ import {
   transitionLifecycleWrite,
   writeNodeLifecycleBatch,
 } from "./node-lifecycle-store.js";
+import { writeReviewGatedBatch } from "./review-backpressure.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -359,33 +360,24 @@ async function promoteSignal(
       created_at: firstString(existingCandidate?.created_at, options.at),
       updated_at: options.at,
     });
-    await writeNodeLifecycleBatch(
-      dataRoot,
-      [
-        initializeLifecycleWrite(relativePath, record, {
-          to_state: getNodeLifecycleState(record, relativePath),
-          reason_code: "compounding_candidate_created",
-          reason: "A behavior signal entered review-gated compounding.",
-          actor: options.reviewer,
-          evidence_paths: [signal.trace_path],
+    await writeReviewGatedBatch(dataRoot, {
+      items: [
+        {
+          idempotency_key: `compounding-candidate|${id}`,
+          lane: "deterministic_hold",
+          candidate_path: relativePath,
+          candidate_record: record,
+          review_path: relativeReviewPath,
+          review_record: review,
+          candidate_evidence_paths: [signal.trace_path],
+          review_evidence_paths: [relativePath, signal.trace_path],
           predecessor_paths: [signal.trace_path],
           at: options.at,
-          idempotency_key: `compounding-candidate|${id}`,
-        }).write,
-        initializeLifecycleWrite(relativeReviewPath, review, {
-          to_state: getNodeLifecycleState(review, relativeReviewPath),
-          reason_code: "compounding_review_opened",
-          reason: "A behavior signal requires manual promotion review.",
-          actor: options.reviewer,
-          evidence_paths: [relativePath, signal.trace_path],
-          predecessor_paths: [relativePath],
-          at: options.at,
-          idempotency_key: `compounding-review|${id}`,
-          sync_status: false,
-        }).write,
+        },
       ],
-      { actor: options.reviewer, reason: `Create or update compounding candidate ${id}.` },
-    );
+      actor: options.reviewer,
+      reason: `Create or update cold-held compounding candidate ${id}.`,
+    });
   }
 
   return {

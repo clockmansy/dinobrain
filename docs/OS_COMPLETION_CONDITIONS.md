@@ -406,6 +406,10 @@ the current-vault artifacts named above.
 | Review regressions | `npm run review:settle:verify` | HG-06 regression coverage |
 | Review regressions | `npm run review:worklist:verify` | HG-06 regression coverage |
 | Review regressions | `npm run review:worklist:actions:verify` | HG-06 regression coverage |
+| Review backpressure | `npm run review:backpressure` | HG-04/HG-06 require bounded hot review debt |
+| Review backpressure regression | `npm run review:backpressure:verify` | HG-04/HG-06/HG-10 admission, concurrency, and rollback coverage |
+| Cold partitions | `npm run cold:partitions` | HG-04/HG-06 require no eligible cold records in hot retrieval |
+| Cold partition regression | `npm run cold:partitions:verify` | HG-04/HG-06/HG-10 partition, exclusion, and rollback coverage |
 | Direct MCP | `npm run status:mcp-direct` | HG-02 current-client status |
 | Direct MCP regression | `npm run verify:mcp-direct` | HG-02 regression coverage |
 | Native authority | `npm run status:native-authority` | HG-02 current instruction-drift status |
@@ -475,6 +479,10 @@ $commands = @(
   'npm run review:settle:verify',
   'npm run review:worklist:verify',
   'npm run review:worklist:actions:verify',
+  'npm run review:backpressure',
+  'npm run review:backpressure:verify',
+  'npm run cold:partitions',
+  'npm run cold:partitions:verify',
   'npm run status:mcp-direct',
   'npm run verify:mcp-direct',
   'npm run status:native-authority',

@@ -5,6 +5,7 @@ import { atomicWriteJson } from "./concurrency.js";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
+import { COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
@@ -14,6 +15,8 @@ import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
 import { RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
+import { REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH } from "./review-backpressure.js";
+import { REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH } from "./review-worklist-actions.js";
 import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
@@ -110,6 +113,24 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     artifactPath: SEMANTIC_JOBS_RELATIVE_PATH,
     authorityRank: 80,
     healthyStatuses: ["ready", "classified_backlog"],
+  },
+  {
+    id: "review_queue_backpressure",
+    artifactPath: REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH,
+    authorityRank: 88,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "review_worklist_actions",
+    artifactPath: REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH,
+    authorityRank: 87,
+    healthyStatuses: ["ready", "empty"],
+  },
+  {
+    id: "cold_partitions",
+    artifactPath: COLD_PARTITION_STATUS_RELATIVE_PATH,
+    authorityRank: 86,
+    healthyStatuses: ["healthy"],
   },
   {
     id: "task_lifecycle",

@@ -3,6 +3,12 @@ import path from "node:path";
 
 import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
+import {
+  currentNodeRecord,
+  transitionLifecycleWrite,
+  writeNodeLifecycleBatch,
+  type LifecycleBatchWrite,
+} from "./node-lifecycle-store.js";
 
 export const REVIEW_SETTLEMENT_VERSION = "review_settlement_v1";
 export const REVIEW_QUEUE_STATUS_RELATIVE_PATH = ".dino/state/wiki-review-queue.json";
@@ -130,6 +136,8 @@ export type ReviewSettlementActionReport = {
     closed_after: number | null;
   };
   actions: ReviewSettlementAction[];
+  transaction_id: string | null;
+  transaction_path: string | null;
   warnings: string[];
   visible_status: string;
 };
@@ -559,26 +567,26 @@ function actionFor(item: ReviewSettlementItem): ReviewSettlementAction | null {
   };
 }
 
-async function applyHoldAction(
+async function planHoldAction(
   dataRoot: string,
   action: ReviewSettlementAction,
   reviewer: string,
   appliedAt: string,
-): Promise<ReviewSettlementAction> {
+): Promise<{ action: ReviewSettlementAction; writes: LifecycleBatchWrite[] }> {
   const candidate = await readVaultJson(dataRoot, action.candidate_path);
   const review = await readVaultJson(dataRoot, action.review_path);
   if (!candidate || !review) {
     return {
-      ...action,
-      skipped_reason: !candidate ? "candidate_missing" : "review_missing",
+      action: { ...action, skipped_reason: !candidate ? "candidate_missing" : "review_missing" },
+      writes: [],
     };
   }
 
   const previousAccepted = previousAcceptedPath(candidate, review);
   const note = holdNote(action.decision_class);
-  const appliedPaths: string[] = [];
-
-  await writeVaultJson(dataRoot, action.candidate_path, {
+  const candidateState = await currentNodeRecord(dataRoot, action.candidate_path);
+  const reviewState = await currentNodeRecord(dataRoot, action.review_path);
+  const candidateStage = transitionLifecycleWrite(action.candidate_path, {
     ...candidate,
     status: "held",
     quarantine: true,
@@ -587,10 +595,18 @@ async function applyHoldAction(
     reviewed_by: reviewer,
     reviewed_at: appliedAt,
     updated_at: appliedAt,
+  }, {
+    to_state: "held",
+    reason_code: action.reason_code,
+    reason: note,
+    actor: reviewer,
+    evidence_paths: [action.review_path],
+    successor_paths: [action.review_path],
+    at: appliedAt,
+    idempotency_key: `review-settlement-candidate|${action.id}`,
   });
-  appliedPaths.push(action.candidate_path);
-
-  await writeVaultJson(dataRoot, action.review_path, {
+  candidateStage.write.expected_before_sha256 = candidateState.sha256;
+  const reviewStage = transitionLifecycleWrite(action.review_path, {
     ...review,
     status: "settled_hold",
     decision: "hold",
@@ -599,12 +615,25 @@ async function applyHoldAction(
     settled_at: appliedAt,
     reviewed_at: appliedAt,
     updated_at: appliedAt,
+  }, {
+    to_state: "held",
+    reason_code: action.reason_code,
+    reason: note,
+    actor: reviewer,
+    evidence_paths: [action.candidate_path],
+    predecessor_paths: [action.candidate_path],
+    at: appliedAt,
+    idempotency_key: `review-settlement-review|${action.id}`,
+    sync_status: false,
   });
-  appliedPaths.push(action.review_path);
+  reviewStage.write.expected_before_sha256 = reviewState.sha256;
+  const writes: LifecycleBatchWrite[] = [candidateStage.write, reviewStage.write];
+  const appliedPaths = [action.candidate_path, action.review_path];
 
   const accepted = await readVaultJson(dataRoot, previousAccepted);
   if (previousAccepted && accepted) {
-    await writeVaultJson(dataRoot, previousAccepted, {
+    const acceptedState = await currentNodeRecord(dataRoot, previousAccepted);
+    const acceptedStage = transitionLifecycleWrite(previousAccepted, {
       ...accepted,
       status: "held",
       quarantine: true,
@@ -612,16 +641,30 @@ async function applyHoldAction(
       held_by: reviewer,
       held_at: appliedAt,
       updated_at: appliedAt,
+    }, {
+      to_state: "held",
+      reason_code: "legacy_unreviewed_accepted_requires_lineage_review",
+      reason: "Legacy accepted memory was held until lineage review.",
+      actor: reviewer,
+      evidence_paths: [action.candidate_path, action.review_path],
+      predecessor_paths: [action.candidate_path, action.review_path],
+      at: appliedAt,
+      idempotency_key: `review-settlement-accepted|${action.id}`,
     });
+    acceptedStage.write.expected_before_sha256 = acceptedState.sha256;
+    writes.push(acceptedStage.write);
     appliedPaths.push(previousAccepted);
   }
 
   return {
-    ...action,
-    previous_accepted_path: previousAccepted,
-    applied: true,
-    applied_paths: appliedPaths,
-    skipped_reason: null,
+    action: {
+      ...action,
+      previous_accepted_path: previousAccepted,
+      applied: true,
+      applied_paths: appliedPaths,
+      skipped_reason: null,
+    },
+    writes,
   };
 }
 
@@ -658,9 +701,39 @@ export async function settleReviewQueueActions(
     .map((item) => actionFor(item))
     .filter((action): action is ReviewSettlementAction => Boolean(action));
   const appliedActions: ReviewSettlementAction[] = [];
+  const writes: LifecycleBatchWrite[] = [];
+  let transactionId: string | null = null;
+  let transactionPath: string | null = null;
 
   for (const action of targetActions) {
-    appliedActions.push(apply ? await applyHoldAction(dataRoot, action, reviewer, generatedAt) : action);
+    if (!apply) {
+      appliedActions.push(action);
+      continue;
+    }
+    const planned = await planHoldAction(dataRoot, action, reviewer, generatedAt);
+    appliedActions.push(planned.action);
+    writes.push(...planned.writes);
+  }
+  const preconditionFailed = appliedActions.some((action) => action.skipped_reason !== null);
+  if (preconditionFailed) {
+    writes.splice(0, writes.length);
+    for (let index = 0; index < appliedActions.length; index += 1) {
+      if (!appliedActions[index].applied) continue;
+      appliedActions[index] = {
+        ...appliedActions[index],
+        applied: false,
+        applied_paths: [],
+        skipped_reason: "batch_aborted_due_to_precondition_failure",
+      };
+    }
+  }
+  if (apply && writes.length > 0 && appliedActions.every((action) => action.skipped_reason === null)) {
+    const transaction = await writeNodeLifecycleBatch(dataRoot, writes, {
+      actor: reviewer,
+      reason: `Settle ${targetActions.length} deterministic review holds atomically.`,
+    });
+    transactionId = transaction.transaction_id;
+    transactionPath = transaction.transaction_path;
   }
 
   const review = apply ? await buildReviewQueueSettlement(dataRoot, options) : reviewBefore;
@@ -685,6 +758,8 @@ export async function settleReviewQueueActions(
       closed_after: apply ? review.counts.closed : null,
     },
     actions: appliedActions,
+    transaction_id: transactionId,
+    transaction_path: transactionPath,
     warnings: status === "healthy" ? [] : ["review_queue_auto_hold_candidates_remain"],
     visible_status: actionVisibleStatus(status, apply),
   };

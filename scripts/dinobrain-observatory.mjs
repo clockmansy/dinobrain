@@ -589,11 +589,15 @@ function sourcePaths(record) {
 }
 
 async function readLifecycleQueue() {
-  const [lifecycleArtifact, candidates, accepted, reviews, quarantines] = await Promise.all([
+  const [lifecycleArtifact, backpressureArtifact, coldArtifact, worklistArtifact, candidates, accepted, reviews, mergeReviews, quarantines] = await Promise.all([
     readStatusArtifact(".dino/state/node_lifecycle.json"),
+    readStatusArtifact(".dino/state/review_queue_backpressure.json"),
+    readStatusArtifact(".dino/state/cold_partitions.json"),
+    readStatusArtifact(".dino/state/review_worklist.json"),
     readJsonDir("50_Instances/candidates", 60),
     readJsonDir("50_Instances/accepted", 80),
     readJsonDir("80_Review_Queue/promotion", 60),
+    readJsonDir("80_Review_Queue/merge", 60),
     readJsonDir(".dino/quarantine", 40),
   ]);
   const reviewIds = new Set(reviews.map((entry) => path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
@@ -613,11 +617,16 @@ async function readLifecycleQueue() {
   const lifecycleReport = lifecycleArtifact.value ?? null;
   const reportCounts = lifecycleReport?.counts ?? {};
   const lifecycleBlockers = Number(reportCounts.lifecycle_blockers ?? lifecycleReport?.post_audit?.invalid?.length ?? 0);
-  const queuePending = Number(reportCounts.deferred_candidate_backlog ?? candidates.length) > 0 || Number(reportCounts.promotion_reviews ?? reviews.length) > 0;
+  const worklistCounts = worklistArtifact.value?.counts ?? {};
+  const backpressureCounts = backpressureArtifact.value?.counts ?? {};
+  const queuePending = Number(worklistCounts.review_units ?? reviews.length + mergeReviews.length) > 0;
+  const queueConstrained = backpressureArtifact.artifact_parse_status !== "ok" || backpressureArtifact.value?.status !== "healthy";
   const status = lifecycleArtifact.artifact_parse_status !== "ok"
     ? "missing"
     : lifecycleReport?.status !== "healthy" || lifecycleBlockers > 0
       ? String(lifecycleReport?.status ?? "blocked")
+      : queueConstrained
+        ? "queue_constrained"
       : queuePending
         ? "review_pending"
         : "healthy";
@@ -631,6 +640,9 @@ async function readLifecycleQueue() {
     status,
     node_status: lifecycleReport?.status ?? "missing",
     queue_status: queuePending ? "pending" : "clear",
+    backpressure_status: backpressureArtifact.value?.status ?? "missing",
+    growth_mode: backpressureArtifact.value?.growth_mode ?? "cold_only",
+    cold_partition_status: coldArtifact.value?.status ?? "missing",
     artifact_path: lifecycleArtifact.artifact_path,
     transaction_id: lifecycleReport?.transaction?.transaction_id ?? lifecycleReport?.last_applied_transaction?.transaction_id ?? null,
     recovery_ref: lifecycleReport?.git?.recovery_ref ?? lifecycleReport?.last_recovery_ref ?? null,
@@ -638,6 +650,10 @@ async function readLifecycleQueue() {
       candidates: Number(reportCounts.deferred_candidate_backlog ?? candidates.length),
       accepted: Number(reportCounts.accepted ?? accepted.length),
       promotion_reviews: Number(reportCounts.promotion_reviews ?? reviews.length),
+      pending_merge_reviews: Number(worklistCounts.pending_merge_reviews ?? mergeReviews.length),
+      hot_review_units: Number(backpressureCounts.hot_review_units ?? worklistCounts.review_units ?? 0),
+      cold_candidates: Number(backpressureCounts.cold_candidates ?? 0),
+      deterministic_hold_pending: Number(backpressureCounts.deterministic_hold_pending ?? 0),
       quarantined: quarantines.length,
       retrievable_accepted: Number(reportCounts.retrievable_accepted ?? 0),
       held_or_excluded: Number(reportCounts.held_or_excluded ?? 0),
@@ -649,6 +665,7 @@ async function readLifecycleQueue() {
     },
     candidates: candidates.slice(0, 12),
     promotion_reviews: reviews.slice(0, 12),
+    merge_reviews: mergeReviews.slice(0, 12),
     accepted: accepted.slice(0, 12),
     quarantines: quarantines.slice(0, 8),
     retry_candidates: [...reportBlockers, ...retryCandidates].slice(0, 10),
@@ -801,6 +818,8 @@ async function readiness(existingState = null) {
     taskArtifact,
     settlementArtifact,
     nodeLifecycleArtifact,
+    reviewBackpressureArtifact,
+    coldPartitionsArtifact,
     ragProofArtifact,
     ragEvalArtifact,
     liveSemanticQueryArtifact,
@@ -818,6 +837,8 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/task_sessions.json"),
     readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
     readStatusArtifact(".dino/state/node_lifecycle.json"),
+    readStatusArtifact(".dino/state/review_queue_backpressure.json"),
+    readStatusArtifact(".dino/state/cold_partitions.json"),
     readStatusArtifact(".dino/state/rag_proof_status.json"),
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
@@ -906,6 +927,18 @@ async function readiness(existingState = null) {
       id: "node_lifecycle",
       label: "Memory Node Lifecycle",
       artifact: nodeLifecycleArtifact,
+      expectedStatuses: ["healthy"],
+    }),
+    hardGateFromArtifact({
+      id: "review_queue_backpressure",
+      label: "Review Queue Backpressure",
+      artifact: reviewBackpressureArtifact,
+      expectedStatuses: ["healthy"],
+    }),
+    hardGateFromArtifact({
+      id: "cold_partitions",
+      label: "Cold Time Partitions",
+      artifact: coldPartitionsArtifact,
       expectedStatuses: ["healthy"],
     }),
     hardGateFromArtifact({
@@ -2762,7 +2795,7 @@ function html() {
         chips.lifecycle,
         "Nodes",
         lifecycle.status || "--",
-        "hot " + (lifecycle.counts?.retrievable_accepted ?? 0) + " / excluded " + (lifecycle.counts?.held_or_excluded ?? 0),
+        "memory " + (lifecycle.counts?.retrievable_accepted ?? 0) + " / review " + (lifecycle.counts?.hot_review_units ?? 0) + " / cold " + (lifecycle.counts?.cold_candidates ?? 0),
         healthTone(lifecycle.status),
       );
       renderChip(
@@ -2836,8 +2869,15 @@ function html() {
         ["status", lifecycle.status],
         ["node gate", lifecycle.node_status],
         ["queue", lifecycle.queue_status],
+        ["backpressure", lifecycle.backpressure_status],
+        ["growth mode", lifecycle.growth_mode],
+        ["cold partitions", lifecycle.cold_partition_status],
         ["candidates", lifecycle.counts?.candidates],
         ["review", lifecycle.counts?.promotion_reviews],
+        ["merge review", lifecycle.counts?.pending_merge_reviews],
+        ["hot review units", lifecycle.counts?.hot_review_units],
+        ["cold candidates", lifecycle.counts?.cold_candidates],
+        ["deterministic holds", lifecycle.counts?.deterministic_hold_pending],
         ["accepted", lifecycle.counts?.accepted],
         ["quarantined", lifecycle.counts?.quarantined],
         ["retrievable", lifecycle.counts?.retrievable_accepted],

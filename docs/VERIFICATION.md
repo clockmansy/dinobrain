@@ -39,6 +39,11 @@ npm run review:worklist
 npm run review:worklist:verify
 npm run review:worklist:actions
 npm run review:worklist:actions:verify
+npm run review:backpressure
+npm run review:backpressure:verify
+npm run cold:partitions
+npm run cold:partitions:apply
+npm run cold:partitions:verify
 npm run task:lifecycle
 npm run task:lifecycle:verify
 npm run task:lifecycle:settle
@@ -80,9 +85,9 @@ derive from or match that authority. `npm run build` and `npm run check` invoke
 this verification before TypeScript work.
 
 `npm run completion:audit` is the evidence-producing wrapper around the
-normative command table. A full run executes 56 mandatory command instances:
-the 52 base commands, the 24-client concurrency command three times, and
-`verify:goal` last. It writes only bounded command metadata and stdout/stderr
+normative command table. The current registry expands to 67 mandatory command
+instances; the plan-only output is the exact authority when the registry
+changes. It writes only bounded command metadata and stdout/stderr
 hashes, not raw command output, under:
 
 ```text
@@ -114,7 +119,7 @@ publication files leak.
 
 `npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
 
-`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. The order is important: Wiki/operations indexes, SQLite shards, review and semantic settlement, task lifecycle and settlement, RAG proof, graph health, RAG eval, full-memory audit, then freshness. This prevents generated index/status churn from masquerading as unresolved stale proof.
+`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. The order includes review settlement/worklist/backpressure, cold partitions, node and task lifecycle, Wiki/operations indexes, SQLite shards, RAG proof/eval, graph, lineage, full-memory audit, health, and freshness before one status generation is published. This prevents generated index/status churn from masquerading as unresolved stale proof.
 
 `npm run status:freshness` writes `.dino/state/monitoring_status.json` without rebuilding dependencies. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, RAG proof artifacts, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
 
@@ -122,13 +127,19 @@ publication files leak.
 
 `npm run review:settle` writes `.dino/state/wiki-review-queue.json`, `.dino/state/semantic_jobs.json`, and `.dino/state/review_queue_settlement_actions.json`. It does not auto-approve memory. It classifies every candidate/review item as closed, manual semantic review, auto-compounded behavior hold, legacy unreviewed hold, evidence repair, missing review, missing candidate, or unclassified. By default it is a dry-run and fails when deterministic auto-hold candidates remain. With `-- --apply`, it mutates only auto-generated behavior/legacy generated-memory candidates into `held` candidate records and `settled_hold` review records, keeps them out of default retrieval, and leaves manual semantic review/evidence-repair/mapping blockers visible.
 
-`npm run review:worklist` writes `.dino/state/review_worklist.json` plus a public-safe summary under `60_Operations/review-worklists/`. It clusters open manual-review candidates by normalized claim, ranks duplicate/user-preference/project-state groups, and recommends merge, hold, reject, or manual review without approving memory or storing raw conversation archives. The public summary uses relative state paths and redacts local home paths.
+`npm run review:worklist` writes `.dino/state/review_worklist.json` plus a public-safe summary under `60_Operations/review-worklists/`. Version 2 excludes deterministic generated holds from human review, forms exact and high-confidence near-duplicate units by semantic identity and behavior scope, and preserves source-session, contradiction, evidence, path, and SHA-256 provenance for every member. Existing pending merge reviews remain visible as review units. It never approves or mutates memory.
 
-`npm run review:worklist:actions` writes `.dino/state/review_worklist_actions.json` plus a public-safe summary under `60_Operations/review-worklist-actions/`. By default it is a dry-run: duplicate clusters become planned merge-review actions, low-signal or ephemeral clusters become planned hold actions, and the rest stay manual-only. With `-- --apply-merge-reviews`, it creates merge-review records under `80_Review_Queue/merge/` without approving memory. With `-- --apply-holds`, it sets only low-signal/ephemeral candidate-review pairs to `held` / `settled_hold`. `-- --apply-all` enables both safe mutation classes.
+`npm run review:worklist:actions` writes `.dino/state/review_worklist_actions.json` plus a public-safe summary under `60_Operations/review-worklist-actions/`. By default it is a dry-run. `-- --apply-holds` cold-holds only deterministic auto-compounded or legacy generated-memory candidates. `-- --apply-merge-reviews` replaces exact/high-confidence near-duplicate members with one provenance-complete pending review under `80_Review_Queue/merge/`. Low-signal singletons stay manual. `-- --apply-all` uses both bounded classes in one hash-preconditioned node-lifecycle transaction with a Git recovery ref and exact local backup. `-- --rollback <transaction-id>` restores it. Later dry-runs retain the last successful transaction and recovery evidence.
+
+`npm run review:backpressure` reconciles `.dino/state/review_queue_admission.json` with the worklist and writes `.dino/state/review_queue_backpressure.json`. The global hot limit is 500 units, with separate correction, merge, manual-semantic, evidence-repair, and mapping-repair budgets/SLAs. Overflow and deterministic generated memory route to cold hold. Missing or unreconciled admission state fails closed; candidate, review, admission state, and receipt commit atomically.
+
+`npm run review:backpressure:verify` proves a 1,000-session run remains bounded, missing state fails closed, 24 parallel writers do not lose counts or collide, and an injected transaction fault rolls back exactly.
+
+`npm run cold:partitions` dry-runs logical monthly cold partitions for completed tasks, traces, Context Packs, reports, and obsolete lifecycle rules. `npm run cold:partitions:apply` writes a hash-bound partition index transactionally without moving source truth. Normal context/search and recent operations exclude indexed paths; `search_cold_memory` is the explicit metadata lookup. `npm run cold:partitions:verify` proves all record kinds, retrieval exclusion, source preservation, rollback, and fault recovery. See `docs/REVIEW_QUEUE_BACKPRESSURE.md`.
 
 `npm run review:settle:verify` proves this classification and safe auto-hold settlement on a temporary vault with behavior-rule, legacy, missing-evidence, missing-review, missing-candidate, and closed-review fixtures.
 
-`npm run review:worklist:actions:verify` proves dry-run safety, public summary redaction, merge-review creation, and safe hold application on a temporary vault.
+`npm run review:worklist:actions:verify` proves dry-run safety, public summary redaction, provenance-complete merge creation, atomic rollback, and preservation of last-apply evidence across later dry-runs.
 
 `npm run task:lifecycle` writes `.dino/state/task_sessions.json` and `.dino/state/task_finish_grounding_classifications.jsonl`. It classifies active, stale-active, terminal, missing-trace, orphan-trace, partial-grounded, and ungrounded task finishes. The command fails when stale active tasks, missing terminal traces, orphan traces, task-id mismatches, or ungrounded finishes remain, because those block final readiness.
 

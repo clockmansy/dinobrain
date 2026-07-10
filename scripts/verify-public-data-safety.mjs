@@ -120,7 +120,7 @@ const blockedPathRules = [
   { id: "raw_instance_path", pattern: /^50_Instances\/raw\// },
   { id: "private_attachment_path", pattern: /^attachments\/private\// },
   { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
-  { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups)\// },
+  { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups|review-admissions)\// },
   { id: "generated_index_path", pattern: /^\.dino\/index\// },
   { id: "operation_event_path", pattern: /^\.dino\/events\// },
   { id: "environment_file", pattern: /(^|\/)\.env(?:\.|$)/ },
@@ -140,6 +140,7 @@ const conditionalPathRules = [
   { id: "operation_quarantine_path", pattern: /^\.dino\/quarantine\// },
   { id: "operation_compounding_path", pattern: /^\.dino\/compounding\// },
   { id: "node_lifecycle_status_path", pattern: /^\.dino\/state\/node_lifecycle\.json$/ },
+  { id: "review_queue_status_path", pattern: /^\.dino\/state\/(?:review_worklist|review_worklist_actions|review_queue_backpressure|review_queue_admission|cold_partitions)\.json$/ },
 ];
 
 const syncablePathRules = [
@@ -267,6 +268,21 @@ function scanFile(relativePath, tracked) {
       addFinding("warning", "machine_local_path_marker", relativePath, {
         pattern: id,
         line: lineFor(text, match.index || 0),
+      });
+    }
+  }
+
+  if (/^60_Operations\/review-worklists\/.+\.json$/.test(relativePath)) {
+    const leakedFields = [
+      ["representative_claim", /"representative_claim"\s*:/],
+      ["candidate_paths", /"candidate_paths"\s*:/],
+      ["review_paths", /"review_paths"\s*:/],
+      ["members", /"members"\s*:/],
+      ["source_session_refs", /"source_session_refs"\s*:/],
+    ].filter(([, pattern]) => pattern.test(text)).map(([field]) => field);
+    if (leakedFields.length > 0) {
+      addFinding(tracked ? "blocker" : "warning", "unsafe_review_worklist_summary", relativePath, {
+        leaked_fields: leakedFields,
       });
     }
   }

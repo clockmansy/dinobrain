@@ -12,6 +12,7 @@ const {
   buildAndWriteOperationsIndex,
   collectRecentTaskRecordsFromIndex,
   getOperationsIndexPath,
+  OPERATIONS_INDEX_VERSION,
   readOperationsIndex,
   upsertOperationContextPack,
   upsertOperationTask,
@@ -138,7 +139,7 @@ assert(index.active_tasks.some((task) => task.task_id === "task-2500"), "active 
 writeFileSync(indexPath, '{"version":1}\nforeign trailing bytes', "utf8");
 index = await upsertOperationTask(dataRoot, ".dino/tasks/task-2500.json", newTask);
 assert(index.counts.tasks === 2501, `corrupt-index recovery changed task count: ${index.counts.tasks}`);
-assert(JSON.parse(readFileSync(indexPath, "utf8")).version === 1, "corrupt operations index was not rebuilt");
+assert(JSON.parse(readFileSync(indexPath, "utf8")).version === OPERATIONS_INDEX_VERSION, "corrupt operations index was not rebuilt");
 
 console.log(
   JSON.stringify(

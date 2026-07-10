@@ -87,6 +87,12 @@ writeFileSync(
   "{\"note\":\"This path must be blocked even without secret-looking values.\"}\n",
   "utf8",
 );
+mkdirSync(path.join(tempDataRoot, ".dino", "review-admissions", "2026-07"), { recursive: true });
+writeFileSync(
+  path.join(tempDataRoot, ".dino", "review-admissions", "2026-07", "decision.json"),
+  "{\"idempotency_key\":\"local-review-decision\"}\n",
+  "utf8",
+);
 writeFileSync(
   path.join(tempDataRoot, "20_Wiki", "Sensitive-Pattern.md"),
   `api_${"key"}: pretend-this-is-sensitive\n`,
@@ -551,6 +557,10 @@ try {
   const blockedPathFile = syncFiles.get(".dino/secrets.json");
   if (!blockedPathFile || blockedPathFile.classification !== "blocked") {
     throw new Error("git_sync did not block local-only secrets path");
+  }
+  const blockedAdmissionReceipt = syncFiles.get(".dino/review-admissions/2026-07/decision.json");
+  if (!blockedAdmissionReceipt || blockedAdmissionReceipt.classification !== "blocked") {
+    throw new Error("git_sync did not block local review admission receipt");
   }
   const sensitivePatternFile = syncFiles.get("20_Wiki/Sensitive-Pattern.md");
   if (

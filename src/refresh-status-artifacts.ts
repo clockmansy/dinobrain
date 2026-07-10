@@ -4,16 +4,19 @@ import { pathToFileURL } from "node:url";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH, buildAndWriteAnswerQualityReport } from "./answer-quality.js";
 import { buildAndWriteBehaviorRecallReport } from "./behavior-recall.js";
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
+import { applyColdPartitions } from "./cold-partitions.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
 import { buildAndWriteHealthStatus } from "./health-status.js";
 import { buildAndWriteLiveSemanticQueryReport, LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query-status.js";
+import { applyNodeLifecycle } from "./lifecycle.js";
 import { buildAndWriteNativeInstructionAuthorityReport } from "./native-instruction-authority.js";
 import { buildAndWriteOperationsIndex, OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
 import { buildAndWriteRagEvalReport, RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
 import { buildAndWriteRagProof } from "./rag-proof.js";
 import { buildAndWriteReleaseManifestReport, RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
 import { settleReviewQueueActions } from "./review-settlement.js";
+import { buildReviewQueueBackpressure } from "./review-backpressure.js";
 import { buildReviewWorklist } from "./review-worklist.js";
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { buildAndWriteSourceLineageReport } from "./source-lineage.js";
@@ -61,6 +64,19 @@ export async function refreshStatusArtifacts(
 
   const reviewActions = await buildReviewWorklistActions(dataRoot);
   steps.push({ id: "review_worklist_actions", status: reviewActions.report.status, path: reviewActions.statePath });
+
+  const reviewBackpressure = await buildReviewQueueBackpressure(dataRoot, { reconcileAdmission: true });
+  steps.push({ id: "review_queue_backpressure", status: reviewBackpressure.report.status, path: reviewBackpressure.statePath });
+
+  const coldPartitions = await applyColdPartitions(dataRoot);
+  steps.push({ id: "cold_partitions", status: coldPartitions.report.status, path: coldPartitions.statusPath });
+
+  const nodeLifecycle = await applyNodeLifecycle(dataRoot, { apply: false, reviewer: "status-refresh" });
+  steps.push({
+    id: "node_lifecycle",
+    status: typeof nodeLifecycle.status === "string" ? nodeLifecycle.status : null,
+    path: typeof nodeLifecycle.lifecycle_path === "string" ? nodeLifecycle.lifecycle_path : null,
+  });
 
   const lifecycle = await buildAndWriteTaskLifecycleReport(dataRoot, { staleAfterMs: taskStaleAfterMs });
   steps.push({ id: "task_lifecycle", status: lifecycle.report.status, path: lifecycle.statusPath });

@@ -60,11 +60,21 @@ async function main() {
     assert(existsSync(path.join(dataRoot, REVIEW_WORKLIST_STATE_RELATIVE_PATH)), "state worklist missing");
     assert(existsSync(path.join(dataRoot, REVIEW_WORKLIST_OPERATIONS_DIR, "review-worklist-20260707-4.json")), "operations worklist missing");
     const operations = JSON.parse(readFileSync(path.join(dataRoot, REVIEW_WORKLIST_OPERATIONS_DIR, "review-worklist-20260707-4.json"), "utf8"));
-    assert(operations.note.includes("raw conversation archives"), "public summary safety note missing");
+    assert(operations.note.includes("aggregate counts and hashes only"), "public summary safety note missing");
     assert(operations.source_review_status_path === ".dino/state/wiki-review-queue.json", "public source review path should be relative");
     assert(operations.source_semantic_jobs_path === ".dino/state/semantic_jobs.json", "public semantic job path should be relative");
     assert(!JSON.stringify(operations).includes("C:\\Users\\alice"), "public summary should scrub local home paths");
-    assert(JSON.stringify(operations).includes("%USERPROFILE%"), "public summary should retain redacted path context");
+    assert(!JSON.stringify(operations).includes("Prefer concise Korean"), "public summary leaked a candidate claim");
+    assert(!JSON.stringify(operations).includes("50_Instances/candidates"), "public summary leaked candidate paths");
+    assert(!JSON.stringify(operations).includes("10_Conversations/raw"), "public summary leaked source session paths");
+    assert(
+      operations.clusters.every((cluster) => /^[a-f0-9]{64}$/.test(cluster.representative_claim_hash)),
+      "public summary claim hashes missing",
+    );
+    assert(
+      operations.clusters.every((cluster) => /^[a-f0-9]{64}$/.test(cluster.member_provenance_hash)),
+      "public summary provenance hashes missing",
+    );
 
     console.log("review worklist verification ok");
   } finally {

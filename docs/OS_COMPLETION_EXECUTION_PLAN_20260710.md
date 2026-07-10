@@ -424,6 +424,25 @@ MEM-02. See `docs/MEMORY_NODE_LIFECYCLE.md`.
 **Acceptance:** no unclassified review debt; hot retrieval excludes held/cold
 records; queue growth is bounded under a 1,000-session simulation.
 
+**Execution evidence (2026-07-11):** `review_worklist_v2` now clusters by
+semantic identity, source session, contradiction set, and behavior scope. The
+current vault dry-run found 214 deterministic holds and 37 duplicate clusters
+(36 exact, 1 near) covering 687 members. One atomic 1,839-path migration held
+the deterministic records, collapsed duplicate members into provenance-complete
+merge reviews, and left 104 singleton promotion items plus 42 total merge
+reviews: 146 hot units against a 500-unit budget, with zero unclassified debt,
+zero pending deterministic holds, and zero duplicate clusters. The transaction
+was actually rolled back and all 1,839 paths matched the pre-apply existence,
+size, and SHA-256 manifest before final reapply. A serialized admission ledger
+now enforces per-lane budgets and fails closed to cold hold; a 1,000-session
+simulation admitted 197 hot and routed 803 cold, while a 24-writer race and
+injected fault both preserved consistency. Logical monthly cold partitions now
+cover tasks, traces, Context Packs, reports, and obsolete rules without moving
+source truth; normal context and recent-operation retrieval exclude cold paths,
+while `search_cold_memory` provides explicit lookup. The current vault has no
+records old enough for partitioning, so its live cold index is truthfully empty.
+See `docs/REVIEW_QUEUE_BACKPRESSURE.md`.
+
 #### MEM-03: Correction writeback and behavior lift
 
 **Hard gates:** HG-07

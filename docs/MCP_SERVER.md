@@ -39,6 +39,8 @@ npm run smoke
 npm run session:verify
 npm run hook:verify
 npm run pre-response:gate:verify
+npm run review:backpressure:verify
+npm run cold:partitions:verify
 npm run index:verify:sqlite
 npm run index:verify:operations
 npm run index:verify
@@ -170,6 +172,28 @@ Searches the same curated roots as `get_context_pack`.
 
 It uses the same persistent Wiki retrieval path, preferring SQLite shards, but may rank excerpt matches because `wiki_search` is an explicit narrow lookup tool.
 
+### `search_cold_memory`
+
+Searches only the logical cold-partition metadata index. It is an explicit
+lookup path for archived tasks, traces, Context Packs, reports, and obsolete
+rules; cold entries never re-enter a normal Context Pack merely because this
+tool found them.
+
+### `apply_review_backpressure`
+
+Builds or reconciles the bounded review-queue policy. It reports hot units,
+cold candidates, lane budgets/SLAs, unresolved deterministic holds, duplicate
+clusters, unclassified debt, admission-state consistency, and whether growth
+is `normal` or `cold_only`. New candidate/review writes use the same serialized
+admission state and fail closed to cold hold when that state is unavailable.
+
+### `apply_cold_partitions`
+
+Dry-runs or applies the logical monthly cold index. Apply requires a Git
+recovery ref and a node-lifecycle transaction; rollback accepts the transaction
+id. Source records are hash-bound but not moved or rewritten. Normal retrieval
+and recent-operation lists exclude indexed cold paths.
+
 ### `import_session`
 
 Imports a chat session as a redacted local-only source archive and extracts pending-review memory candidates.
@@ -264,6 +288,8 @@ Required fields:
 - `last_verified`
 
 Candidates always enter Review Queue first. They are not auto-promoted.
+Queue admission may place the candidate/review pair directly in cold hold when
+the relevant lane or global hot budget is exhausted.
 
 ### `review_candidate`
 
