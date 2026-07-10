@@ -18,6 +18,8 @@ async function main(): Promise<void> {
         status: result.report.status,
         visible_status: result.report.visible_status,
         package_version: result.report.package_version,
+        authoritative_version: result.report.authoritative_version,
+        version_aligned: result.report.version_aligned,
         expected_tag: result.report.expected_tag,
         app_head: result.report.app_git.head,
         data_head: result.report.data_git.head,

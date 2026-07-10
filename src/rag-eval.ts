@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import type { RankedRecord } from "./context.js";
 import { HYBRID_RETRIEVAL_MODE, type RetrievalMode } from "./hybrid-retrieval.js";
 import { getContextPackItems } from "./retrieval.js";
@@ -526,7 +527,6 @@ export async function buildAndWriteRagEvalReport(
 ): Promise<{ report: RagEvalReport; statusPath: string }> {
   const report = await buildRagEvalReport(dataRoot, options);
   const statusPath = getRagEvalStatusPath(dataRoot);
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, statusPath };
 }

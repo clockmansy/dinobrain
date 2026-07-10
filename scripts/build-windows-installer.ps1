@@ -16,8 +16,8 @@ $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $root "installer\DinoBrainSetup\DinoBrainSetup.csproj"
 if ([string]::IsNullOrWhiteSpace($AppRef)) { $AppRef = "main" }
 if ([string]::IsNullOrWhiteSpace($SetupVersion)) {
-  $package = Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json
-  $SetupVersion = [string]$package.version
+  $versionManifest = Get-Content (Join-Path $root "version.json") -Raw | ConvertFrom-Json
+  $SetupVersion = [string]$versionManifest.version
 }
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = Join-Path $root "artifacts"

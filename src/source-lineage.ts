@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 
@@ -584,7 +585,6 @@ export async function buildAndWriteSourceLineageReport(
 ): Promise<{ report: SourceLineageReport; path: string }> {
   const report = await buildSourceLineageReport(dataRoot, options);
   const statusPath = dataPath(dataRoot, ...SOURCE_LINEAGE_STATUS_RELATIVE_PATH.split("/"));
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, path: statusPath };
 }

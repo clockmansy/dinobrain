@@ -8,11 +8,15 @@
     "dinobrain-mcp": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/verify-version-authority.mjs && tsc -p tsconfig.json",
+    "version:verify": "node scripts/verify-version-authority.mjs",
+    "completion:audit": "node dist/run-completion-audit.js",
+    "completion:audit:verify": "node scripts/verify-completion-audit.mjs",
+    "atomic:writers:verify": "node scripts/verify-atomic-state-writers.mjs",
     "audit:full-memory": "node dist/build-full-memory-audit.js",
     "audit:full-memory:verify": "node scripts/verify-full-memory-audit.mjs",
     "flow:audit": "node scripts/audit-user-flow.mjs",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "node scripts/verify-version-authority.mjs && tsc -p tsconfig.json --noEmit",
     "status:refresh": "node dist/refresh-status-artifacts.js",
     "status:health": "node dist/build-health-status.js",
     "status:mcp-direct": "node dist/build-client-mcp-direct-status.js",

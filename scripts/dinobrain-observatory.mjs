@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
@@ -493,7 +494,7 @@ async function readOsV2Status() {
   const failClosed = latestGate?.fail_closed === true;
   const status = failClosed ? "blocked" : latestGate ? String(latestGate.status ?? "ready") : "pending";
   return {
-    version: "2.2.1",
+    version: DINOBRAIN_VERSION,
     status,
     fail_closed: failClosed,
     latest_gate: latestGate,

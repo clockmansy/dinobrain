@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
@@ -163,7 +164,7 @@ json(path.join(dataRoot, "50_Instances", "candidates", "rejected-one.json"), {
   tags: ["rejected"],
 });
 
-const client = new Client({ name: "dinobrain-v2-verify", version: "2.2.1" });
+const client = new Client({ name: "dinobrain-v2-verify", version: DINOBRAIN_VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
@@ -202,7 +203,7 @@ try {
       },
     }),
   );
-  assert(begin.os_version === "2.2.1", "os_begin_task did not report v2.2.1");
+  assert(begin.os_version === DINOBRAIN_VERSION, `os_begin_task did not report ${DINOBRAIN_VERSION}`);
   assert(begin.fail_closed === false, `safe begin unexpectedly failed closed: ${JSON.stringify(begin.gates)}`);
   assert(begin.context_pack?.retrieval_mode === "lexical_fallback_v2", "Context Pack did not honestly report lexical fallback without dense vectors");
   assert(begin.context_pack?.items?.some((item) => item.path === "20_Wiki/OS-v2-Contract.md"), "v2 begin missed OS contract memory");

@@ -5,7 +5,7 @@ commands and artifacts, but a verifier description or isolated PASS does not
 override the normative hard-gate verdict. Dated reviewer/state history is kept
 in `docs/OS_COMPLETION_REVIEW_RECORD_20260710.md`.
 
-Date: 2026-07-01
+Date: 2026-07-10
 
 This document defines how to verify that DinoBrain is more than a note store.
 
@@ -20,6 +20,10 @@ The verification target has two parts:
 ```powershell
 npm run build
 npm run check
+npm run version:verify
+npm run completion:audit:verify
+npm run completion:audit -- --plan-only --allow-not-complete
+npm run atomic:writers:verify
 npm run smoke
 npm run audit:full-memory
 npm run audit:full-memory:verify
@@ -60,10 +64,47 @@ npm run installer:verify:launchers
 npm run installer:verify:managed-hook
 npm run codex:hooks:managed
 npm run installer:win
-npm run release:win -- -Tag v2.2.1 -ReplaceAsset
+npm run release:win -- -ReplaceAsset
 ```
 
 Use the bundled or portable Node runtime if `npm` is not on `PATH`.
+
+`version.json` is the release-version authority. `npm run version:verify` fails
+when package metadata, the package lock, installer project, OS contract,
+installer builder, release publisher, Codex hook, or Observatory no longer
+derive from or match that authority. `npm run build` and `npm run check` invoke
+this verification before TypeScript work.
+
+`npm run completion:audit` is the evidence-producing wrapper around the
+normative command table. A full run executes 56 mandatory command instances:
+the 52 base commands, the 24-client concurrency command three times, and
+`verify:goal` last. It writes only bounded command metadata and stdout/stderr
+hashes, not raw command output, under:
+
+```text
+.dino/audits/completion/<audit_run_id>/command-results.jsonl
+.dino/audits/completion/<audit_run_id>/artifact-manifest.json
+.dino/audits/completion/<audit_run_id>/completion-verdict.json
+```
+
+The verdict is written last with atomic replacement and is immediately
+re-verified against the artifact hashes. Missing commands, partial runs,
+missing external proof, stale artifacts, malformed data, warnings, dirty refs,
+version drift, or generation mismatch produce `NOT_COMPLETE`.
+
+Use `npm run completion:audit -- --plan-only --allow-not-complete` to create a
+truthful baseline without executing the mandatory suite. This still records all
+56 commands as `BLOCKED`; it can never certify completion. Use repeated
+`--external evidence_id=.dino/proofs/...json` arguments only for hash-bound JSON
+proof stored inside the data root. Run `npm run completion:audit:verify` to test
+partial-run rejection, failing-command rejection, manifest integrity, tamper
+detection, registry/package coverage, and normative-runner parity.
+
+`npm run atomic:writers:verify` prevents production state writers from
+reintroducing direct `fs.writeFile` publication outside the concurrency module.
+It also proves that a rejected candidate preserves the previous valid file,
+24 concurrent atomic replacements leave parseable complete JSON, and no temp
+publication files leak.
 
 `npm run audit:full-memory` writes `.dino/state/full_memory_manifest.json` and `.dino/state/full_memory_audit_status.json`. The manifest records every non-Git data-vault file by path, byte size, SHA-256, mtime, and parse status. The status report compares against the previous manifest and classifies drift as live OS writes, review-queue writes, audit artifacts, or unclassified content drift. Unclassified drift and parse errors must block final readiness.
 

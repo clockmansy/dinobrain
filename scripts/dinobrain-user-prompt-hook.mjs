@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(process.env.DINOBRAIN_REPO_ROOT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 const serverPath = path.join(root, "dist", "index.js");
@@ -346,7 +347,7 @@ async function waitForSiblingPreflightReport(dedupeKey) {
 }
 
 async function withClient(callback) {
-  const client = new Client({ name: "dinobrain-codex-hook", version: "2.2.1" });
+  const client = new Client({ name: "dinobrain-codex-hook", version: DINOBRAIN_VERSION });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -418,7 +419,7 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
     start.fail_closed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode for this Codex prompt."
       : "DinoBrain OS preflight completed for this Codex prompt.",
-    `os_version: ${start.os_version || "2.2.1"}`,
+    `os_version: ${start.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${start.task_id}`,
     `task_path: ${start.task_path}`,
     `context_pack_trace: ${contextPack.trace_path}`,
@@ -470,7 +471,7 @@ function siblingContext({ report, reportPath }) {
     failClosed
       ? "DinoBrain OS preflight completed in FAIL-CLOSED mode by another matching DinoBrain hook."
       : "DinoBrain OS preflight completed by another matching DinoBrain hook.",
-    `os_version: ${report.os_version || "2.2.1"}`,
+    `os_version: ${report.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${report.task_id || "unavailable"}`,
     `task_path: ${report.task_path || "unavailable"}`,
     `context_pack_trace: ${report.context_pack_trace || "unavailable"}`,
@@ -662,7 +663,7 @@ async function main() {
       cwd: inputCwd(input) || null,
       prompt_hash: promptHash,
       launch_provenance: launchProvenance,
-      os_version: start.os_version || "2.2.1",
+      os_version: start.os_version || DINOBRAIN_VERSION,
       task_id: start.task_id,
       task_path: start.task_path,
       context_pack_trace: contextPack.trace_path,

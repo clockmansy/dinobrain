@@ -62,6 +62,39 @@ Passing current fixture checks is useful regression evidence, but it is not a
 substitute for the stronger current-vault, scale, live-client, recovery, and
 release evidence required by the normative contract.
 
+### Implementation Progress - 2026-07-10
+
+The first foundation slice is implemented and remains intentionally
+`NOT_COMPLETE`:
+
+- FND-01 now has a typed 12-gate registry, 56 mandatory command instances,
+  bounded command-result ledger, hashed artifact manifest, verdict-last atomic
+  publication, post-write integrity verification, and tamper regression tests;
+- the first current-vault plan-only evidence pack is
+  `.dino/audits/completion/completion-20260710-143923446-3953db16-807f-4844-a012-61375cd6a544/`;
+- that pack records 12 non-passing gates, 56 blocked commands, 88 manifest
+  entries, current app/data dirty and remote-ref state, warning-bearing
+  artifacts, and health/monitoring generation incoherence;
+- a second real current-vault partial audit,
+  `.dino/audits/completion/completion-20260710-143924747-29e6e124-0746-4a8c-9e2c-1c7d0f291eee/`,
+  executed `npm:build` successfully, recorded the other 55 commands as
+  `BLOCKED`, persisted only output byte counts and hashes, and remained
+  `NOT_COMPLETE`;
+- FND-03 now uses root `version.json` as the release authority for the OS
+  contract, hook, Observatory, installer builder, release publisher, and release
+  manifest; build/check fail when package, lock, installer, or runtime metadata
+  drift from version `2.2.9` and data contract version `3`.
+- FND-02 has migrated all production TypeScript state/index JSON and JSONL
+  publication away from direct `fs.writeFile` calls to the common atomic
+  writer. Its regression test preserves the previous file after validation
+  failure, completes 24 concurrent replacements with valid JSON, and leaks no
+  temporary files.
+
+FND-01 is not fully closed until a full current-vault audit, fresh external
+proof imports, final-generation publication, and release-candidate evidence all
+pass. FND-02 is not fully closed until production script writers and multi-file
+generation pointer publication are migrated and fault-injected.
+
 ## 3. Implementation Principles
 
 1. **Truth before display.** Build canonical gate and evidence state before

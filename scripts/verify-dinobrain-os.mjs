@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
@@ -285,7 +286,7 @@ function parseClaudePromptHookConfig() {
 }
 
 async function withClient({ name, command, args, env, cwd }, callback) {
-  const client = new Client({ name, version: "2.2.1" });
+  const client = new Client({ name, version: DINOBRAIN_VERSION });
   const transport = new StdioClientTransport({
     command,
     args,

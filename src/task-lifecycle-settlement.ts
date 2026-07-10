@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath } from "./context.js";
 import {
   buildAndWriteTaskLifecycleReport,
@@ -81,8 +82,7 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(filePath, value);
 }
 
 function tracePathFor(session: TaskLifecycleSession): string {

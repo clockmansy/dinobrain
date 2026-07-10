@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import {
   LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
   LIVE_SEMANTIC_QUERY_VERSION,
@@ -95,7 +96,6 @@ export async function buildAndWriteLiveSemanticQueryReport(
 ): Promise<{ report: LiveSemanticQueryReport; statusPath: string }> {
   const report = await buildLiveSemanticQueryReport(dataRoot, options);
   const statusPath = getLiveSemanticQueryStatusPath(dataRoot);
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, statusPath };
 }

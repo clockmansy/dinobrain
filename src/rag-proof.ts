@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { DENSE_VECTOR_INDEX_RELATIVE_PATH } from "./hybrid-retrieval.js";
 import {
   HUGGINGFACE_TRANSFORMERS_PROVIDER,
@@ -94,8 +95,7 @@ async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(filePath, value);
 }
 
 function tokenize(value: string): string[] {

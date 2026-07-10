@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
@@ -98,7 +99,7 @@ spawnSync("git", ["config", "user.name", "DinoBrain Smoke"], { cwd: tempDataRoot
 
 const client = new Client({
   name: "dinobrain-smoke",
-  version: "2.2.1",
+  version: DINOBRAIN_VERSION,
 });
 
 const transport = new StdioClientTransport({

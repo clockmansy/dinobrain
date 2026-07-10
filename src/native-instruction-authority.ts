@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 
@@ -565,7 +566,6 @@ export async function buildAndWriteNativeInstructionAuthorityReport(
 ): Promise<{ report: NativeInstructionAuthorityReport; path: string }> {
   const report = await buildNativeInstructionAuthorityReport(dataRoot, options);
   const reportPath = getNativeInstructionAuthorityPath(dataRoot);
-  await fs.mkdir(path.dirname(reportPath), { recursive: true });
-  await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(reportPath, report);
   return { report, path: reportPath };
 }

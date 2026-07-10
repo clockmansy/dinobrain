@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
+
 type JsonObject = Record<string, unknown>;
 
 type BehaviorSignal = {
@@ -78,8 +80,7 @@ async function ensureDir(dir: string): Promise<void> {
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await ensureDir(path.dirname(filePath));
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(filePath, value);
 }
 
 async function readJson<T>(filePath: string): Promise<T | null> {

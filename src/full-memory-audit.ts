@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { TextDecoder } from "node:util";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 
 export const FULL_MEMORY_AUDIT_VERSION = "full_memory_audit_v1";
@@ -501,8 +502,7 @@ export async function buildAndWriteFullMemoryAudit(
   const result = await buildFullMemoryAudit(dataRoot, options);
   const manifestPath = getFullMemoryManifestPath(dataRoot);
   const statusPath = getFullMemoryAuditStatusPath(dataRoot);
-  await fs.mkdir(path.dirname(manifestPath), { recursive: true });
-  await fs.writeFile(manifestPath, `${JSON.stringify(result.manifest, null, 2)}\n`, "utf8");
-  await fs.writeFile(statusPath, `${JSON.stringify(result.report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(manifestPath, result.manifest);
+  await atomicWriteJson(statusPath, result.report);
   return { ...result, manifestPath, statusPath };
 }

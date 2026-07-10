@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import {
   collectCuratedRecords,
   collectRecentTaskRecords,
@@ -415,8 +416,7 @@ export async function buildWikiIndex(dataRoot: string): Promise<WikiIndex> {
 
 export async function writeWikiIndex(dataRoot: string, index: WikiIndex): Promise<string> {
   const indexPath = getWikiIndexPath(dataRoot);
-  await fs.mkdir(path.dirname(indexPath), { recursive: true });
-  await fs.writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await atomicWriteJson(indexPath, index);
   return indexPath;
 }
 

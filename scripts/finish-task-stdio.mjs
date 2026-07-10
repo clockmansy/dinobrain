@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
@@ -45,7 +46,7 @@ function parseTool(result) {
 
 async function main() {
   const payload = parsePayload();
-  const client = new Client({ name: "dinobrain-finish-task-stdio", version: "2.2.1" });
+  const client = new Client({ name: "dinobrain-finish-task-stdio", version: DINOBRAIN_VERSION });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

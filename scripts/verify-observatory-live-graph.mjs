@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-observatory-graph-"));
@@ -262,8 +263,10 @@ tags: [context-pack]
   writeJson(".dino/state/release_manifest_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
-    package_version: "2.2.1",
-    expected_tag: "v2.2.1",
+    package_version: DINOBRAIN_VERSION,
+    authoritative_version: DINOBRAIN_VERSION,
+    version_aligned: true,
+    expected_tag: `v${DINOBRAIN_VERSION}`,
     tag: { exists: true, target: "abc", matches_app_head: true },
     assets: { zip_exists: true, sha_exists: true, sha256_matches: true },
     blockers: [],

@@ -87,6 +87,24 @@ Evidence is valid only when all of the following are true:
 The completion evidence pack is itself invalid if a required file cannot be
 strictly decoded, parsed, hashed, or mapped to the recorded audit run.
 
+### Canonical Evidence Runner
+
+`npm run completion:audit` executes the mandatory command registry and writes
+the three evidence-pack files above. The typed registry must match the command
+order in the Canonical PowerShell Runner: 52 base commands, three independent
+24-client concurrency runs, and `verify:goal` last. The audit runner is not a
+row in its own command ledger.
+
+The runner stores bounded command metadata, byte counts, and stdout/stderr
+SHA-256 values without persisting raw command output. It writes the verdict
+last and immediately verifies every manifest hash. `--plan-only` and `--only`
+are diagnostic modes; every unexecuted mandatory command is recorded as
+`BLOCKED`, so those modes cannot produce `COMPLETE`.
+
+`npm run completion:audit:verify` must pass before the runner itself is trusted.
+It verifies registry/document parity, required package scripts, partial-run
+rejection, failed-command rejection, evidence integrity, and tamper detection.
+
 ## Hard Gates
 
 ### HG-01: Live Pre-Response And Fail-Closed Loop

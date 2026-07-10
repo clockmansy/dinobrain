@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
 import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
@@ -250,7 +251,6 @@ export async function buildAndWriteHealthStatus(
 ): Promise<{ report: HealthStatusReport; path: string }> {
   const report = await buildHealthStatus(dataRoot, options);
   const statusPath = dataPath(dataRoot, ...HEALTH_STATUS_RELATIVE_PATH.split("/"));
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, path: statusPath };
 }

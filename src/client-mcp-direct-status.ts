@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 
@@ -399,7 +400,6 @@ export async function buildAndWriteClientMcpDirectStatus(
 ): Promise<{ report: ClientMcpDirectStatusReport; path: string }> {
   const report = await buildClientMcpDirectStatus(dataRoot, options);
   const statusPath = getStatusPath(dataRoot);
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, path: statusPath };
 }

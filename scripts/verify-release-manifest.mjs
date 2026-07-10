@@ -59,6 +59,11 @@ async function main() {
 
     initRepo(appRoot, appOrigin);
     writeFileSync(path.join(appRoot, "package.json"), `${JSON.stringify({ version: "9.9.9" }, null, 2)}\n`, "utf8");
+    writeFileSync(
+      path.join(appRoot, "version.json"),
+      `${JSON.stringify({ schema_version: 1, version: "9.9.9", data_contract_version: 3 }, null, 2)}\n`,
+      "utf8",
+    );
     commitAll(appRoot, "app release fixture");
     runGit(appRoot, ["tag", "v9.9.9"]);
     runGit(appRoot, ["push", "-u", "origin", "main"]);
@@ -77,6 +82,11 @@ async function main() {
     assert(healthy.assets.artifact_newer_than_app_head === true, "healthy fixture artifact was not fresh enough");
 
     writeFileSync(path.join(appRoot, "package.json"), `${JSON.stringify({ version: "9.9.10" }, null, 2)}\n`, "utf8");
+    writeFileSync(
+      path.join(appRoot, "version.json"),
+      `${JSON.stringify({ schema_version: 1, version: "9.9.10", data_contract_version: 3 }, null, 2)}\n`,
+      "utf8",
+    );
     commitAll(appRoot, "bump without tag");
     runGit(appRoot, ["push", "origin", "main"]);
     const missingTag = await build(appRoot, dataRoot);

@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { atomicWriteJson } from "./concurrency.js";
+
 export const RELEASE_MANIFEST_VERSION = "release_manifest_v1";
 export const RELEASE_MANIFEST_STATUS_RELATIVE_PATH = ".dino/state/release_manifest_status.json";
 
@@ -45,6 +47,8 @@ export type ReleaseManifestReport = {
   data_root: string;
   app_root: string;
   package_version: string | null;
+  authoritative_version: string | null;
+  version_aligned: boolean;
   expected_tag: string | null;
   app_git: GitSnapshot;
   data_git: GitSnapshot;
@@ -69,6 +73,10 @@ type BuildOptions = {
 };
 
 type PackageJson = {
+  version?: unknown;
+};
+
+type VersionManifestJson = {
   version?: unknown;
 };
 
@@ -218,15 +226,21 @@ export async function buildReleaseManifestReport(
 ): Promise<ReleaseManifestReport> {
   const appRoot = path.resolve(options.appRoot ?? process.cwd());
   const packageJson = await readJsonIfExists<PackageJson>(path.join(appRoot, "package.json"));
+  const versionManifest = await readJsonIfExists<VersionManifestJson>(path.join(appRoot, "version.json"));
   const packageVersion = typeof packageJson?.version === "string" && packageJson.version.trim() ? packageJson.version.trim() : null;
-  const expectedTag = packageVersion ? `v${packageVersion}` : null;
+  const authoritativeVersion =
+    typeof versionManifest?.version === "string" && versionManifest.version.trim() ? versionManifest.version.trim() : null;
+  const versionAligned = Boolean(packageVersion && authoritativeVersion && packageVersion === authoritativeVersion);
+  const expectedTag = authoritativeVersion ? `v${authoritativeVersion}` : null;
   const [appGit, dataGit] = await Promise.all([gitSnapshot(appRoot), gitSnapshot(dataRoot)]);
   const tagTarget = expectedTag ? await gitRequired(appRoot, ["rev-parse", expectedTag]) : null;
   const assets = await releaseAssets(appRoot, appGit.commit_date);
   const blockers: string[] = [];
   const warnings: string[] = [];
 
+  if (!authoritativeVersion) blockers.push("version_manifest_missing");
   if (!packageVersion) blockers.push("package_version_missing");
+  if (packageVersion && authoritativeVersion && !versionAligned) blockers.push("package_version_manifest_mismatch");
   if (!appGit.head) blockers.push("app_head_missing");
   if (!dataGit.head) blockers.push("data_head_missing");
   if (appGit.head_matches_upstream === false) blockers.push("app_head_not_pushed_to_upstream");
@@ -253,6 +267,8 @@ export async function buildReleaseManifestReport(
     data_root: path.resolve(dataRoot),
     app_root: appRoot,
     package_version: packageVersion,
+    authoritative_version: authoritativeVersion,
+    version_aligned: versionAligned,
     expected_tag: expectedTag,
     app_git: appGit,
     data_git: dataGit,
@@ -278,7 +294,6 @@ export async function buildAndWriteReleaseManifestReport(
 ): Promise<{ report: ReleaseManifestReport; statusPath: string }> {
   const report = await buildReleaseManifestReport(dataRoot, options);
   const statusPath = getReleaseManifestStatusPath(dataRoot);
-  await fs.mkdir(path.dirname(statusPath), { recursive: true });
-  await fs.writeFile(statusPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await atomicWriteJson(statusPath, report);
   return { report, statusPath };
 }

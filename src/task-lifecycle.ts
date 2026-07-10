@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson, atomicWriteText } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 
 export const TASK_LIFECYCLE_VERSION = "task_lifecycle_v1";
@@ -167,8 +168,7 @@ async function exists(dataRoot: string, vaultPath: string | null): Promise<boole
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await atomicWriteJson(filePath, value);
 }
 
 function taskIdFromPath(vaultPath: string): string {
@@ -425,7 +425,12 @@ export async function buildAndWriteTaskLifecycleReport(
   const statusPath = getTaskLifecycleStatusPath(dataRoot);
   const groundingPath = getTaskFinishGroundingPath(dataRoot);
   await writeJson(statusPath, report);
-  await fs.mkdir(path.dirname(groundingPath), { recursive: true });
-  await fs.writeFile(groundingPath, `${report.grounding_records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
+  await atomicWriteText(
+    groundingPath,
+    `${report.grounding_records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+    async (candidatePath) => {
+      for (const line of (await fs.readFile(candidatePath, "utf8")).split(/\r?\n/).filter(Boolean)) JSON.parse(line);
+    },
+  );
   return { report, statusPath, groundingPath };
 }

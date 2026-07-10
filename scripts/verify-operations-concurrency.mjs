@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -73,7 +74,7 @@ await buildAndWriteOperationsIndex(dataRoot);
 await buildAndWriteSqliteShards(dataRoot);
 
 async function connectClient(index) {
-  const client = new Client({ name: `dinobrain-concurrency-${index}`, version: "2.2.1" });
+  const client = new Client({ name: `dinobrain-concurrency-${index}`, version: DINOBRAIN_VERSION });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],

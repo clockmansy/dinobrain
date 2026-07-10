@@ -20,8 +20,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$package = Get-Content (Join-Path $root "package.json") -Raw | ConvertFrom-Json
-if ([string]::IsNullOrWhiteSpace($Tag)) { $Tag = "v$($package.version)" }
+$versionManifest = Get-Content (Join-Path $root "version.json") -Raw | ConvertFrom-Json
+$releaseVersion = [string]$versionManifest.version
+if ([string]::IsNullOrWhiteSpace($Tag)) { $Tag = "v$releaseVersion" }
 if ([string]::IsNullOrWhiteSpace($Name)) { $Name = "DinoBrain $Tag" }
 if ([string]::IsNullOrWhiteSpace($TargetCommitish)) {
   $TargetCommitish = (& git -C $root rev-parse HEAD)
@@ -38,7 +39,7 @@ if ([string]::IsNullOrWhiteSpace($Token) -and -not $SkipUpload) {
 }
 
 if (-not $SkipBuild) {
-  & (Join-Path $PSScriptRoot "build-windows-installer.ps1") -AppRef $InstallerAppRef -DataRef $DataRef -SetupVersion ([string]$package.version)
+  & (Join-Path $PSScriptRoot "build-windows-installer.ps1") -AppRef $InstallerAppRef -DataRef $DataRef -SetupVersion $releaseVersion
   if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
 }
 
@@ -155,7 +156,7 @@ Full uninstall:
 $assetPaths = @()
 if ([string]::IsNullOrWhiteSpace($AssetPath)) {
   $installerPath = Join-Path $root "artifacts\DinoBrainSetup.exe"
-  $releasePackage = New-DinoBrainReleasePackage -InstallerPath $installerPath -PackageVersion ([string]$package.version)
+  $releasePackage = New-DinoBrainReleasePackage -InstallerPath $installerPath -PackageVersion $releaseVersion
   $assetPaths += $releasePackage.ZipPath
   $assetPaths += $releasePackage.ShaPath
   Write-Host "Packaged release ZIP: $($releasePackage.ZipPath)"

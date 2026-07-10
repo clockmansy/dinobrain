@@ -1,4 +1,6 @@
-export const DINOBRAIN_OS_VERSION = "2.2.1";
+import { DINOBRAIN_VERSION } from "./version.js";
+
+export const DINOBRAIN_OS_VERSION = DINOBRAIN_VERSION;
 export const DINOBRAIN_OS_CONTRACT = "dinobrain_os_v2";
 
 export type GateLevel = "pass" | "warn" | "block";

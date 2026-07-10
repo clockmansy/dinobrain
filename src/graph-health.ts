@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { atomicWriteJson } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
 import { ensureWikiIndex, type WikiIndex } from "./wiki-index.js";
 
@@ -329,7 +330,6 @@ export async function buildAndWriteGraphHealth(
 ): Promise<{ health: GraphHealth; path: string }> {
   const health = await buildGraphHealth(dataRoot, options);
   const healthPath = getGraphHealthPath(dataRoot);
-  await fs.mkdir(path.dirname(healthPath), { recursive: true });
-  await fs.writeFile(healthPath, `${JSON.stringify(health, null, 2)}\n`, "utf8");
+  await atomicWriteJson(healthPath, health);
   return { health, path: healthPath };
 }
