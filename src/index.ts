@@ -554,6 +554,7 @@ function classifyPath(normalizedPath: string): PathClassification {
     "attachments/private/",
     ".dino/cache/",
     ".dino/tmp/",
+    ".dino/locks/",
     ".dino/events/",
   ];
   const blockedExact = new Set([".env", ".dino/secrets.json", ".dino/local.json"]);

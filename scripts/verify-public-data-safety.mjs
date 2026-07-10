@@ -120,7 +120,7 @@ const blockedPathRules = [
   { id: "raw_instance_path", pattern: /^50_Instances\/raw\// },
   { id: "private_attachment_path", pattern: /^attachments\/private\// },
   { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
-  { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp)\// },
+  { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks)\// },
   { id: "generated_index_path", pattern: /^\.dino\/index\// },
   { id: "operation_event_path", pattern: /^\.dino\/events\// },
   { id: "environment_file", pattern: /(^|\/)\.env(?:\.|$)/ },
