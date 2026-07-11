@@ -209,6 +209,96 @@ try {
   Rollback-DinoBrainInstallTransaction -Transaction $dirtyTransaction -ErrorRecord "expected dirty update refusal"
   Assert-Equal (Get-TreeManifest $dirtyApp) $dirtyBefore "dirty app target changed despite fail-closed staging"
 
+  $networkBefore = Get-TreeManifest $appTarget
+  $networkBlocked = $false
+  try {
+    Resolve-DinoBrainImmutableRef -Name "network-failure" -RepoUrl (Join-Path $temp "missing-origin.git") -Ref "main" | Out-Null
+  } catch {
+    $networkBlocked = $true
+  }
+  if (-not $networkBlocked) { throw "unreachable remote did not fail before mutation" }
+  Assert-Equal (Get-TreeManifest $appTarget) $networkBefore "network failure changed the installed app"
+
+  $buildFailureRoot = Join-Path $temp "build-failure"
+  $buildFailureApp = Join-Path $buildFailureRoot "dinobrain"
+  $buildFailureData = Join-Path $buildFailureRoot "dinobrain-data"
+  New-Item -ItemType Directory -Force -Path $buildFailureRoot | Out-Null
+  Invoke-TestGit -WorkingDirectory $buildFailureRoot -Arguments @("clone", $appRemote.Origin, $buildFailureApp)
+  Invoke-TestGit -WorkingDirectory $buildFailureRoot -Arguments @("clone", $dataRemote.Origin, $buildFailureData)
+  $buildFailureConfig = Join-Path $temp "build-failure-user\config.toml"
+  Write-TestText -Path $buildFailureConfig -Text "preserve-on-build-failure=true`n"
+  $buildFailureAppBefore = Get-TreeManifest $buildFailureApp
+  $buildFailureDataBefore = Get-TreeManifest $buildFailureData
+  $buildFailureConfigBefore = [System.IO.File]::ReadAllText($buildFailureConfig)
+  $buildAppResolution = Resolve-DinoBrainImmutableRef -Name "app" -RepoUrl $appRemote.Origin -Ref "main"
+  $buildDataResolution = Resolve-DinoBrainImmutableRef -Name "data" -RepoUrl $dataRemote.Origin -Ref "main"
+  $buildTransaction = New-DinoBrainInstallTransaction -InstallRoot $buildFailureRoot -AppPath $buildFailureApp -VaultPath $buildFailureData -AppResolution $buildAppResolution -DataResolution $buildDataResolution
+  Prepare-DinoBrainRepoStage -Name "app" -RepoUrl $appRemote.Origin -TargetDir $buildFailureApp -StageDir $buildTransaction.StageAppPath -RequestedRef "main" -ResolvedCommit $buildAppResolution.resolved_commit
+  Prepare-DinoBrainRepoStage -Name "data" -RepoUrl $dataRemote.Origin -TargetDir $buildFailureData -StageDir $buildTransaction.StageDataPath -RequestedRef "main" -ResolvedCommit $buildDataResolution.resolved_commit
+  Save-DinoBrainInstallSnapshot -Transaction $buildTransaction -TargetPath $buildFailureConfig
+  $oldFailurePoint = $env:DINOBRAIN_INSTALL_TEST_FAILURE_POINT
+  $buildFailureObserved = $false
+  try {
+    $env:DINOBRAIN_INSTALL_TEST_FAILURE_POINT = "after_stage_build"
+    Invoke-DinoBrainInstallFailurePoint -Name "after_stage_build"
+  } catch {
+    $buildFailureObserved = $true
+    Rollback-DinoBrainInstallTransaction -Transaction $buildTransaction -ErrorRecord $_
+  } finally {
+    if ($null -eq $oldFailurePoint) { Remove-Item Env:\DINOBRAIN_INSTALL_TEST_FAILURE_POINT -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_INSTALL_TEST_FAILURE_POINT = $oldFailurePoint }
+  }
+  if (-not $buildFailureObserved) { throw "staged build interruption was not injected" }
+  Assert-Equal (Get-TreeManifest $buildFailureApp) $buildFailureAppBefore "build failure changed app bytes"
+  Assert-Equal (Get-TreeManifest $buildFailureData) $buildFailureDataBefore "build failure changed data bytes"
+  Assert-Equal ([System.IO.File]::ReadAllText($buildFailureConfig)) $buildFailureConfigBefore "build failure changed config bytes"
+
+  $script:NoGitCommit = "e" * 40
+  $script:NoGitArchiveSource = Join-Path $temp "no-git-archive-source"
+  Write-TestText -Path (Join-Path $script:NoGitArchiveSource "archive.txt") -Text "immutable archive fixture`n"
+  function Test-Command {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($Name -eq "git") { return $false }
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1)
+  }
+  function Invoke-RestMethod {
+    param([string]$Uri, [hashtable]$Headers)
+    $null = $Uri
+    $null = $Headers
+    return [pscustomobject]@{ sha = $script:NoGitCommit }
+  }
+  function Install-GitHubArchive {
+    param([string]$Name, [string]$RepoUrl, [string]$Ref, [string]$TargetDir, [string]$Token = "")
+    $null = $Name
+    $null = $RepoUrl
+    $null = $Ref
+    $null = $Token
+    Copy-DinoBrainDirectoryTree -SourcePath $script:NoGitArchiveSource -DestinationPath $TargetDir
+  }
+  $noGitAppResolution = Resolve-DinoBrainImmutableRef -Name "dinobrain" -RepoUrl "https://github.com/clockmansy/dinobrain.git" -Ref "main" -AllowNoGit
+  $noGitDataResolution = Resolve-DinoBrainImmutableRef -Name "dinobrain-data" -RepoUrl "https://github.com/clockmansy/dinobrain-data.git" -Ref "main" -AllowNoGit
+  if ($noGitAppResolution.full_equivalence -or $noGitDataResolution.full_equivalence) { throw "no-Git resolution was counted as full equivalence" }
+  if ($noGitAppResolution.resolution -ne "github_api_archive") { throw "no-Git resolution mode was not explicit" }
+  $noGitRoot = Join-Path $temp "no-git-install"
+  $noGitApp = Join-Path $noGitRoot "dinobrain"
+  $noGitData = Join-Path $noGitRoot "dinobrain-data"
+  $noGitTransaction = New-DinoBrainInstallTransaction -InstallRoot $noGitRoot -AppPath $noGitApp -VaultPath $noGitData -AppResolution $noGitAppResolution -DataResolution $noGitDataResolution
+  Prepare-DinoBrainRepoStage -Name "dinobrain" -RepoUrl "https://github.com/clockmansy/dinobrain.git" -TargetDir $noGitApp -StageDir $noGitTransaction.StageAppPath -RequestedRef "main" -ResolvedCommit $noGitAppResolution.resolved_commit -AllowNoGit
+  Prepare-DinoBrainRepoStage -Name "dinobrain-data" -RepoUrl "https://github.com/clockmansy/dinobrain-data.git" -TargetDir $noGitData -StageDir $noGitTransaction.StageDataPath -RequestedRef "main" -ResolvedCommit $noGitDataResolution.resolved_commit -AllowNoGit
+  $noGitTransaction.StageVerified = $true
+  Promote-DinoBrainInstallTransaction -Transaction $noGitTransaction
+  Complete-DinoBrainInstallTransaction -Transaction $noGitTransaction
+  $noGitResult = Get-Content -LiteralPath $noGitTransaction.ResultPath -Raw | ConvertFrom-Json
+  if ($noGitResult.full_equivalence) { throw "no-Git archive install result was counted as full equivalence" }
+  $noGitUpdateBlocked = $false
+  $noGitSecond = New-DinoBrainInstallTransaction -InstallRoot $noGitRoot -AppPath $noGitApp -VaultPath $noGitData -AppResolution $noGitAppResolution -DataResolution $noGitDataResolution
+  try {
+    Prepare-DinoBrainRepoStage -Name "dinobrain" -RepoUrl "https://github.com/clockmansy/dinobrain.git" -TargetDir $noGitApp -StageDir $noGitSecond.StageAppPath -RequestedRef "main" -ResolvedCommit $noGitAppResolution.resolved_commit -AllowNoGit
+  } catch {
+    $noGitUpdateBlocked = $_.Exception.Message -match "fresh-install only"
+  }
+  if (-not $noGitUpdateBlocked) { throw "no-Git archive path allowed an unsafe existing-target update" }
+  Rollback-DinoBrainInstallTransaction -Transaction $noGitSecond -ErrorRecord "expected no-Git update refusal"
+
   [pscustomobject]@{
     ok = $true
     rollback_exact = $true
@@ -218,6 +308,11 @@ try {
     new_install_complete = $true
     interrupted_recovery_exact = $true
     concurrent_installer_blocked = $true
+    network_failure_pre_mutation = $true
+    staged_build_failure_rollback = $true
+    config_interruption_recovery = $true
+    no_git_degraded_not_equivalent = $true
+    no_git_update_fail_closed = $true
     app_commit = $frozenResolution.resolved_commit
     moved_branch_commit = $newCommit
   } | ConvertTo-Json -Depth 5

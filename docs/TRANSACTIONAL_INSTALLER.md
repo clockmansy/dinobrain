@@ -96,11 +96,19 @@ npm run uninstall:verify
 ```
 
 The transaction verifier covers exact rollback, dirty-data preservation, moving
-ref freezing, dirty-app refusal, abrupt-rename recovery, and concurrent-install
+ref freezing, dirty-app refusal, network/build/config interruption containment,
+abrupt-rename recovery, no-Git degraded non-equivalence, and concurrent-install
 locking. The isolated matrix performs clean install, reinstall, update, an
 after-config failure with byte-exact rollback, and normal uninstall. It also
 reports elapsed time and peak working set per install phase without retaining
 the full child-process output in memory.
+
+`DinoBrain Recovery Equivalence Proof.cmd` is the external layer above these
+fixtures. It validates the real install result and encrypted restore receipt on
+the target PC, binds fresh Codex and Claude direct MCP proofs to matching live
+pre-response events, runs capability checks sequentially, and emits a signed
+public-safe evidence record. The Ed25519 private key and raw command logs never
+enter the data repository.
 
 These local proofs do not replace the external clean-Windows Codex and Claude
 live-client evidence required by HG-11.

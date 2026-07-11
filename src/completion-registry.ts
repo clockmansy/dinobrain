@@ -157,6 +157,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("installer:verify:claude", ["HG-02", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:native-result", ["HG-11"]),
   command("installer:verify:transaction", ["HG-10", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("clean-machine:verify", ["HG-01", "HG-02", "HG-09", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:matrix", ["HG-11"], { timeout_ms: 1_200_000 }),
   command("uninstall:verify", ["HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   ...[1, 2, 3].map((run) =>

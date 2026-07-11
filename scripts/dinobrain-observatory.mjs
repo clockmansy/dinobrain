@@ -22,10 +22,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-evidence-graph-v1";
+const observatoryVersion = "2026-07-11-evidence-graph-v2";
 const execFileAsync = promisify(execFile);
-const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 2000);
-const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 2000;
+const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 5000);
+const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 5000;
 const configuredGenerationVerifyTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_GENERATION_VERIFY_TTL_MS ?? 30_000);
 const generationVerifyTtlMs = Number.isFinite(configuredGenerationVerifyTtlMs)
   ? Math.max(1_000, configuredGenerationVerifyTtlMs)

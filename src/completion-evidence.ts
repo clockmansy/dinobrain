@@ -23,6 +23,7 @@ import {
   CURRENT_COMPLETION_AUDIT_POINTER_VERSION,
   type CompletionAuditPointer,
 } from "./readiness.js";
+import { validateCleanMachineEquivalenceEvidenceFile } from "./clean-machine-equivalence.js";
 
 const execFileAsync = promisify(execFile);
 const COMPLETION_AUDIT_VERSION = "completion_audit_v1";
@@ -774,6 +775,14 @@ export async function runCompletionAudit(options: CompletionAuditOptions): Promi
       entry.fresh = fresh;
       entry.status = accepted && fresh ? "PASS" : "FAIL";
       entry.reason = !accepted ? "external_evidence_status_not_accepted" : !fresh ? "external_evidence_stale" : null;
+      if (entry.status === "PASS" && spec.id === "clean_machine_equivalence") {
+        const validation = await validateCleanMachineEquivalenceEvidenceFile(path.resolve(suppliedPath));
+        if (!validation.ok) {
+          entry.status = "FAIL";
+          entry.fresh = false;
+          entry.reason = `clean_machine_evidence_invalid:${validation.errors.slice(0, 8).join("|")}`;
+        }
+      }
     }
     artifactEntries.push(entry);
   }

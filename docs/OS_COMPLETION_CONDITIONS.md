@@ -489,6 +489,7 @@ the current-vault artifacts named above.
 | Claude install | `npm run installer:verify:claude` | HG-02/HG-11 Claude settings and MCP registration fixture |
 | Native/result contract | `npm run installer:verify:native-result` | HG-11 child exit capture and GUI transaction-result enforcement |
 | Installer transaction | `npm run installer:verify:transaction` | HG-10/HG-11 immutable refs, rollback, interruption recovery, and install locking |
+| Recovery evidence | `npm run clean-machine:verify` | HG-01/HG-02/HG-09/HG-11 signed clean-machine bundle and anti-forgery checks |
 | Isolated install matrix | `npm run installer:verify:matrix` | HG-11 clean/reinstall/update/failure/uninstall fixture; external both-client proof still required |
 | Uninstall | `npm run uninstall:verify` | HG-11 uninstall/purge evidence |
 | Final aggregate | `npm run verify:goal` | HG-12; run last and only after all rows above pass |
@@ -584,6 +585,7 @@ $commands = @(
   'npm run installer:verify:claude',
   'npm run installer:verify:native-result',
   'npm run installer:verify:transaction',
+  'npm run clean-machine:verify',
   'npm run installer:verify:matrix',
   'npm run uninstall:verify'
 )

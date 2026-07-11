@@ -19,6 +19,7 @@ try {
   $toolsDir = Join-Path $temp "tools"
   $nodeRoot = Join-Path $toolsDir "node-v24.18.0-win-x64"
   $identityDir = Join-Path $temp "identity"
+  $proofDir = Join-Path $temp "proofs"
   $privateBackupDir = Join-Path $temp "private-backups"
   $recoveryKeyPath = Join-Path $temp "private-backup.key"
   $codexDir = Join-Path $temp ".codex"
@@ -29,18 +30,19 @@ try {
   $installerStateRoot = Join-Path $installRoot ".dinobrain-installer"
   $installerResultPath = Join-Path $installRoot "dinobrain-install-result.json"
 
-  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $identityDir, $privateBackupDir, $codexDir, $managedHookDir, $installerStateRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path $appDir, $dataDir, $nodeRoot, $identityDir, $proofDir, $privateBackupDir, $codexDir, $managedHookDir, $installerStateRoot | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $appDir "app.txt"), "app`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $dataDir "data.txt"), "data`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $nodeRoot "node.exe"), "node`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $identityDir "client-mcp-proof-hmac.key"), "test`n", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText((Join-Path $proofDir "clean-machine-proof.json"), "{}`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $privateBackupDir "private-backup.dinobrain"), "encrypted-test`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText($recoveryKeyPath, "recovery-key-test`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText((Join-Path $installerStateRoot "install.lock"), "transaction-state`n", [System.Text.UTF8Encoding]::new($false))
   [System.IO.File]::WriteAllText($installerResultPath, "{`"status`":`"complete`"}`n", [System.Text.UTF8Encoding]::new($false))
 
   foreach ($launcherRoot in @($installRoot, $appDir)) {
-    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Codex MCP Proof.cmd", "DinoBrain Claude MCP Proof.cmd", "DinoBrain Private Backup.cmd", "DinoBrain Private Restore.cmd", "DinoBrain Uninstall Everything.cmd")) {
+    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Codex MCP Proof.cmd", "DinoBrain Claude MCP Proof.cmd", "DinoBrain Recovery Equivalence Proof.cmd", "DinoBrain Private Backup.cmd", "DinoBrain Private Restore.cmd", "DinoBrain Uninstall Everything.cmd")) {
       [System.IO.File]::WriteAllText((Join-Path $launcherRoot $launcherName), "@echo off`r`n", [System.Text.UTF8Encoding]::new($false))
     }
   }
@@ -120,6 +122,7 @@ statusMessage = "Loading DinoBrain context"
     -DataDir $dataDir `
     -ToolsDir $toolsDir `
     -IdentityDir $identityDir `
+    -ProofDir $proofDir `
     -PrivateBackupDir $privateBackupDir `
     -RecoveryKeyPath $recoveryKeyPath `
     -CodexConfigPath $configPath `
@@ -133,7 +136,7 @@ statusMessage = "Loading DinoBrain context"
     throw "uninstall.ps1 exited with $LASTEXITCODE"
   }
 
-  foreach ($removedPath in @($appDir, $dataDir, $nodeRoot, $toolsDir, $identityDir, $privateBackupDir, $recoveryKeyPath, $installerStateRoot, $installerResultPath, $installRoot)) {
+  foreach ($removedPath in @($appDir, $dataDir, $nodeRoot, $toolsDir, $identityDir, $proofDir, $privateBackupDir, $recoveryKeyPath, $installerStateRoot, $installerResultPath, $installRoot)) {
     if (Test-Path -LiteralPath $removedPath) {
       throw "Expected path to be removed: $removedPath"
     }

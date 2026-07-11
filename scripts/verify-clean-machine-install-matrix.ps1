@@ -165,6 +165,14 @@ try {
     "scripts/verify-installer-transaction.ps1",
     "scripts/verify-uninstall.ps1",
     "scripts/verify-clean-machine-install-matrix.ps1",
+    "scripts/start-clean-machine-equivalence-proof.ps1",
+    "scripts/start-dinobrain-observatory.ps1",
+    "scripts/dinobrain-observatory.mjs",
+    "scripts/verify-clean-machine-equivalence.mjs",
+    "src/clean-machine-equivalence.ts",
+    "src/live-pre-response-proof.ts",
+    "src/run-clean-machine-equivalence.ts",
+    "src/completion-evidence.ts",
     "uninstall.ps1"
   )
   foreach ($relativePath in $overlayPaths) {

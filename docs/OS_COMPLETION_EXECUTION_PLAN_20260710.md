@@ -934,6 +934,21 @@ case, interrupted network/build processes, or GitHub plus encrypted local-only
 restore on another machine. Those external rows must be imported as fresh
 evidence before DIST-02 or HG-11 can pass.
 
+**Implementation update (2026-07-11): the external proof runner and signed
+evidence contract are implemented; the real both-client run remains pending.**
+`DinoBrain Recovery Equivalence Proof.cmd` now creates one machine-local run,
+reuses each client's direct-MCP challenge prompt as its live pre-response proof,
+validates matching Context Pack hashes and ordered events, runs reviewed-memory,
+semantic retrieval, behavior, Observatory, scoped-sync, and installer fault
+checks sequentially, and signs the public-safe result with a local-only Ed25519
+key. Completion audit rejects unsigned, self-reported, tampered, foreign-restore,
+no-Git degraded, Codex-only, or missing-Claude evidence. The private restore
+launcher now writes the required local-only receipt automatically. Local fault
+regression covers pre-mutation network failure, staged-build rollback, config
+interruption recovery, and no-Git fresh-only degraded behavior. DIST-02 remains
+`NOT COMPLETE` until this runner returns `complete` on a clean Windows profile
+with both real clients and its scoped evidence is imported.
+
 #### REL-01: Immutable release parity
 
 **Hard gates:** HG-11, HG-12

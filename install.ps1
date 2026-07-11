@@ -519,6 +519,7 @@ function Get-DinoBrainInstallerLauncherNames {
     "DinoBrain Codex Live Proof.cmd",
     "DinoBrain Codex MCP Proof.cmd",
     "DinoBrain Claude MCP Proof.cmd",
+    "DinoBrain Recovery Equivalence Proof.cmd",
     "DinoBrain Private Backup.cmd",
     "DinoBrain Private Restore.cmd",
     "DinoBrain Uninstall Everything.cmd"
@@ -1902,6 +1903,41 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -
   return $launcherPaths
 }
 
+function New-DinoBrainCleanMachineProofLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot
+  )
+
+  $proofScript = Join-Path $AppPath "scripts\start-clean-machine-equivalence-proof.ps1"
+  if (-not (Test-Path -LiteralPath $proofScript)) {
+    Write-Warning "Recovery-equivalence proof script not found: $proofScript"
+    return @()
+  }
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  $installResultPath = Join-Path $InstallRoot "dinobrain-install-result.json"
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Recovery Equivalence Proof.cmd"),
+    (Join-Path $AppPath "DinoBrain Recovery Equivalence Proof.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -Mode both_clients -AppPath "$AppPath" -VaultPath "$VaultPath" -NodeExe "$nodeExe" -InstallResultPath "$installResultPath"
+"@
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Recovery-equivalence proof launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
 function Invoke-DinoBrainCodexManagedHookInstall {
   param(
     [Parameter(Mandatory = $true)][string]$AppPath,
@@ -2402,6 +2438,7 @@ if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig -and -not $c
 }
 $liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 $directMcpProofLaunchers = New-DinoBrainDirectMcpProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
+$cleanMachineProofLaunchers = New-DinoBrainCleanMachineProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $privateRecoveryLaunchers = New-DinoBrainPrivateRecoveryLaunchers -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -ManagedHookDir $CodexManagedHookDir -ClaudeCommand $ClaudeCommand
 
@@ -2479,6 +2516,9 @@ foreach ($launcher in $liveProofLaunchers) {
 }
 foreach ($launcher in $directMcpProofLaunchers) {
   Write-Host "Direct MCP proof launcher: $launcher"
+}
+foreach ($launcher in $cleanMachineProofLaunchers) {
+  Write-Host "Recovery-equivalence proof launcher: $launcher"
 }
 foreach ($launcher in $privateRecoveryLaunchers) {
   Write-Host "Private recovery launcher: $launcher"

@@ -76,6 +76,7 @@ npm run installer:verify:hooks
 npm run installer:verify:claude
 npm run installer:verify:native-result
 npm run installer:verify:transaction
+npm run clean-machine:verify
 npm run installer:verify:matrix
 npm run codex:hooks:managed
 npm run installer:win
@@ -221,10 +222,30 @@ immutable transaction result.
 
 `npm run installer:verify:transaction` proves immutable ref freezing, exact
 rollback, dirty-vault preservation, dirty-app refusal, abrupt interruption
-recovery, and single-installer locking. `npm run installer:verify:matrix` runs
+recovery, network/build/config failure containment, no-Git degraded refusal,
+and single-installer locking. `npm run clean-machine:verify` proves that a
+self-reported JSON file cannot satisfy clean-machine evidence: the bundle must
+carry a valid Ed25519 machine attestation, immutable Git identities, matching
+encrypted restore lineage, both real-client direct/live proof bindings, and all
+required capability receipts. `npm run installer:verify:matrix` runs
 real isolated clean install, reinstall, update, after-config rollback, and normal
 uninstall phases. It samples child-process-tree peak working set and does not
 retain full install logs in memory. See `docs/TRANSACTIONAL_INSTALLER.md`.
+
+On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
+and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one
+run ID, asks for one fresh challenge prompt in Codex and one in Claude Code, and
+uses each same prompt to prove both `UserPromptSubmit` delivery and direct MCP
+tool execution. It then runs the verification commands sequentially with output
+streamed to local-only files. A successful public-safe result is written under
+`60_Operations/clean-machine/`; raw logs, restore paths, and the private signing
+key stay under `%LOCALAPPDATA%\DinoBrain\proofs`.
+
+The installed Observatory launcher starts the server directly with portable
+Node, a 192 MiB old-space ceiling, and a 5-second server cache against the
+3-second browser poll. This avoids an idle npm parent and prevents every poll
+from rebuilding state. `/api/health` exposes cache loads, bytes read, and
+process memory so a high RSS watermark can be distinguished from live heap use.
 
 `npm run codex:hooks:managed` installs or repairs the trust-free managed Codex hook path through `C:\ProgramData\OpenAI\Codex\requirements.toml`. It may request administrator permission through UAC. After it runs, fully restart Codex and create a fresh workspace thread before counting live proof.
 

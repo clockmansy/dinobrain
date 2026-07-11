@@ -4,12 +4,13 @@ param(
   [string]$DataDir = "",
   [string]$NodeRoot = "",
   [int]$Port = 3847,
+  [ValidateRange(128, 1024)][int]$MaxOldSpaceMb = 192,
   [switch]$NoBrowser
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ExpectedObservatoryVersion = "2026-07-11-contextual-rag-v1"
+$ExpectedObservatoryVersion = "2026-07-11-evidence-graph-v2"
 
 function Get-PortOwnerProcess {
   param([Parameter(Mandatory = $true)][int]$LocalPort)
@@ -66,10 +67,12 @@ if ([string]::IsNullOrWhiteSpace($NodeRoot)) {
   $NodeRoot = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($NodeRoot))
 }
 
-$npmCmd = Join-Path $NodeRoot "npm.cmd"
-if (-not (Test-Path -LiteralPath $npmCmd)) {
-  throw "npm.cmd was not found: $npmCmd"
+$nodeExe = Join-Path $NodeRoot "node.exe"
+if (-not (Test-Path -LiteralPath $nodeExe)) {
+  throw "node.exe was not found: $nodeExe"
 }
+$observatoryScript = Join-Path $appRoot "scripts\dinobrain-observatory.mjs"
+if (-not (Test-Path -LiteralPath $observatoryScript)) { throw "Observatory script was not found: $observatoryScript" }
 
 if (-not (Test-Path -LiteralPath $DataDir)) {
   throw "DinoBrain data folder was not found: $DataDir"
@@ -114,7 +117,7 @@ try {
   }
   Push-Location $appRoot
   try {
-    & $npmCmd run observatory
+    & $nodeExe "--max-old-space-size=$MaxOldSpaceMb" "--max-semi-space-size=8" $observatoryScript "--port=$Port"
     if ($LASTEXITCODE -ne 0) {
       throw "DinoBrain Observatory exited with code $LASTEXITCODE"
     }

@@ -28,6 +28,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-client-mcp-proof.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-clean-machine-equivalence-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\install-codex-managed-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-backup.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-restore.ps1"), "# test`n")
@@ -97,6 +98,20 @@ try {
     }
     if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath) -or -not $text.Contains($nodeRoot)) {
       throw "Direct MCP proof launcher does not contain expected app/data/node paths: $launcher"
+    }
+  }
+
+  $cleanMachineProofLaunchers = @(New-DinoBrainCleanMachineProofLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
+  if ($cleanMachineProofLaunchers.Count -ne 2) {
+    throw "Expected 2 recovery-equivalence proof launchers, got $($cleanMachineProofLaunchers.Count)"
+  }
+  foreach ($launcher in $cleanMachineProofLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "start-clean-machine-equivalence-proof\.ps1" -or $text -notmatch " -Mode both_clients") {
+      throw "Recovery-equivalence proof launcher is incomplete: $launcher"
+    }
+    if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath) -or -not $text.Contains($nodeRoot)) {
+      throw "Recovery-equivalence launcher does not contain expected app/data/node paths: $launcher"
     }
   }
 

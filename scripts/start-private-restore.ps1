@@ -6,6 +6,7 @@ param(
   [Parameter(Mandatory = $true)][string]$NodeExe,
   [string]$KeyFile = "",
   [string]$ArchivePath = "",
+  [string]$ReceiptPath = "",
   [ValidateRange(1, 3650)][int]$MaxAgeDays = 90,
   [switch]$IncludeUserConfig,
   [switch]$OverwritePrivate,
@@ -38,8 +39,17 @@ if ([string]::IsNullOrWhiteSpace($KeyFile) -or -not (Test-Path -LiteralPath $Key
 }
 $archive = [System.IO.Path]::GetFullPath($ArchivePath)
 $key = [System.IO.Path]::GetFullPath($KeyFile)
+if ([string]::IsNullOrWhiteSpace($ReceiptPath)) {
+  if ($env:LOCALAPPDATA) {
+    $ReceiptPath = Join-Path $env:LOCALAPPDATA "DinoBrain\proofs\private-restore\latest.json"
+  } else {
+    $ReceiptPath = Join-Path $HOME ".local\state\dinobrain\proofs\private-restore\latest.json"
+  }
+}
+$receipt = [System.IO.Path]::GetFullPath($ReceiptPath)
 if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Encrypted backup not found: $archive" }
 if (-not (Test-Path -LiteralPath $key -PathType Leaf)) { throw "Recovery key not found: $key" }
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $receipt) | Out-Null
 
 & $node $runner inspect --archive $archive
 if ($LASTEXITCODE -ne 0) { throw "Backup inspection failed with exit code $LASTEXITCODE." }
@@ -58,7 +68,8 @@ $arguments = @(
   "--data-root", $vault,
   "--archive", $archive,
   "--key-file", $key,
-  "--max-age-days", [string]$MaxAgeDays
+  "--max-age-days", [string]$MaxAgeDays,
+  "--receipt", $receipt
 )
 if ($IncludeUserConfig) { $arguments += "--include-user-config" }
 if ($OverwritePrivate) { $arguments += "--overwrite-private" }
@@ -66,3 +77,4 @@ if ($OverwritePrivate) { $arguments += "--overwrite-private" }
 if ($LASTEXITCODE -ne 0) { throw "Private restore failed with exit code $LASTEXITCODE." }
 
 Write-Host "Encrypted private restore completed. Restart Codex and Claude Code before using restored configuration."
+Write-Host "Local restore receipt: $receipt"
