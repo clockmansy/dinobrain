@@ -127,6 +127,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("session:verify", ["HG-03", "HG-06", "HG-09"]),
   command("safety:classifier:verify", ["HG-09", "HG-10"]),
   command("safety:task-sync:verify", ["HG-07", "HG-09", "HG-12"]),
+  command("backup:private:verify", ["HG-09", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("safety:public-data:check", ["HG-09"]),
   command("hooks:data:verify", ["HG-09"]),
   command("verify:os", ["HG-01", "HG-02", "HG-03", "HG-04", "HG-05", "HG-06", "HG-07", "HG-08", "HG-09"], {
@@ -388,6 +389,14 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     relative_path: ".dino/index/sqlite/operations.sqlite",
     kind: "sqlite",
     gates: ["HG-10"],
+  },
+  {
+    id: "encrypted_restore_status",
+    relative_path: ".dino/state/encrypted_restore_status.json",
+    kind: "json",
+    gates: ["HG-09", "HG-11"],
+    accepted_statuses: ["healthy"],
+    freshness_ms: 7 * DAY_MS,
   },
   {
     id: "release_manifest",

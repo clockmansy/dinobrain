@@ -290,6 +290,8 @@ function Remove-DinoBrainLaunchers {
     "DinoBrain Codex Live Proof.cmd",
     "DinoBrain Codex MCP Proof.cmd",
     "DinoBrain Claude MCP Proof.cmd",
+    "DinoBrain Private Backup.cmd",
+    "DinoBrain Private Restore.cmd",
     "DinoBrain Uninstall Everything.cmd"
   )
   $launcherRoots = @($InstallRootPath, $AppPath)

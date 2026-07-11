@@ -765,6 +765,25 @@ SAFE-02 acceptance result.
 and required local-only state; wrong key, truncated archive, and stale backup
 fail visibly.
 
+**Implemented 2026-07-11:** archive format `dinobrain_private_backup_v1` now
+streams a hashed private inventory through AES-256-GCM with scrypt-derived keys.
+The recovery key is generated outside app, vault, and archive roots; public
+evidence contains only hashes, counts, algorithm identity, and resource bounds.
+Restore decrypts into isolated staging, authenticates the complete archive,
+checks source Git identity, age, path scope, symlinks, file limits, and existing
+target conflicts, then promotes files without overwrite by default. Explicit
+private overwrite creates verified rollback copies and rolls back on failure.
+
+`DinoBrain Private Backup.cmd` and `DinoBrain Private Restore.cmd` are created
+in both install and app roots. `npm run backup:private:verify` proves an 8 MiB
+streaming round trip, wrong key, truncation, stale archive, source mismatch,
+target conflict, key-placement, path-escape, archive-placement, no-overwrite,
+CLI, and Git-clone-plus-private-restore scenarios. It writes the hash-only
+`.dino/state/encrypted_restore_status.json` completion artifact. SAFE-03
+implementation acceptance passes; HG-09/HG-11 remain `NOT_COMPLETE` until a
+real encrypted backup is stored with an independently held key and the external
+clean-machine recovery evidence is supplied.
+
 ### Phase 5 - Coherent Health, Graph, And Observatory (P1, 3-6 engineer-days)
 
 #### OBS-01: One readiness read model

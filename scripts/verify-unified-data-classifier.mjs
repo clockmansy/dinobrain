@@ -70,6 +70,8 @@ assert.equal(conditional.classification, "conditional");
 assert.equal(conditional.explicit_allowlist, true);
 
 assert.equal(classify("10_Conversations/raw/session.json", "{}\n").classification, "blocked");
+assert.equal(classify(".dino/restore-receipts/restore.json", "{}\n").classification, "blocked");
+assert.equal(classify(".dino/restore-staging/private.bin", Buffer.from([0x00])).classification, "blocked");
 const unclassified = classify("misc/unclassified.md", "unknown root\n");
 assert.equal(unclassified.classification, "blocked");
 assert.equal(unclassified.explicit_allowlist, false);
@@ -182,6 +184,7 @@ console.log(
         "secret_detection",
         "machine_local_detection",
         "raw_transcript_detection",
+        "private_restore_runtime_paths_blocked",
         "large_file_fail_closed",
         "unsupported_binary_fail_closed",
         "symlink_fail_closed",

@@ -29,6 +29,8 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-client-mcp-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\install-codex-managed-hook.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-backup.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-restore.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "uninstall.ps1"), "# test`n")
 
   $launchers = @(New-DinoBrainObservatoryLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
@@ -109,6 +111,23 @@ try {
     }
     if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath)) {
       throw "Managed hook launcher does not contain expected app/data paths: $launcher"
+    }
+  }
+
+  $privateRecoveryLaunchers = @(New-DinoBrainPrivateRecoveryLaunchers -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot)
+  if ($privateRecoveryLaunchers.Count -ne 4) {
+    throw "Expected 4 private recovery launchers, got $($privateRecoveryLaunchers.Count)"
+  }
+  foreach ($launcher in $privateRecoveryLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($launcher -match "Backup" -and ($text -notmatch "start-private-backup\.ps1" -or $text -notmatch "IncludeCredentials")) {
+      throw "Private backup launcher is incomplete: $launcher"
+    }
+    if ($launcher -match "Restore" -and ($text -notmatch "start-private-restore\.ps1" -or $text -notmatch "IncludeUserConfig")) {
+      throw "Private restore launcher is incomplete: $launcher"
+    }
+    if (-not $text.Contains($vaultPath) -or -not $text.Contains($nodeRoot)) {
+      throw "Private recovery launcher does not contain expected vault/node paths: $launcher"
     }
   }
 

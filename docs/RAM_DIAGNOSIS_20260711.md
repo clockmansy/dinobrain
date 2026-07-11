@@ -92,3 +92,25 @@ transport. Installer/update flows should continue to use their stale-MCP
 restart path, and a future supervisor should key one process by
 workspace/config/runtime identity and reap older generations after a health
 handoff.
+
+## SAFE-03 And Current Host Observation
+
+The SAFE-03 encrypted backup/restore verifier processed 8,388,789 plaintext
+bytes with 1 MiB streaming I/O and stayed below its 192 MiB RSS-delta limit.
+After the verifier, no additional long-lived Node process remained. This rules
+out the backup implementation as the source of sustained host pressure.
+
+At the later 2026-07-11 observation, Codex PID 28076 retained eight
+`dist/index.js` stdio children. They used about 1.10 GiB working set and 389 MiB
+private memory in total; Observatory was a ninth DinoBrain Node process at about
+191 MiB working set and 114 MiB private memory. The host still had about 12.9
+GiB free of 31.9 GiB, while Chrome, ChatGPT, and Discord were individually
+larger consumers than one DinoBrain process.
+
+An isolated EOF probe started the built MCP server and closed stdin; the process
+exited in about 0.4 seconds. Therefore the accumulating children are not stuck
+after a closed transport. Codex is retaining separate open stdio connections,
+including prior task/subagent generations. Rebuilding makes every older child
+stale, and `DinoBrain Codex Hook Approval.cmd` already reaps those stale MCP
+processes during the safe Codex restart flow. They must not be terminated in the
+middle of an active task because that breaks its MCP transport.

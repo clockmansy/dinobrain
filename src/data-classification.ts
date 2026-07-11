@@ -55,6 +55,7 @@ const BLOCKED_PATH_RULES: PathRule[] = [
   { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
   { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups|review-admissions)\// },
   { id: "task_sync_scope_path", pattern: /^\.dino\/sync-scopes\// },
+  { id: "private_restore_runtime_path", pattern: /^\.dino\/(?:restore-receipts|restore-staging)\// },
   { id: "generated_index_path", pattern: /^\.dino\/index\// },
   { id: "operation_event_path", pattern: /^\.dino\/events\// },
   { id: "private_behavior_recall_migration_path", pattern: /^\.dino\/migrations\/behavior-recall\// },

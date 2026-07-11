@@ -274,6 +274,33 @@ function hasLiveSemanticQueryEvidence(check) {
   return classifyLiveSemanticQueryBlocker(check) === null;
 }
 
+function hasPrivateBackupRestoreEvidence(check) {
+  const parsed = check.parsed;
+  const report = parsed?.report;
+  const scenarios = new Set(report?.scenarios ?? []);
+  const requiredScenarios = [
+    "authenticated_restore",
+    "wrong_key_blocked",
+    "truncated_archive_blocked",
+    "stale_backup_blocked",
+    "source_identity_mismatch_blocked",
+    "git_clone_plus_private_restore",
+  ];
+  return Boolean(
+    check.ok === true &&
+      parsed?.ok === true &&
+      report?.version === "encrypted_restore_status_v1" &&
+      report?.status === "healthy" &&
+      report?.cipher === "aes-256-gcm" &&
+      report?.kdf === "scrypt" &&
+      report?.resource_usage?.bounded_streaming === true &&
+      requiredScenarios.every((scenario) => scenarios.has(scenario)) &&
+      /^[a-f0-9]{64}$/i.test(report?.proof_hashes?.archive_sha256 ?? "") &&
+      /^[a-f0-9]{64}$/i.test(report?.proof_hashes?.inventory_sha256 ?? "") &&
+      /^[a-f0-9]{32}$/i.test(report?.proof_hashes?.key_id ?? ""),
+  );
+}
+
 function nextActionFor(requirementEvidence) {
   const blocker = requirementEvidence.find((item) => !item.ok)?.blocker;
   switch (blocker) {
@@ -332,6 +359,8 @@ function nextActionFor(requirementEvidence) {
       return "Run npm run verify:answer-quality and npm run status:answer-quality, then repair the memory-on/off generated-answer quality evidence before rerunning npm run verify:goal.";
     case "installer_new_pc_equivalence_failed":
       return "Run npm run installer:verify:version, npm run installer:verify:approval, npm run installer:verify:launchers, and npm run installer:verify:semantic-rag; repair installer drift, hook merge, launcher, or semantic RAG prewarm failures before rerunning npm run verify:goal.";
+    case "encrypted_private_restore_not_verified":
+      return "Run npm run backup:private:verify, inspect .dino/state/encrypted_restore_status.json, and repair any encryption, inventory, restore, or resource-bound failure before rerunning npm run verify:goal.";
     case "release_manifest_not_verified":
     case "release_manifest_unparsed_failure":
     case "release_manifest_not_healthy":
@@ -532,7 +561,7 @@ function main() {
     runCheck({
       id: "installer_launchers",
       description:
-        "Installer must create Observatory, hook diagnose, approval, managed-hook, live-proof, and uninstall launchers.",
+        "Installer must create Observatory, hook diagnose, approval, managed-hook, live-proof, private backup/restore, and uninstall launchers.",
       command: powershell,
       args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/verify-installer-observatory-launcher.ps1"],
     }),
@@ -653,6 +682,14 @@ function main() {
         "Automatic sync must bind a nonempty allowlist to task-owned hashes and review state, preserve dirty backlog, and expose durable retry state.",
       command: node,
       args: ["scripts/verify-task-scoped-sync.mjs"],
+    }),
+    runCheck({
+      id: "encrypted_private_backup_restore",
+      description:
+        "Private local-only data must round-trip through an authenticated, bounded-memory encrypted archive while wrong-key, truncation, stale, identity-mismatch, and conflict cases fail closed.",
+      command: node,
+      args: ["scripts/verify-private-backup-restore.mjs", "--write-status"],
+      timeoutMs: 180000,
     }),
     runCheck({
       id: "data_git_safety_hooks",
@@ -913,6 +950,14 @@ function main() {
       ok: byId.os_memory_growth_quality.ok === true,
       evidence: "os_memory_growth_quality",
       blocker: byId.os_memory_growth_quality.ok ? null : "os_verifier_failed",
+    },
+    {
+      requirement: "encrypted_local_only_backup_and_restore",
+      ok: hasPrivateBackupRestoreEvidence(byId.encrypted_private_backup_restore),
+      evidence: "encrypted_private_backup_restore + .dino/state/encrypted_restore_status.json",
+      blocker: hasPrivateBackupRestoreEvidence(byId.encrypted_private_backup_restore)
+        ? null
+        : "encrypted_private_restore_not_verified",
     },
     {
       requirement: "data_push_safety_guardrails",

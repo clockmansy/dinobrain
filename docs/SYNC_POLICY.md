@@ -1,7 +1,7 @@
 # DinoBrain Sync Policy
 
 Date: 2026-07-11
-Status: SAFE-01 unified classifier implemented; HG-09 cleanup and recovery pending
+Status: SAFE-01/02/03 controls implemented; HG-09 legacy cleanup and external recovery evidence pending
 
 ## Goal
 
@@ -68,6 +68,8 @@ These data types are local-only unless the plan is explicitly changed:
 - `.dino/index`
 - `.dino/events`
 - `.dino/sync-scopes`
+- `.dino/restore-receipts`
+- `.dino/restore-staging`
 - `.dino/migrations/behavior-recall`
 - `.dino/state/behavior_recall_evidence_migration.json`
 - `10_Conversations/raw`
@@ -121,6 +123,10 @@ Closed-loop push tests and private/encrypted backup workflows may explicitly set
 both flags to `1`; that opt-in is not the default public data posture.
 
 Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
+
+Local-only data is recovered through the separate authenticated archive defined
+in `docs/PRIVATE_BACKUP_RECOVERY.md`; it is never made syncable merely because a
+backup exists. Archives and recovery keys must remain outside the data repo.
 
 Behavior-recall migration maps are also local-only because they contain task and
 trace identities. Their reviewed public evidence is limited to hash-only

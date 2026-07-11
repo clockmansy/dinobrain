@@ -111,6 +111,12 @@ By default the Windows installer tracks the app and data repositories at `main` 
 
 Running the installer over the same install folder is supported when `dinobrain` and `dinobrain-data` are the Git checkouts created by DinoBrain. It updates those repos, rebuilds indexes, and refreshes client registrations. It refuses to overwrite existing non-git folders. Use `DinoBrain Uninstall Everything.cmd` or `.\uninstall.ps1 -Purge` only when you intentionally want to remove the app, data vault, portable Node runtime, launchers, and DinoBrain config backups.
 
+The installer also creates `DinoBrain Private Backup.cmd` and
+`DinoBrain Private Restore.cmd`. GitHub recovery restores reviewed public-safe
+memory; these launchers separately protect raw conversations, private files, and
+client configuration with authenticated encryption. Keep the recovery key on a
+different secure device. See `docs/PRIVATE_BACKUP_RECOVERY.md`.
+
 ## MCP Development
 
 The MCP server skeleton lives in `src/index.ts`.

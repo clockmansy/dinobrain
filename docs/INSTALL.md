@@ -30,6 +30,10 @@ After install, the installer creates a double-click launcher in both:
 <install-root>\dinobrain\DinoBrain Codex Live Proof.cmd
 <install-root>\DinoBrain Codex Managed Hook Admin.cmd
 <install-root>\dinobrain\DinoBrain Codex Managed Hook Admin.cmd
+<install-root>\DinoBrain Private Backup.cmd
+<install-root>\dinobrain\DinoBrain Private Backup.cmd
+<install-root>\DinoBrain Private Restore.cmd
+<install-root>\dinobrain\DinoBrain Private Restore.cmd
 ```
 
 Run either `DinoBrain Observatory.cmd` launcher to open the live Observatory at `http://127.0.0.1:3847/`. The page includes a live LLM Wiki graph view backed by the SQLite/JSON Wiki index, plus task, context pack, trace, and memory audit logs.
@@ -39,6 +43,14 @@ that a freshly restarted Codex Desktop session is dispatching the real
 `UserPromptSubmit` hook. It restarts stale Codex/MCP processes, guides the
 required `/hooks` trust step, copies a unique proof prompt, and watches
 `verify:codex-live` until the real `codex_desktop` preflight event appears.
+
+Run `DinoBrain Private Backup.cmd` to create an authenticated encrypted archive
+of local-only conversations, private sources, attachments, local event evidence,
+Codex/Claude user configuration, and credential files. The default archive is
+under `Documents\DinoBrain Backups`; the recovery key is created separately at
+`Documents\DinoBrain Recovery Key.txt`. Move a copy of that key to a different
+secure device. See `docs/PRIVATE_BACKUP_RECOVERY.md` before relying on it for
+new-PC recovery.
 
 ## Fresh Install
 
@@ -203,7 +215,8 @@ claude mcp add `
 16. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
 17. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
 18. Creates `DinoBrain Codex Live Proof.cmd` launchers that combine stale-process restart, hook trust guidance, a unique proof prompt, and live `codex_desktop` verification.
-19. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
+19. Creates `DinoBrain Private Backup.cmd` and `DinoBrain Private Restore.cmd` launchers for encrypted local-only recovery.
+20. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
 `hooks:data:verify` proves the data repo Git hook is configured and blocks unreviewed auto-generated accepted memories plus local-only event/index paths at commit/push time. This is the last safety line for stale MCP processes that were started before an update. `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
 

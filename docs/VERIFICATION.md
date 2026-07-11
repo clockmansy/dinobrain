@@ -53,6 +53,7 @@ npm run sources:rag:seed
 npm run session:verify
 npm run session:promote
 npm run safety:public-data
+npm run backup:private:verify
 npm run eval:context
 npm run rag:proof
 npm run rag:proof:verify
@@ -431,6 +432,21 @@ The fixture requires all of the following:
 The scope ledger itself is local-only and ignored by Git. A passing regression
 does not make the current real vault public-safe; `safety:public-data:check` and
 the encrypted restore evidence remain independent completion gates.
+
+### Encrypted Private Backup And Restore
+
+`npm run backup:private:verify` runs SAFE-03 in an isolated fixture. It creates
+an 8 MiB private payload, streams it through AES-256-GCM, restores it into a
+fresh Git clone, and verifies both private bytes and unchanged reviewed public
+memory. Wrong key, truncation, stale age, source Git mismatch, existing-target
+conflict, path escape, key placement inside protected roots, archive placement
+inside source roots, and accidental overwrite must all fail closed.
+
+The verifier enforces a 192 MiB RSS delta budget and writes a hash-only status
+artifact at `.dino/state/encrypted_restore_status.json`. This fixture proves the
+implementation, not possession of a real off-machine archive or recovery key.
+HG-09/HG-11 still require independently supplied encrypted restore and clean-PC
+evidence. See `docs/PRIVATE_BACKUP_RECOVERY.md`.
 
 ### RAG Source Anchor Seeding
 

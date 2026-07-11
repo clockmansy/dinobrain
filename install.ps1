@@ -1230,6 +1230,47 @@ function Start-DinoBrainHookApprovalLauncher {
   }
 }
 
+function New-DinoBrainPrivateRecoveryLaunchers {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)][string]$NodeRoot
+  )
+
+  $backupScript = Join-Path $AppPath "scripts\start-private-backup.ps1"
+  $restoreScript = Join-Path $AppPath "scripts\start-private-restore.ps1"
+  if (-not (Test-Path -LiteralPath $backupScript) -or -not (Test-Path -LiteralPath $restoreScript)) {
+    Write-Warning "Private backup/restore scripts were not found under $AppPath."
+    return @()
+  }
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  $launchers = @()
+  foreach ($basePath in @($InstallRoot, $AppPath)) {
+    $backupLauncher = Join-Path $basePath "DinoBrain Private Backup.cmd"
+    $restoreLauncher = Join-Path $basePath "DinoBrain Private Restore.cmd"
+    $backupContent = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$backupScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -NodeExe "$nodeExe" -IncludeUserConfig -IncludeCredentials
+"@
+    $restoreContent = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$restoreScript" -AppPath "$AppPath" -VaultPath "$VaultPath" -NodeExe "$nodeExe" -IncludeUserConfig
+"@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($pair in @(@($backupLauncher, $backupContent), @($restoreLauncher, $restoreContent))) {
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pair[0]) | Out-Null
+      [System.IO.File]::WriteAllText($pair[0], $pair[1], $utf8NoBom)
+      Write-Host "Private recovery launcher created: $($pair[0])"
+      $launchers += $pair[0]
+    }
+  }
+  return $launchers
+}
+
 function New-DinoBrainUninstallLauncher {
   param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
@@ -1525,6 +1566,7 @@ if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig -and -not $c
 }
 $liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 $directMcpProofLaunchers = New-DinoBrainDirectMcpProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
+$privateRecoveryLaunchers = New-DinoBrainPrivateRecoveryLaunchers -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -ManagedHookDir $CodexManagedHookDir -ClaudeCommand $ClaudeCommand
 
 $claudeCodeConfigured = $false
@@ -1570,6 +1612,9 @@ foreach ($launcher in $liveProofLaunchers) {
 }
 foreach ($launcher in $directMcpProofLaunchers) {
   Write-Host "Direct MCP proof launcher: $launcher"
+}
+foreach ($launcher in $privateRecoveryLaunchers) {
+  Write-Host "Private recovery launcher: $launcher"
 }
 foreach ($launcher in $uninstallLaunchers) {
   Write-Host "Uninstall launcher: $launcher"

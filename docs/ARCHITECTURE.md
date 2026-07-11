@@ -172,6 +172,18 @@ Durable task records store `data_root: "."` rather than a machine-local
 absolute path. Runtime responses and local diagnostics may still expose the
 resolved root, but pushed task evidence remains portable across computers.
 
+## Private Recovery Boundary
+
+GitHub stores reviewed, classifier-approved knowledge. Raw conversations,
+private sources, attachments, local events, credentials, and user client config
+use a separate authenticated encrypted archive. The archive is streamed so file
+size does not become process memory, and its public header contains no private
+paths. Restore authenticates into isolated staging before any target write,
+requires matching app/data Git identity, and refuses existing private files
+unless overwrite is explicit and rollback copies verify. Recovery keys,
+archives, staging, and receipts are local-only. See
+`docs/PRIVATE_BACKUP_RECOVERY.md`.
+
 ## Review Backpressure And Cold Boundary
 
 The review queue is bounded before candidate/review publication. One serialized
