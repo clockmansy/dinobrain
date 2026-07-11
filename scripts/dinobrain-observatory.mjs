@@ -13,12 +13,16 @@ import {
   STATUS_GENERATION_POINTER_RELATIVE_PATH,
 } from "../dist/status-generation.js";
 import { buildReadiness as buildCanonicalReadiness } from "../dist/readiness.js";
+import {
+  EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH,
+  readEvidenceGraphWindow,
+} from "../dist/evidence-graph.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-readiness-v2";
+const observatoryVersion = "2026-07-11-evidence-graph-v1";
 const execFileAsync = promisify(execFile);
 const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 2000);
 const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 2000;
@@ -385,12 +389,35 @@ function graphColor(node) {
     event: "#b99a69",
     trace: "#c7d2fe",
     memory_ref: "#f3e7c7",
+    lane: "#d9b44a",
+    source_snapshot: "#68b7a7",
+    external_source: "#68b7a7",
+    source_chunk: "#7fd1bd",
+    claim: "#f0c36a",
+    candidate: "#d6a15e",
+    correction: "#f0a83a",
+    review: "#d99a6c",
+    memory: "#efe0b8",
+    behavior_rule: "#ffe3a1",
+    memory_audit: "#c7d2fe",
+    audit: "#b7c2e2",
+    gate: "#df8a7d",
+    sync: "#65c6a7",
+    commit: "#8bd8be",
+    status: "#aab6a2",
+    provenance: "#9bc3c8",
+    lineage_generation: "#8fc7cf",
+    wiki_record: "#e6dcc2",
+    project_record: "#8ac7ff",
+    operations_record: "#d99a3d",
+    error_record: "#df8a7d",
   };
   return colors[node.type] ?? "#cfc4a6";
 }
 
 function normalizeGraphNode(node) {
   return {
+    ...node,
     id: String(node.id ?? ""),
     type: String(node.type ?? "node"),
     label: String(node.label ?? node.id ?? ""),
@@ -403,6 +430,7 @@ function normalizeGraphNode(node) {
 
 function normalizeGraphEdge(edge) {
   return {
+    ...edge,
     source: String(edge.from ?? edge.from_id ?? edge.source ?? ""),
     target: String(edge.to ?? edge.to_id ?? edge.target ?? ""),
     type: String(edge.type ?? edge.label ?? "edge"),
@@ -619,6 +647,29 @@ async function readJsonDir(relativeDir, limit = 50) {
       ),
     );
   return sorted.slice(0, limit);
+}
+
+async function readEvidenceGraph(options = {}) {
+  const canonicalPath = path.join(dataRoot, ...EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH.split("/"));
+  const resolved = await resolveObservablePath(canonicalPath);
+  if (resolved.managed && !resolved.filePath) return null;
+  const graph = await readEvidenceGraphWindow(dataRoot, {
+    databasePath: resolved.filePath,
+    focusId: options.focusId ?? null,
+    lane: options.lane ?? null,
+    lifecycleState: options.lifecycleState ?? null,
+    provenanceStatus: options.provenanceStatus ?? null,
+    edgeTypes: options.edgeTypes ?? [],
+    nodeLimit: graphWindowLimits.total_nodes,
+    edgeLimit: graphWindowLimits.total_edges,
+    focusDepth: 3,
+  });
+  if (!graph?.ok) return null;
+  return {
+    ...graph,
+    nodes: graph.nodes.map(normalizeGraphNode),
+    edges: graph.edges.map(normalizeGraphEdge),
+  };
 }
 
 async function readAuditLogs(limit = 50) {
@@ -1760,16 +1811,26 @@ async function getState() {
   return cachedResource("state", "state", buildState);
 }
 
-async function getGraph(existingState = null) {
+async function getGraph(existingState = null, options = {}) {
   const operationState = existingState ?? await getState();
-  const key = String(operationState?.summary?.generated_at ?? "state-missing");
+  const generation = await currentStatusGeneration();
+  const key = [
+    String(operationState?.summary?.generated_at ?? "state-missing"),
+    generation.pointer?.generation_id ?? generation.status,
+    options.focusId ?? "",
+    options.lane ?? "",
+    options.lifecycleState ?? "",
+    options.provenanceStatus ?? "",
+    ...(options.edgeTypes ?? []),
+  ].join(":");
   return cachedResource("graph", key, async () => {
-    const [graph, readiness] = await Promise.all([
-      readWikiGraph(),
+    const [evidenceGraph, readiness] = await Promise.all([
+      readEvidenceGraph(options),
       getReadiness(operationState),
     ]);
+    const graph = evidenceGraph ?? withActivityGraph(await readWikiGraph(), operationState);
     return {
-      ...withActivityGraph(graph, operationState),
+      ...graph,
       readiness: {
         version: readiness.version,
         parity_hash: readiness.parity_hash,
@@ -2023,7 +2084,7 @@ function html() {
       border: 1px solid rgba(238, 230, 210, .28);
       display: inline-block;
     }
-    #graph-search {
+    #graph-search, .graph-filter {
       width: min(220px, 34vw);
       min-width: 120px;
       height: 28px;
@@ -2034,6 +2095,18 @@ function html() {
       padding: 4px 8px;
       font: inherit;
     }
+    .graph-filter { width: auto; min-width: 112px; }
+    .graph-command {
+      height: 28px;
+      border: 1px solid #3b452f;
+      border-radius: 6px;
+      background: #111810;
+      color: var(--text);
+      padding: 4px 9px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .graph-command:hover { border-color: #d7a84f; color: #fff1c2; }
     .graph-wrap {
       position: relative;
       height: clamp(560px, 66vh, 760px);
@@ -2221,7 +2294,7 @@ function html() {
       .graph-head { align-items: flex-start; flex-direction: column; }
       .graph-meta { align-items: flex-start; flex-direction: column; white-space: normal; width: 100%; }
       .graph-legend { flex-wrap: wrap; }
-      #graph-search { width: 100%; }
+      #graph-search, .graph-filter { width: 100%; }
       .graph-wrap { height: clamp(420px, 62vh, 580px); min-height: 420px; }
       .details { grid-template-columns: 1fr; }
     }
@@ -2268,7 +2341,13 @@ function html() {
               <span class="legend-chip"><span class="legend-dot" style="background:#c7d2fe"></span>trace</span>
               <span class="legend-chip"><span class="legend-dot" style="background:#f3e7c7"></span>memory</span>
             </span>
+            <select id="graph-lane" class="graph-filter" title="Filter by operational lane"><option value="all">All lanes</option></select>
+            <select id="graph-relation" class="graph-filter" title="Filter by relation"><option value="all">All relations</option></select>
+            <select id="graph-lifecycle" class="graph-filter" title="Filter by lifecycle"><option value="all">All lifecycle</option></select>
+            <select id="graph-provenance" class="graph-filter" title="Filter by provenance"><option value="all">All provenance</option></select>
             <input id="graph-search" placeholder="Search">
+            <button id="graph-trace" class="graph-command" type="button" title="Trace selected node evidence">Trace</button>
+            <button id="graph-reset" class="graph-command" type="button" title="Reset graph filters">Reset</button>
           </div>
         </div>
         <div class="graph-wrap">
@@ -2398,12 +2477,20 @@ function html() {
     const graphStatsEl = document.getElementById("graph-stats");
     const graphFocusEl = document.getElementById("graph-focus");
     const graphSearchEl = document.getElementById("graph-search");
+    const graphLaneEl = document.getElementById("graph-lane");
+    const graphRelationEl = document.getElementById("graph-relation");
+    const graphLifecycleEl = document.getElementById("graph-lifecycle");
+    const graphProvenanceEl = document.getElementById("graph-provenance");
+    const graphTraceEl = document.getElementById("graph-trace");
+    const graphResetEl = document.getElementById("graph-reset");
     let graphNodes = [];
     let graphEdges = [];
     let graphSignature = "";
     let graphMouse = { x: -9999, y: -9999 };
     let graphSearch = "";
     let graphSelected = null;
+    let graphViewCustom = false;
+    let graphFetchInFlight = false;
     const formatTime = (value) => value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--";
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const compact = (value, max = 180) => {
@@ -2504,6 +2591,7 @@ function html() {
       return { width, height, dpr };
     }
     function graphRadius(node) {
+      if (node.type === "lane") return 10.2;
       if (node.type === "root") return 10.8;
       if (node.type === "activity_root") return 12.4;
       if (node.type === "active_task") return 8.9;
@@ -2516,6 +2604,9 @@ function html() {
       if (node.type === "tag") return 5.9;
       if (node.type === "kind") return 5.7;
       if (node.type === "record") return 5.1;
+      if (["source_chunk", "source_snapshot", "external_source", "claim"].includes(node.type)) return 5.7;
+      if (["candidate", "correction", "review", "memory", "behavior_rule"].includes(node.type)) return 5.9;
+      if (["audit", "memory_audit", "gate", "sync", "commit", "status"].includes(node.type)) return 5.2;
       return 4.2;
     }
     function graphNodeStroke(node, active) {
@@ -2532,12 +2623,20 @@ function html() {
       if (node.type === "tag") return "rgba(138, 216, 119, .78)";
       if (node.type === "folder") return "rgba(101, 212, 192, .78)";
       if (node.type === "kind") return "rgba(217, 154, 61, .78)";
+      if (node.lane === "blocked") return "rgba(239, 139, 124, .92)";
+      if (node.lane === "reviewer_pending") return "rgba(240, 168, 58, .88)";
+      if (node.lane === "verifier_pending") return "rgba(138, 199, 255, .82)";
+      if (node.lane === "main_pending") return "rgba(101, 198, 167, .84)";
       return "rgba(230, 220, 194, .38)";
     }
     function graphEdgeStyle(edge, active) {
+      const semanticEvidence = ["source_to_chunk", "chunk_to_claim", "correction_to_rule", "candidate_to_review", "predecessor_to_successor"];
+      const operationalEvidence = ["context_provided", "memory_declared_used", "memory_observed_used", "task_to_trace", "sync_to_commit"];
       if (active) {
-        if (edge.type === "used_memory") return { color: "rgba(243, 231, 199, .92)", width: 1.82, bead: true, moving: true };
+        if (edge.type === "used_memory" || edge.type === "memory_declared_used" || edge.type === "memory_observed_used") return { color: "rgba(243, 231, 199, .92)", width: 1.82, bead: true, moving: true };
         if (edge.type === "retrieves_memory") return { color: "rgba(138, 199, 255, .86)", width: 1.74, bead: true, moving: true };
+        if (semanticEvidence.includes(edge.type)) return { color: "rgba(127, 209, 189, .9)", width: 1.75, bead: true, moving: edge.type !== "candidate_to_review" };
+        if (operationalEvidence.includes(edge.type)) return { color: "rgba(138, 199, 255, .9)", width: 1.78, bead: true, moving: true };
         return {
           color: edge.type === "has_tag" ? "rgba(124, 198, 106, .82)" : "rgba(255, 204, 102, .9)",
           width: 1.65,
@@ -2552,6 +2651,9 @@ function html() {
       if (edge.type === "trace_pack") return { color: "rgba(138, 199, 255, .12)", width: .76, bead: true, moving: false };
       if (edge.type === "retrieves_memory") return { color: "rgba(138, 199, 255, .13)", width: .82, bead: true, moving: true };
       if (edge.type === "used_memory") return { color: "rgba(243, 231, 199, .14)", width: .88, bead: true, moving: true };
+      if (semanticEvidence.includes(edge.type)) return { color: "rgba(127, 209, 189, .16)", width: .9, bead: true, moving: edge.type !== "candidate_to_review" };
+      if (operationalEvidence.includes(edge.type)) return { color: "rgba(138, 199, 255, .17)", width: .94, bead: true, moving: true };
+      if (edge.type === "in_lane") return { color: "rgba(217, 180, 74, .10)", width: .72, bead: false, moving: false };
       if (edge.type === "task_event") return { color: "rgba(185, 154, 105, .072)", width: .68, bead: true, moving: true };
       if (edge.type === "context_pack") return { color: "rgba(138, 199, 255, .09)", width: .72, bead: true, moving: false };
       if (edge.type === "wiki_link") return { color: "rgba(230, 220, 194, .082)", width: .72, bead: true };
@@ -2582,6 +2684,13 @@ function html() {
     }
     function graphClusterPart(node, index) {
       const label = String(node.label || node.path || node.id || "").toLowerCase();
+      if (node.type === "lane") return node.lane === "active" ? "live" : "operations";
+      if (["source_snapshot", "source_chunk", "external_source", "provenance", "lineage_generation"].includes(node.type)) return "sources";
+      if (["candidate", "correction", "review", "memory", "behavior_rule"].includes(node.type)) return "instances";
+      if (["audit", "memory_audit", "gate", "sync", "commit", "status"].includes(node.type)) return "operations";
+      if (node.type === "wiki_record" || node.type === "claim") return "wiki";
+      if (node.type === "project_record") return "projects";
+      if (node.type === "operations_record" || node.type === "error_record") return "operations";
       if (node.type === "activity_root") return "live";
       if (node.type === "active_task") return "live";
       if (node.type === "context_pack") return "context";
@@ -2693,6 +2802,7 @@ function html() {
       if (active) return true;
       if (node.type === "activity_root") return true;
       if (node.type === "root") return true;
+      if (node.type === "lane") return true;
       if (node.type === "active_task") return false;
       if (node.type === "context_pack") return false;
       if (node.type !== "folder") return false;
@@ -2786,12 +2896,27 @@ function html() {
       const connectedCount = connected ? Math.max(0, connected.size - 1) : 0;
       const label = compact(focus.label || focus.id, 88);
       const detail = compact(focus.path || focus.record_id || focus.status || focus.type, 140);
-      return \`<strong>\${esc(label)}</strong><br><span>\${esc(focus.type)} / links \${esc(connectedCount)}</span><br><code>\${esc(detail)}</code>\`;
+      const evidenceEdge = graphEdges.find((edge) => edge.source === focus.id || edge.target === focus.id);
+      const evidence = compact(focus.evidence_path || evidenceEdge?.evidence_path || "", 150);
+      return \`<strong>\${esc(label)}</strong><br><span>\${esc(focus.type)} / \${esc(focus.lane || "normal")} / links \${esc(connectedCount)}</span><br><code>\${esc(detail)}</code>\${evidence ? \`<br><code>\${esc(evidence)}</code>\` : ""}\`;
+    }
+    function setGraphOptions(select, values, allLabel) {
+      const current = select.value || "all";
+      const normalized = [...new Set((values || []).filter(Boolean))];
+      const signature = normalized.join("|");
+      if (select.dataset.signature === signature) return;
+      select.dataset.signature = signature;
+      select.innerHTML = \`<option value="all">\${esc(allLabel)}</option>\` + normalized.map((value) => \`<option value="\${esc(value)}">\${esc(String(value).replaceAll("_", " "))}</option>\`).join("");
+      select.value = normalized.includes(current) ? current : "all";
     }
     function renderGraph(graph) {
       graphStatsEl.textContent = graph.ok
         ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges" + (graph.stats.active_tasks ? " / active " + graph.stats.active_tasks : "") + (graph.stats.memory_edges ? " / memory links " + graph.stats.memory_edges : "")
         : "index missing";
+      setGraphOptions(graphLaneEl, graph.filters?.lanes, "All lanes");
+      setGraphOptions(graphRelationEl, graph.filters?.edge_types, "All relations");
+      setGraphOptions(graphLifecycleEl, graph.filters?.lifecycle_states, "All lifecycle");
+      setGraphOptions(graphProvenanceEl, graph.filters?.provenance_statuses, "All provenance");
       const signature = graph.nodes.map((node) => [node.id, node.type, node.label, node.status, node.updated_at].join(":")).join("\\n") + "\\n---\\n" + graph.edges.map((edge) => edge.source + ">" + edge.target + ":" + edge.type).join("\\n");
       if (signature === graphSignature) return;
       graphSignature = signature;
@@ -3024,6 +3149,36 @@ function html() {
     }
     graphSearchEl.addEventListener("input", () => {
       graphSearch = graphSearchEl.value.trim().toLowerCase();
+    });
+    async function refreshGraphView(focusId = null) {
+      if (graphFetchInFlight) return;
+      graphFetchInFlight = true;
+      try {
+        const params = new URLSearchParams();
+        if (focusId) params.set("focus", focusId);
+        if (graphLaneEl.value !== "all") params.set("lane", graphLaneEl.value);
+        if (graphRelationEl.value !== "all") params.set("edge_type", graphRelationEl.value);
+        if (graphLifecycleEl.value !== "all") params.set("lifecycle", graphLifecycleEl.value);
+        if (graphProvenanceEl.value !== "all") params.set("provenance", graphProvenanceEl.value);
+        const response = await fetch("/api/graph?" + params.toString(), { cache: "no-store" });
+        if (!response.ok) throw new Error("graph request failed");
+        graphViewCustom = Boolean(focusId) || [...params.keys()].length > 0;
+        renderGraph(await response.json());
+      } finally {
+        graphFetchInFlight = false;
+      }
+    }
+    for (const control of [graphLaneEl, graphRelationEl, graphLifecycleEl, graphProvenanceEl]) {
+      control.addEventListener("change", () => void refreshGraphView());
+    }
+    graphTraceEl.addEventListener("click", () => {
+      if (graphSelected) void refreshGraphView(graphSelected);
+    });
+    graphResetEl.addEventListener("click", () => {
+      for (const control of [graphLaneEl, graphRelationEl, graphLifecycleEl, graphProvenanceEl]) control.value = "all";
+      graphSelected = null;
+      graphViewCustom = false;
+      void refreshGraphView();
     });
     graphCanvas.addEventListener("mousemove", (event) => {
       const rect = graphCanvas.getBoundingClientRect();
@@ -3306,7 +3461,7 @@ function html() {
         if (!response.ok) throw new Error("snapshot request failed: " + response.status);
         const snapshot = await response.json();
         render(snapshot.state);
-        renderGraph(snapshot.graph);
+        if (!graphViewCustom) renderGraph(snapshot.graph);
         renderReadiness(snapshot.readiness);
       } catch (error) {
         statusEl.textContent = "disconnected";
@@ -3336,7 +3491,8 @@ const server = http.createServer(async (request, response) => {
   resourceCounters.http_active += 1;
   resourceCounters.http_peak_active = Math.max(resourceCounters.http_peak_active, resourceCounters.http_active);
   try {
-    if (request.url === "/api/health") {
+    const requestUrl = new URL(request.url ?? "/", `http://${host}:${port}`);
+    if (requestUrl.pathname === "/api/health") {
       const [graphHealth, readiness] = await Promise.all([readGraphHealth(), getReadiness()]);
       sendJson(response, {
         ok: true,
@@ -3365,17 +3521,17 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.url === "/api/snapshot") {
+    if (requestUrl.pathname === "/api/snapshot") {
       sendJson(response, await getSnapshot());
       return;
     }
 
-    if (request.url === "/api/readiness") {
+    if (requestUrl.pathname === "/api/readiness") {
       sendJson(response, await getReadiness());
       return;
     }
 
-    if (request.url === "/api/graph-health") {
+    if (requestUrl.pathname === "/api/graph-health") {
       const [graphHealth, readiness] = await Promise.all([readGraphHealth(), getReadiness()]);
       sendJson(response, {
         ...graphHealth,
@@ -3391,13 +3547,20 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.url === "/api/state") {
+    if (requestUrl.pathname === "/api/state") {
       sendJson(response, await getState());
       return;
     }
 
-    if (request.url === "/api/graph") {
-      sendJson(response, await getGraph());
+    if (requestUrl.pathname === "/api/graph") {
+      const edgeTypes = requestUrl.searchParams.getAll("edge_type").flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+      sendJson(response, await getGraph(null, {
+        focusId: requestUrl.searchParams.get("focus"),
+        lane: requestUrl.searchParams.get("lane"),
+        lifecycleState: requestUrl.searchParams.get("lifecycle"),
+        provenanceStatus: requestUrl.searchParams.get("provenance"),
+        edgeTypes,
+      }));
       return;
     }
 

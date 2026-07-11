@@ -125,6 +125,10 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("observatory:verify", ["HG-08", "HG-10"]),
   command("graph:health", ["HG-05", "HG-08"]),
   command("graph:health:verify", ["HG-08"]),
+  command("graph:evidence", ["HG-05", "HG-06", "HG-08"], {
+    environment: { DINOBRAIN_EVIDENCE_GRAPH_VERIFY_HASHES: "1" },
+  }),
+  command("graph:evidence:verify", ["HG-05", "HG-06", "HG-08", "HG-10"]),
   command("session:verify", ["HG-03", "HG-06", "HG-09"]),
   command("safety:classifier:verify", ["HG-09", "HG-10"]),
   command("safety:task-sync:verify", ["HG-07", "HG-09", "HG-12"]),
@@ -339,6 +343,19 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     kind: "json",
     gates: ["HG-08"],
     accepted_statuses: ["healthy"],
+  },
+  {
+    id: "evidence_graph",
+    relative_path: ".dino/state/evidence_graph_status.json",
+    kind: "json",
+    gates: ["HG-05", "HG-06", "HG-08", "HG-10"],
+    accepted_statuses: ["healthy"],
+  },
+  {
+    id: "evidence_graph_sqlite",
+    relative_path: ".dino/index/evidence-graph.sqlite",
+    kind: "sqlite",
+    gates: ["HG-08", "HG-10"],
   },
   {
     id: "health_status",

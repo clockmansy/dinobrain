@@ -13,6 +13,7 @@ import { COLD_PARTITION_INDEX_RELATIVE_PATH, COLD_PARTITION_STATUS_RELATIVE_PATH
 import { CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH } from "./controlled-compounding.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
+import { EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH, EVIDENCE_GRAPH_STATUS_RELATIVE_PATH } from "./evidence-graph.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
 import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.js";
 import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
@@ -327,6 +328,15 @@ const ARTIFACTS: ArtifactSpec[] = [
     required: true,
   },
   {
+    id: "evidence_graph",
+    label: "evidence-bearing knowledge graph",
+    artifactPath: EVIDENCE_GRAPH_STATUS_RELATIVE_PATH,
+    sourceRoots: [],
+    dependencyArtifacts: [EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH],
+    required: true,
+    authorityRank: 93,
+  },
+  {
     id: "vector_index_migration",
     label: "controlled vector index migration",
     artifactPath: VECTOR_INDEX_MIGRATION_STATUS_RELATIVE_PATH,
@@ -394,6 +404,7 @@ function isGeneratedStatusArtifact(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
   return normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) ||
     normalized.startsWith(".dino/generations/") ||
+    normalized.startsWith(EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH) ||
     normalized.startsWith("60_Operations/cold-partitions/");
 }
 

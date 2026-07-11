@@ -85,6 +85,20 @@ The 64 MiB SQLite generation regression showed an RSS increase of about
 119 MiB RSS and stayed below its 256 MiB ceiling. The current-vault combined
 snapshot measured 238.7 KiB after bounded projection.
 
+OBS-02 adds a contribution-backed SQLite evidence graph. Its current-vault
+initial build covered 5,911 sources, 6,438 nodes, and 16,559 edges with about
+119 MiB peak RSS. Bulk-clone incremental rebuild reduced an unchanged run to
+about 1.57 seconds and about 40 MiB retained RSS delta. Normal refresh reuses
+metadata-stable source contributions; completion audit forces streaming hashes
+for all sources.
+
+After OBS-02, a full current-vault refresh peaked at 634.6 MiB in the DinoBrain
+process, below the previous 666 MiB baseline. System-wide RAM can still be much
+higher because unrelated desktop applications are outside the DinoBrain
+process. Measure process RSS and system use separately; frequent WMI sampling
+also materially slows the measured run and should not be used as the normal
+latency benchmark.
+
 These are regression baselines, not universal hardware guarantees. Re-run the
 same commands after changing the model, batch size, corpus size, or shard
 format.

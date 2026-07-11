@@ -463,6 +463,8 @@ the current-vault artifacts named above.
 | Observatory resource regression | `npm run observatory:verify` | HG-08/HG-10 coalesced refresh and bounded payload proof |
 | Graph | `npm run graph:health` | HG-08 current graph evidence |
 | Graph regression | `npm run graph:health:verify` | HG-08 regression coverage |
+| Evidence graph | `npm run graph:evidence` | HG-05/HG-06/HG-08 canonical typed lineage and lane evidence |
+| Evidence graph regression | `npm run graph:evidence:verify` | HG-05/HG-06/HG-08/HG-10 stable identity, incremental update, focused traversal, count parity, and bounded-memory coverage |
 | Session ingest | `npm run session:verify` | HG-03/HG-06/HG-09 ingestion safety |
 | Unified data classifier | `npm run safety:classifier:verify` | HG-09/HG-10 cross-surface parity, complete scans, and history-injected secret rejection |
 | Task-scoped sync | `npm run safety:task-sync:verify` | HG-07/HG-09/HG-12 authoritative task scope, review/hash binding, neighboring backlog isolation, real remote push, and retry-state proof |
@@ -551,6 +553,8 @@ $commands = @(
   'npm run observatory:verify',
   'npm run graph:health',
   'npm run graph:health:verify',
+  'npm run graph:evidence',
+  'npm run graph:evidence:verify',
   'npm run session:verify',
   'npm run safety:classifier:verify',
   'npm run safety:task-sync:verify',

@@ -841,6 +841,31 @@ UI; parity verifier compares structured values rather than screenshots alone.
 **Acceptance:** selecting any used memory can trace to its source/review and the
 task that consumed it; graph counts equal current index/status counts.
 
+**Implementation status (2026-07-11): OBS-02 implementation acceptance passed.**
+
+- `.dino/index/evidence-graph.sqlite` is the canonical contribution-backed
+  graph. Stable path/URI/commit identities survive label and incremental data
+  changes.
+- The graph implements source-to-chunk, chunk-to-claim, correction-to-rule,
+  candidate-to-review, predecessor-to-successor, context-provided,
+  declared/observed memory-use, task-to-trace, and sync-to-commit relations.
+- Active, stale, blocked, reviewer-pending, verifier-pending, and main-pending
+  lanes are evidence-derived. Observatory exposes lane, relation, lifecycle,
+  provenance, and bounded focus traversal rather than a decorative-only view.
+- Count parity compares primary graph nodes with Wiki/operations indexes and
+  candidate/review/accepted/source directories. Malformed input or count drift
+  makes `.dino/state/evidence_graph_status.json` non-healthy.
+- The current vault contains 5,911 sources, 6,438 nodes, and 16,559 edges with
+  zero parse or parity blockers. Initial build peak RSS was about 119 MiB; an
+  unchanged incremental rebuild completed in about 1.57 seconds.
+- Normal refresh reuses metadata-stable contributions. Completion audit forces
+  streaming SHA-256 verification of every source. See
+  `docs/EVIDENCE_GRAPH.md`.
+
+OBS-02 is complete at implementation/current-vault acceptance. Global
+completion remains open for clean-machine, release, and external live-client
+gates.
+
 ### Phase 6 - Installer, Clean-Machine Equivalence, And Release (P2, 6-10 engineer-days)
 
 #### DIST-01: Transactional installer/update/uninstall

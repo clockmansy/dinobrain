@@ -7,6 +7,7 @@ import { applyBehaviorRecallEvidenceMigration } from "./behavior-recall-migratio
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { applyColdPartitions } from "./cold-partitions.js";
 import { buildAndWriteControlledCompoundingStatus } from "./controlled-compounding.js";
+import { buildAndWriteEvidenceGraph } from "./evidence-graph.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
 import { buildAndWriteHealthStatus } from "./health-status.js";
@@ -158,6 +159,9 @@ export async function refreshStatusArtifacts(
 
   const nativeAuthority = await buildAndWriteNativeInstructionAuthorityReport(dataRoot);
   steps.push({ id: "native_instruction_authority", status: nativeAuthority.report.status, path: nativeAuthority.path });
+
+  const evidenceGraph = await buildAndWriteEvidenceGraph(dataRoot);
+  steps.push({ id: "evidence_graph", status: evidenceGraph.status.status, path: evidenceGraph.statusPath });
 
   const freshness = await buildAndWriteStatusFreshness(dataRoot);
   steps.push({ id: "status_freshness", status: freshness.report.status, path: freshness.path });

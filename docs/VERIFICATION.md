@@ -120,9 +120,9 @@ publication files leak.
 
 `npm run audit:full-memory:verify` proves the audit can create a baseline, classify live OS drift without false failure, flag unclassified content drift, and surface JSON/JSONL parse errors.
 
-`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. Behavior-recall evidence migration status is computed before review, cold-partition, and index artifacts so its public hash-only summary is part of the same generation. The remaining order includes review settlement/worklist/backpressure, cold partitions, node and task lifecycle, Wiki/operations indexes, SQLite shards, RAG proof/eval, graph, lineage, full-memory audit, health, and freshness before one status generation is published. This prevents generated index/status churn from masquerading as unresolved stale proof.
+`npm run status:refresh` rebuilds the required freshness artifacts in dependency order, then writes `.dino/state/monitoring_status.json`. Behavior-recall evidence migration status is computed before review, cold-partition, and index artifacts so its public hash-only summary is part of the same generation. The remaining order includes review settlement/worklist/backpressure, cold partitions, node and task lifecycle, Wiki/operations indexes, SQLite shards, RAG proof/eval, graph health, the evidence graph, lineage, full-memory audit, health, and freshness before one status generation is published. This prevents generated index/status churn from masquerading as unresolved stale proof.
 
-`npm run status:freshness` writes `.dino/state/monitoring_status.json` without rebuilding dependencies. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health artifact, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, RAG proof artifacts, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
+`npm run status:freshness` writes `.dino/state/monitoring_status.json` without rebuilding dependencies. It checks whether the full-memory audit, Wiki index, operations index, SQLite shard manifest, graph-health and evidence-graph artifacts, review queue settlement, semantic job settlement, review auto-hold settlement actions, task lifecycle report, RAG proof artifacts, and RAG eval report are present and newer than their source roots. Missing required artifacts produce `degraded`; stale artifacts produce `needs_refresh`. The report carries Korean `visible_status` fields so the Observatory can show freshness without hiding stale proof.
 
 `npm run status:freshness:verify` proves the freshness gate is healthy after all required artifacts are refreshed, remains self-reference safe after writing `monitoring_status.json`, falls to `needs_refresh` after a source change, and falls to `degraded` when required proof artifacts are missing.
 
@@ -183,7 +183,7 @@ healthy and still matches the current runtime code, generator, and hardware.
 The completion audit imports the same report with
 `--external scale_50k=<data-root>/.dino/evaluations/scale-50k-status.json`.
 
-Resource regressions are covered by `npm run verify:live-query-cache-budget`, `npm run verify:semantic-pipeline-cache`, and `npm run observatory:verify`. These verify bounded query-vector retention, one semantic pipeline construction per model/configuration, serialized inference, coalesced Observatory refreshes, bounded payloads, and non-overlapping browser polling.
+Resource regressions are covered by `npm run verify:live-query-cache-budget`, `npm run verify:semantic-pipeline-cache`, `npm run graph:evidence:verify`, and `npm run observatory:verify`. These verify bounded query-vector retention, one semantic pipeline construction per model/configuration, serialized inference, incremental graph updates, focused graph traversal, coalesced Observatory refreshes, bounded payloads, and non-overlapping browser polling.
 
 `npm run eval:rag:verify` proves that lexical fallback is not treated as healthy full RAG, then proves a dense-vector fixture can pass with memory-on lift and `hybrid_contextual_v2`. This still remains scaffold health unless the dense provider is semantic and generated-answer quality metrics are present.
 
@@ -213,7 +213,7 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 
 `npm run hooks:data:verify` verifies the real `dinobrain-data` checkout has `core.hooksPath = .githooks`, then proves the hook blocks unreviewed auto-generated accepted memories and local-only event/index paths while allowing reviewed accepted memories. This is intentionally below the MCP layer so stale MCP processes cannot bypass the public-data policy by committing directly.
 
-`npm run status:refresh` rebuilds the wiki, operations, SQLite, review, task lifecycle, graph, RAG, full-memory, direct-client MCP, and freshness evidence; atomically publishes one immutable generation; and then projects health from that generation. Freshness means the status files are current; it does not mean every OS requirement is green.
+`npm run status:refresh` rebuilds the wiki, operations, SQLite, review, task lifecycle, graph health, evidence graph, RAG, full-memory, direct-client MCP, and freshness evidence; atomically publishes one immutable generation; and then projects health from that generation. Freshness means the status files are current; it does not mean every OS requirement is green.
 
 `npm run status:readiness -- --allow-not-ready` prints the canonical `readiness_v2` report. `npm run readiness:verify` proves CLI/API/health/graph parity plus warning, missing, stale, malformed, mixed-generation, bounded-polling, and RAM-budget behavior. A completion-audit pointer counts only when its verdict hash and status-generation id/hash match the current immutable generation.
 
@@ -481,6 +481,7 @@ The index verifiers use synthetic vaults:
 - `npm run index:verify:operations` checks the JSON operations index fallback.
 - `npm run index:verify:sqlite` checks routed SQLite shard retrieval for Wiki search, Context Packs, recent task lookup, and incremental task/event writes.
 - `npm run graph:health:verify` checks empty graph, missing referenced path, accepted instance lineage, missing source mapping, and review queue mapping cases.
+- `npm run graph:evidence:verify` checks all required typed relations, six operational lanes, focused memory lineage, stable identity, index/status count parity, incremental reuse, completion-mode full hashing, malformed fail-closed behavior, and bounded RSS.
 
 ## Evidence Quality
 

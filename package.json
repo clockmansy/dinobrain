@@ -88,6 +88,8 @@
     "verify:release-manifest": "node scripts/verify-release-manifest.mjs",
     "graph:health": "node dist/build-graph-health.js",
     "graph:health:verify": "node scripts/verify-graph-health.mjs",
+    "graph:evidence": "node dist/build-evidence-graph.js",
+    "graph:evidence:verify": "node scripts/verify-evidence-graph.mjs",
     "graph:vault": "node scripts/export-vault-graph.mjs",
     "hook:verify": "node scripts/verify-codex-hook.mjs",
     "prompt:eligibility:verify": "node scripts/verify-prompt-eligibility.mjs",

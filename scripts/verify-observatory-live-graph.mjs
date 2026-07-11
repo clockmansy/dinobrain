@@ -9,6 +9,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { publishStatusGeneration, STATUS_GENERATION_ARTIFACT_PATHS } = await import(
   pathToFileURL(path.join(root, "dist", "status-generation.js")).href
 );
+const { buildAndWriteEvidenceGraph } = await import(
+  pathToFileURL(path.join(root, "dist", "evidence-graph.js")).href
+);
 const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-observatory-graph-"));
 const port = 3900 + Math.floor(Math.random() * 400);
 const cacheTtlMs = 100;
@@ -110,7 +113,7 @@ tags: [context-pack]
         mode: "standard",
         sensitivity: "unknown",
         created_at: "2026-07-01T00:00:00.000Z",
-        updated_at: "2026-07-01T00:00:00.000Z",
+        updated_at: new Date().toISOString(),
         data_root: dataRoot,
         sync_policy: "blocked_until_review",
         diagnostic_blob: "x".repeat(320 * 1024),
@@ -347,7 +350,10 @@ tags: [context-pack]
     hallucinated_memory_reference: [],
   });
 
+  await run(process.execPath, [path.join(root, "dist", "build-wiki-index.js")]);
   await run(process.execPath, [path.join(root, "dist", "build-sqlite-shards.js")]);
+  const evidenceGraph = await buildAndWriteEvidenceGraph(dataRoot);
+  assert(evidenceGraph.status.status === "healthy", `Evidence graph fixture was not healthy: ${JSON.stringify(evidenceGraph.status.blockers)}`);
   await publishStatusGeneration(dataRoot, {
     artifactPaths: STATUS_GENERATION_ARTIFACT_PATHS.filter((relativePath) =>
       existsSync(path.join(dataRoot, ...relativePath.split("/"))),
@@ -367,23 +373,29 @@ tags: [context-pack]
     await waitForServer(server);
     const graph = await fetch(`http://127.0.0.1:${port}/api/graph`).then((response) => response.json());
     assert(graph.ok === true, "Graph endpoint did not return ok=true");
-    assert(graph.stats.records >= 2, "Graph did not include seeded records");
+    assert(graph.index_mode === "evidence_graph_v1", "Graph endpoint did not use canonical evidence graph");
+    assert(graph.stats.nodes >= 2, "Graph did not include seeded records");
     assert(graph.nodes.some((node) => node.label === "Graph Speed"), "Graph Speed node missing");
     assert(graph.edges.some((edge) => edge.type === "wiki_link"), "wiki_link edge missing");
-    assert(graph.stats.active_tasks === 1, "Graph did not report active task count");
-    assert(graph.nodes.some((node) => node.type === "active_task"), "Graph did not include active task node");
-    assert(graph.edges.some((edge) => edge.type === "active_task"), "Graph did not include active task edge");
+    assert(graph.stats.by_lane.active >= 1, "Graph did not report active lane count");
+    assert(graph.nodes.some((node) => node.type === "task" && node.lane === "active"), "Graph did not include active task node");
     assert(graph.nodes.some((node) => node.type === "context_pack"), "Graph did not include context pack node");
     assert(graph.nodes.some((node) => node.type === "trace"), "Graph did not include finish trace node");
     assert(
-      graph.nodes.some((node) => node.type === "memory_ref" && node.path === "50_Instances/accepted/observatory-memory-rule.json"),
+      graph.nodes.some((node) => node.type === "memory" && node.path === "50_Instances/accepted/observatory-memory-rule.json"),
       "Graph did not include referenced memory node",
     );
-    assert(graph.edges.some((edge) => edge.type === "uses_context"), "Graph did not connect task to context pack");
-    assert(graph.edges.some((edge) => edge.type === "finish_trace"), "Graph did not connect task to trace");
-    assert(graph.edges.some((edge) => edge.type === "retrieves_memory"), "Graph did not connect context pack to memory");
-    assert(graph.edges.some((edge) => edge.type === "used_memory"), "Graph did not connect trace to used memory");
-    assert(graph.stats.memory_edges >= 2, "Graph did not count memory edges");
+    assert(graph.edges.some((edge) => edge.type === "context_provided"), "Graph did not connect task to context");
+    assert(graph.edges.some((edge) => edge.type === "task_to_trace"), "Graph did not connect task to trace");
+    assert(graph.edges.some((edge) => edge.type === "pack_contains"), "Graph did not connect context pack to memory");
+    assert(graph.edges.some((edge) => edge.type === "memory_declared_used"), "Graph did not connect trace to declared memory use");
+    assert(graph.stats.by_edge_type.memory_declared_used >= 1, "Graph did not count evidence-bearing memory edges");
+    const memoryNode = graph.nodes.find((node) => node.path === "50_Instances/accepted/observatory-memory-rule.json");
+    const focusedGraph = await fetch(`http://127.0.0.1:${port}/api/graph?focus=${encodeURIComponent(memoryNode.id)}`).then((response) => response.json());
+    assert(focusedGraph.focus?.node_id === memoryNode.id, "Focused graph did not bind requested node id");
+    assert(focusedGraph.edges.some((edge) => edge.type === "task_to_trace"), "Focused graph did not reach consuming task trace");
+    const relationGraph = await fetch(`http://127.0.0.1:${port}/api/graph?edge_type=memory_declared_used`).then((response) => response.json());
+    assert(relationGraph.edges.length > 0 && relationGraph.edges.every((edge) => edge.type === "memory_declared_used"), "Relation-filtered graph leaked another edge type");
     const stateResponse = await fetch(`http://127.0.0.1:${port}/api/state`);
     const stateText = await stateResponse.text();
     const stateBytes = Buffer.byteLength(stateText, "utf8");
@@ -450,7 +462,7 @@ tags: [context-pack]
     const snapshot = await fetch(`http://127.0.0.1:${port}/api/snapshot`).then((response) => response.json());
     assert(snapshot.ok === true, "Snapshot endpoint did not return ok=true");
     assert(snapshot.state?.summary?.active_task_count === 1, "Snapshot did not include state");
-    assert(snapshot.graph?.nodes?.some((node) => node.type === "active_task"), "Snapshot did not include graph activity");
+    assert(snapshot.graph?.nodes?.some((node) => node.type === "task" && node.lane === "active"), "Snapshot did not include graph activity");
     assert(snapshot.readiness?.lanes?.blockers, "Snapshot did not include readiness");
     assert(
       snapshot.payload?.within_budget === true && snapshot.payload.serialized_bytes < 256 * 1024,
@@ -459,6 +471,8 @@ tags: [context-pack]
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
     assert(html.includes("Completion Readiness"), "UI does not include readiness block");
     assert(html.includes("graph-cluster-label"), "UI does not include graph cluster labels");
+    assert(html.includes('id="graph-lane"') && html.includes('id="graph-relation"'), "UI does not include graph evidence filters");
+    assert(html.includes('id="graph-trace"'), "UI does not include focused evidence trace command");
     assert(html.includes("Live loop"), "UI does not include live graph cluster label");
     assert(html.includes("memory links"), "UI does not include memory link statistics");
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
