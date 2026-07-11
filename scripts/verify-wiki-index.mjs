@@ -96,6 +96,7 @@ assert(index.inverted_index["durable-index-target"]?.includes("20_Wiki/Graph-Spe
 const targetRow = index.records.find((record) => record.path === "20_Wiki/Graph-Speed-Target.md");
 assert(targetRow?.contextual_chunk?.length > 0, "wiki row contextual chunk missing");
 assert(/^[a-f0-9]{64}$/.test(targetRow?.source_sha256 ?? ""), "wiki row source hash missing");
+assert(targetRow?.knowledge_role === "internal_memory", "wiki row knowledge role missing");
 assert(targetRow?.retrieval_lane === "wiki", "wiki row retrieval lane missing");
 
 const searchStarted = Date.now();

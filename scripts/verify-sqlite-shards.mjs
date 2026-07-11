@@ -123,11 +123,12 @@ assert(manifest.shards.operations.tasks === 1200, `unexpected task count: ${mani
 const wikiDb = new DatabaseSync(wikiShardPath, { readOnly: true });
 try {
   const contextualRow = wikiDb
-    .prepare("SELECT contextual_chunk, source_sha256, language, lifecycle_state, verification_status, retrieval_lane, aliases_json FROM records WHERE path = ?")
+    .prepare("SELECT contextual_chunk, source_sha256, language, lifecycle_state, verification_status, retrieval_lane, knowledge_role, aliases_json FROM records WHERE path = ?")
     .get("20_Wiki/SQLite-Shard-Target.md");
   assert(contextualRow.contextual_chunk.length > 0, "SQLite contextual chunk missing");
   assert(/^[a-f0-9]{64}$/.test(contextualRow.source_sha256), "SQLite source hash missing");
   assert(contextualRow.retrieval_lane === "wiki", "SQLite retrieval lane missing");
+  assert(contextualRow.knowledge_role === "internal_memory", "SQLite knowledge role missing");
 } finally {
   wikiDb.close();
 }

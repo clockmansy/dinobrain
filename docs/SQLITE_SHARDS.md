@@ -1,7 +1,7 @@
 # SQLite Shards
 
 Date: 2026-07-05
-Status: v5 contextual retrieval rows and private-source exclusion implemented
+Status: v6 contextual retrieval rows, explicit knowledge roles, and private-source exclusion implemented
 
 ## Goal
 
@@ -29,7 +29,7 @@ When SQLite shards exist:
 - recent task context routes through `operations.sqlite`
 - Observatory reads recent rows from `operations.sqlite`
 - MCP writes update `operations.sqlite` incrementally
-- sparse rows preserve bounded chunk context, source SHA-256, parent path, language, lifecycle, verification status, retrieval lane, and aliases
+- sparse rows preserve bounded chunk context, source SHA-256, parent path, language, lifecycle, verification status, retrieval lane, knowledge role, and aliases
 - semantic candidates are selected as an independent bounded cosine top-K before RRF/reranking
 
 If the shards are missing or use an old shard metadata version, DinoBrain falls back to the JSON indexes and legacy scanners.

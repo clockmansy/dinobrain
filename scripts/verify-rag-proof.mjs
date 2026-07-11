@@ -149,6 +149,7 @@ async function main() {
     assert(dense.dimensions === 384, "semantic embedding dimensions missing");
     assert(dense.source_index_sha256?.length === 64, "dense source index hash missing");
     assert(Object.keys(dense.record_metadata ?? {}).length === proof.report.counts.record_vectors, "dense row metadata mismatch");
+    assert(Object.values(dense.record_metadata ?? {}).every((metadata) => metadata.knowledge_role), "dense knowledge-role metadata missing");
     assert(proof.report.counts.record_metadata === proof.report.counts.record_vectors, "proof row metadata count mismatch");
 
     const evalResult = await buildAndWriteRagEvalReport(dataRoot, {

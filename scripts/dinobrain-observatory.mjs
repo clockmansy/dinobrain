@@ -476,7 +476,9 @@ async function readSourceLineageStatus() {
     latest_verified_at: null,
     counts: {
       source_chunks: 0,
+      source_snapshots: 0,
       provenance_links: 0,
+      lineage_generations: 0,
       verified_source_chunks: 0,
       anchor_only_unverified: 0,
       unverified_source_chunks: 0,
@@ -486,6 +488,8 @@ async function readSourceLineageStatus() {
       verified_claim_support: 0,
       unsupported_factual_claims: 0,
       dangling_claim_paths: 0,
+      stale_support: 0,
+      hash_mismatches: 0,
       blockers: 0,
     },
     findings: [],
@@ -2915,7 +2919,7 @@ function html() {
         chips.source,
         "Sources",
         sourceLineage.status || "--",
-        "verified " + (sourceLineage.counts?.verified_source_chunks ?? 0) + " / blockers " + (sourceLineage.counts?.blockers ?? 0),
+        "verified " + (sourceLineage.counts?.verified_source_chunks ?? 0) + " / generations " + (sourceLineage.counts?.lineage_generations ?? 0) + " / blockers " + (sourceLineage.counts?.blockers ?? 0),
         healthTone(sourceLineage.status),
       );
       renderChip(
@@ -3026,12 +3030,16 @@ function html() {
       kv(sourceLineageEl, [
         ["status", sourceLineage.status],
         ["verified chunks", sourceLineage.counts?.verified_source_chunks],
+        ["source snapshots", sourceLineage.counts?.source_snapshots],
+        ["lineage generations", sourceLineage.counts?.lineage_generations],
         ["anchor only", sourceLineage.counts?.anchor_only_unverified],
         ["unverified chunks", sourceLineage.counts?.unverified_source_chunks],
         ["claim records", sourceLineage.counts?.claim_records],
         ["supported claims", sourceLineage.counts?.verified_claim_support],
         ["unsupported claims", sourceLineage.counts?.unsupported_factual_claims],
         ["dangling claims", sourceLineage.counts?.dangling_claim_paths],
+        ["stale support", sourceLineage.counts?.stale_support],
+        ["hash mismatches", sourceLineage.counts?.hash_mismatches],
         ["blockers", sourceLineage.counts?.blockers],
         ["path", sourceLineage._path],
       ]);

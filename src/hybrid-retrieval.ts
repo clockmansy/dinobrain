@@ -34,6 +34,7 @@ export type DenseVectorRecordMetadata = {
   lifecycle_state: string;
   verification_status: string;
   retrieval_lane: string;
+  knowledge_role: string;
 };
 
 export type DenseVectorCandidate = {
@@ -349,6 +350,7 @@ export function contextualText(record: RankedRecord): string {
     `language: ${record.language}`,
     `lifecycle: ${record.lifecycle_state}`,
     `verification: ${record.verification_status}`,
+    `knowledge_role: ${record.knowledge_role}`,
     `parent: ${record.parent_record_path ?? ""}`,
     `chunk: ${record.contextual_chunk || record.excerpt}`,
   ]

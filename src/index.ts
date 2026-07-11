@@ -50,6 +50,7 @@ import {
 import { classifyPromptLaunch } from "./prompt-eligibility.js";
 import { buildReviewQueueBackpressure, writeReviewGatedBatch } from "./review-backpressure.js";
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
+import { publishSourceLineage } from "./source-lineage-publication.js";
 import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
 import { writeTerminalTaskAndTrace, writeTerminalTaskAndTraceUnlocked } from "./task-terminal-store.js";
 import {
@@ -1228,9 +1229,8 @@ type TaskPreflightEvidence = {
   reasonCodes: string[];
 };
 
-function makeSourceChunkId(sourceTitle: string): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
-  return `sourcechunk-${stamp}-${safeSlug(sourceTitle).slice(0, 36)}`;
+function makeSourceChunkId(sourceTitle: string, sourceUri: string): string {
+  return `sourcechunk-${safeSlug(sourceTitle).slice(0, 36)}-${sha256(sourceUri).slice(0, 12)}`;
 }
 
 function makeFeedbackId(feedback: string): string {
@@ -1831,6 +1831,7 @@ async function buildContextPackRecord(
     lifecycle_state,
     verification_status,
     retrieval_lane,
+    knowledge_role,
     aliases,
     contextual_chunk,
     modified_at_ms,
@@ -1849,6 +1850,7 @@ async function buildContextPackRecord(
     lifecycle_state,
     verification_status,
     retrieval_lane,
+    knowledge_role,
     aliases,
     contextual_chunk,
     modified_at_ms,
@@ -3276,61 +3278,88 @@ registerTool(
   "create_source_chunk",
   {
     title: "Create Source Chunk",
-    description: "Store an external/internal durable source chunk and link it to claim paths.",
+    description: "Transactionally publish a fetched source, verified chunk, provenance, and hash-bound claim support.",
     inputSchema: {
       source_title: z.string().min(1),
       source_uri: z.string().min(1),
       chunk_text: z.string().min(1),
       chunk_type: z.enum(["external_doc", "paper", "community", "internal_doc", "conversation_excerpt"]).default("external_doc"),
       claim_paths: z.array(z.string()).default([]),
+      evidence_paths: z.array(z.string()).default([]),
       tags: z.array(z.string()).default([]),
+      verification_status: z
+        .enum(["anchor_only_unverified", "fetched_unverified", "verified_chunk", "verified_summary", "reviewed_source_chunk"])
+        .default("fetched_unverified"),
       last_verified: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      fetched_at: z.string().datetime().optional(),
+      verification_method: z.string().min(1).optional(),
+      verification_actor: z.string().min(1).optional(),
+      source_content_sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      source_content_length: z.number().int().nonnegative().optional(),
+      source_content_scope: z.enum(["full_response", "bounded_excerpt", "verified_summary"]).default("bounded_excerpt"),
     },
   },
-  async ({ source_title, source_uri, chunk_text, chunk_type, claim_paths, tags, last_verified }) => {
-    const chunkId = makeSourceChunkId(source_title);
+  async ({
+    source_title,
+    source_uri,
+    chunk_text,
+    chunk_type,
+    claim_paths,
+    evidence_paths,
+    tags,
+    verification_status,
+    last_verified,
+    fetched_at,
+    verification_method,
+    verification_actor,
+    source_content_sha256,
+    source_content_length,
+    source_content_scope,
+  }) => {
+    const chunkId = makeSourceChunkId(source_title, source_uri);
     const createdAt = nowIso();
-    const sourcePath = dataPath("30_Sources", "chunks", `${chunkId}.json`);
     const normalizedClaimPaths = normalizeVaultPaths(claim_paths);
     const sanitizedChunk = redactSensitiveText(chunk_text);
-    const sourceRecord = {
+    const publication = await publishSourceLineage(DATA_ROOT, {
       source_chunk_id: chunkId,
-      type: "source_chunk",
-      status: "active",
-      title: source_title,
+      source_title,
       source_uri,
       chunk_type,
       chunk_text: sanitizedChunk.text,
+      claim_paths: normalizedClaimPaths,
+      evidence_paths: normalizeVaultPaths(evidence_paths),
+      tags,
+      verification_status,
+      last_verified,
+      fetched_at,
+      verification_method,
+      verification_actor,
+      source_content_sha256: source_content_sha256 ?? sha256(chunk_text),
+      source_content_length: source_content_length ?? chunk_text.length,
+      source_content_scope,
       chunk_text_redactions: sanitizedChunk.redactions,
       chunk_text_truncated: sanitizedChunk.truncated,
       chunk_text_original_length: chunk_text.length,
       chunk_text_stored_length: sanitizedChunk.text.length,
-      claim_paths: normalizedClaimPaths,
-      tags,
-      last_verified: last_verified ?? dateStamp(),
-      created_at: createdAt,
-      updated_at: createdAt,
-    };
-    await writeJson(sourcePath, sourceRecord);
-    const sourceRelativePath = relDataPath(sourcePath);
-    const linkPath = dataPath(".dino", "provenance", `${chunkId}.json`);
-    await writeJson(linkPath, {
-      provenance_id: chunkId,
-      source_chunk_path: sourceRelativePath,
-      claim_paths: normalizedClaimPaths,
-      source_uri,
-      created_at: createdAt,
-      updated_at: createdAt,
+      actor: "create_source_chunk",
     });
     await invalidateWikiIndex(DATA_ROOT);
     await invalidateSqliteWikiShard(DATA_ROOT);
     const eventLog = await appendEvent({
-      event: "source_chunk_created",
+      event: publication.content_changed || publication.support_bindings_changed ? "source_chunk_reverified" : "source_lineage_published",
       source_chunk_id: chunkId,
       at: createdAt,
-      source_chunk_path: sourceRelativePath,
-      provenance_path: relDataPath(linkPath),
+      source_snapshot_path: publication.source_snapshot_path,
+      source_chunk_path: publication.source_chunk_path,
+      provenance_path: publication.provenance_path,
+      generation_id: publication.generation_id,
+      generation_receipt_path: publication.generation_receipt_path,
+      transaction_id: publication.transaction_id,
       claim_paths: normalizedClaimPaths,
+      verification_status,
+      content_changed: publication.content_changed,
+      support_bindings_changed: publication.support_bindings_changed,
+      idempotent: publication.idempotent,
       redactions: sanitizedChunk.redactions,
       truncated: sanitizedChunk.truncated,
       os_version: DINOBRAIN_OS_VERSION,
@@ -3338,8 +3367,17 @@ registerTool(
     return jsonResult({
       ok: true,
       source_chunk_id: chunkId,
-      source_chunk_path: sourceRelativePath,
-      provenance_path: relDataPath(linkPath),
+      source_snapshot_path: publication.source_snapshot_path,
+      source_chunk_path: publication.source_chunk_path,
+      provenance_path: publication.provenance_path,
+      generation_id: publication.generation_id,
+      generation_receipt_path: publication.generation_receipt_path,
+      transaction_id: publication.transaction_id,
+      transaction_path: publication.transaction_path,
+      verification_status,
+      content_changed: publication.content_changed,
+      support_bindings_changed: publication.support_bindings_changed,
+      idempotent: publication.idempotent,
       redactions: sanitizedChunk.redactions,
       truncated: sanitizedChunk.truncated,
       event_log: eventLog,

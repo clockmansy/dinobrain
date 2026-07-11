@@ -219,7 +219,8 @@ Required evidence:
 
 - `.dino/state/source_lineage_status.json` with zero unsupported factual claims,
   dangling claims, or anchor-only false support;
-- `npm run verify:source-lineage` plus current-vault lineage evidence.
+- `npm run verify:source-lineage`, `npm run source:lineage:transaction:verify`,
+  plus current-vault lineage generation evidence.
 
 ### HG-06: Memory Lifecycle, Review, And Compounding Hygiene
 
@@ -421,6 +422,7 @@ the current-vault artifacts named above.
 | Native regression | `npm run verify:native-authority` | HG-02 regression coverage |
 | Source lineage | `npm run status:source-lineage` | HG-05 current-vault lineage status |
 | Lineage regression | `npm run verify:source-lineage` | HG-05 regression coverage |
+| Lineage transaction | `npm run source:lineage:transaction:verify` | HG-05/HG-10 atomic publication, recovery, concurrency, tamper, rollback, and reapply proof |
 | Behavior recall | `npm run status:behavior-recall` | HG-07 current trigger and correction status |
 | Controlled compounding | `npm run status:compounding` | HG-06/HG-07 current recurrence, review, lifecycle, and budget status |
 | Recall evidence migration | `npm run behavior:recall:migrate` | HG-07/HG-10 immutable stale-reference repair status |
@@ -499,6 +501,7 @@ $commands = @(
   'npm run verify:native-authority',
   'npm run status:source-lineage',
   'npm run verify:source-lineage',
+  'npm run source:lineage:transaction:verify',
   'npm run status:behavior-recall',
   'npm run status:compounding',
   'npm run behavior:recall:migrate',

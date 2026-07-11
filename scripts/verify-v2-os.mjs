@@ -338,7 +338,10 @@ try {
         chunk_type: "external_doc",
         claim_paths: ["20_Wiki/OS-v2-Contract.md"],
         tags: ["contextual-retrieval", "hybrid-search"],
+        verification_status: "verified_chunk",
         last_verified: "2026-07-05",
+        verification_method: "fixture_direct_review",
+        verification_actor: "verify-v2-os",
       },
     }),
   );

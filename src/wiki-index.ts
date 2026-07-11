@@ -21,7 +21,7 @@ import {
 } from "./hybrid-retrieval.js";
 import { loadDenseVectorIndexWithLiveQuery } from "./live-semantic-query.js";
 
-export const WIKI_INDEX_VERSION = 5;
+export const WIKI_INDEX_VERSION = 6;
 export const WIKI_INDEX_RELATIVE_PATH = ".dino/index/wiki-index.json";
 
 export type WikiIndexRecord = RankedRecord & {
@@ -133,6 +133,7 @@ function recordTokens(record: RankedRecord, links: string[]): string[] {
       record.summary,
       record.tags.join(" "),
       record.aliases.join(" "),
+      record.knowledge_role,
       record.contextual_chunk,
       record.excerpt,
       links.join(" "),
@@ -157,6 +158,7 @@ function toRankedRecord(record: WikiIndexRecord): RankedRecord {
     lifecycle_state: record.lifecycle_state,
     verification_status: record.verification_status,
     retrieval_lane: record.retrieval_lane,
+    knowledge_role: record.knowledge_role,
     aliases: record.aliases,
     modified_at_ms: record.modified_at_ms,
   };

@@ -291,6 +291,16 @@ Candidates always enter Review Queue first. They are not auto-promoted.
 Queue admission may place the candidate/review pair directly in cold hold when
 the relevant lane or global hot budget is exhausted.
 
+### `create_source_chunk`
+
+Publishes source lineage as one recoverable transaction. The transaction writes
+a fetched-source hash snapshot, bounded/redacted chunk, provenance link, exact
+claim and evidence bindings, and a generation receipt. Verified claim support
+requires `verification_status`, `last_verified`, and `verification_method`.
+Anchor-only or fetched-unverified records cannot support claims. Reusing the
+same source URI/title updates the stable source id; changed content requires a
+newer verification date and preserves the previous content hash.
+
 ### `review_candidate`
 
 Approves or rejects a candidate.

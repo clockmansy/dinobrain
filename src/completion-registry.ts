@@ -101,6 +101,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("verify:native-authority", ["HG-02"]),
   command("status:source-lineage", ["HG-05"]),
   command("verify:source-lineage", ["HG-05"]),
+  command("source:lineage:transaction:verify", ["HG-05", "HG-10"]),
   command("status:behavior-recall", ["HG-07"]),
   command("status:compounding", ["HG-06", "HG-07"]),
   command("behavior:recall:migrate", ["HG-07", "HG-10"]),

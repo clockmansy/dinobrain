@@ -89,6 +89,10 @@ async function main() {
       markdown("Private conversation archive", "Local-only raw conversation source.", [], "This must never enter normal retrieval."),
     );
     text(
+      path.join(dataRoot, "30_Sources", "fetched", "source-snapshot.json"),
+      JSON.stringify({ type: "source_snapshot", source_uri: "https://example.com", verification_status: "verified_chunk" }),
+    );
+    text(
       path.join(dataRoot, "40_Projects", "retrieval.md"),
       markdown(
         "Contextual retrieval project",
@@ -110,11 +114,16 @@ async function main() {
     const records = await collectCuratedRecords(dataRoot);
     assert(records.length === 5, `expected five contextual records, got ${records.length}`);
     assert(!records.some((record) => record.path.startsWith("30_Sources/private/")), "private source entered default retrieval");
+    assert(!records.some((record) => record.path.startsWith("30_Sources/fetched/")), "source snapshot entered default retrieval");
     for (const record of records) {
       assert(record.contextual_chunk.length > 0 && record.contextual_chunk.length <= 1600, "bounded chunk missing");
       assert(/^[a-f0-9]{64}$/.test(record.source_sha256), "source hash missing");
       assert(record.language && record.lifecycle_state && record.verification_status, "row metadata missing");
+      assert(record.knowledge_role, "knowledge role missing");
     }
+    assert(records.find((record) => record.path === "30_Sources/chunks/leave-ko.md")?.knowledge_role === "source_citation", "verified source role missing");
+    assert(records.find((record) => record.path === "20_Wiki/paid-leave.md")?.knowledge_role === "verified_claim_support", "verified claim-support role missing");
+    assert(records.find((record) => record.path === "40_Projects/retrieval.md")?.knowledge_role === "project_context", "project context role missing");
 
     const paraphrase = "Where can a worker arrange compensated time away and obtain approval?";
     const bilingual = "유급 휴가 approval workflow는 어디에서 처리하나요?";

@@ -571,6 +571,21 @@ RAG-03/RAG-04 external evaluation and declared 50k scale/latency evidence.
 **Acceptance:** zero unsupported factual claims and zero dangling links on the
 current vault; interruption cannot publish half a lineage generation.
 
+Implementation evidence (2026-07-11): RAG-02 now publishes source snapshots,
+bounded chunks, provenance links, exact claim/evidence hashes, and immutable
+generation receipts through one serialized, hash-preconditioned transaction.
+Prepared transactions recover to exact prior bytes; explicit rollback/reapply,
+external-tamper refusal, changed-content reverification, and 16-writer
+idempotency are covered by `source:lineage:transaction:verify`. Wiki index v6,
+SQLite shard v6, dense metadata, and Context Packs expose `knowledge_role` so
+behavior guidance, accepted memory, source citations, verified claim support,
+project context, and operations evidence remain distinct. The current-vault
+migration produced 20 fetched snapshots, 20 verified chunks, 20 provenance
+links, and 20 generation receipts. The full Wiki/Projects/accepted scan reports
+zero unsupported factual claims, dangling links, stale support, hash mismatch,
+or blockers. RAG-02 is complete; HG-05 is satisfied by current-vault and
+transactional regression evidence.
+
 #### RAG-03: Explicit golden sets and independent answer evaluation
 
 **Hard gates:** HG-04, HG-07

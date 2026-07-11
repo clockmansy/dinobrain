@@ -83,7 +83,7 @@ Deep Pack behavior is deferred until the core retrieval path is working.
 
 The Obsidian-style graph goal is represented by a persistent Wiki index, not by visual graph layout alone.
 
-The Wiki index writes `.dino/index/wiki-index.json` and uses it to narrow `get_context_pack` and `wiki_search` candidates before ranking. Each row stores bounded contextual text, source hash, parent path, language, lifecycle, verification, lane, and aliases alongside token-to-record mappings, graph nodes, graph edges, hot recent records, and cold records. Semantic vectors use an independent cosine top-K; sparse, dense, RRF, rerank, provenance, lifecycle, lane, recency, and noise contributions remain inspectable.
+The Wiki index writes `.dino/index/wiki-index.json` and uses it to narrow `get_context_pack` and `wiki_search` candidates before ranking. Each v6 row stores bounded contextual text, source hash, parent path, language, lifecycle, verification, retrieval lane, explicit knowledge role, and aliases alongside token-to-record mappings, graph nodes, graph edges, hot recent records, and cold records. Semantic vectors use an independent cosine top-K; sparse, dense, RRF, rerank, provenance, lifecycle, lane, recency, and noise contributions remain inspectable. Source publication uses a separate hash-preconditioned transaction that binds a fetched-source snapshot, bounded chunk, provenance record, exact claim hashes, evidence hashes, and a generation receipt before any claim support becomes visible.
 
 This keeps the default prompt path from reading every curated Wiki/Project/Source/Instance file on every request. See `docs/LLM_WIKI_GRAPH.md`.
 

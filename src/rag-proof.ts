@@ -216,6 +216,7 @@ export async function buildAndWriteRagProof(
       lifecycle_state: record.lifecycle_state,
       verification_status: record.verification_status,
       retrieval_lane: record.retrieval_lane,
+      knowledge_role: record.knowledge_role,
     };
   }
   for (const item of ragGolden?.cases ?? []) {

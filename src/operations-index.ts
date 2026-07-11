@@ -53,6 +53,7 @@ export type OperationContextPackEntry = {
     kind?: string;
     title?: string;
     summary?: string;
+    knowledge_role?: string;
     score?: number;
   }>;
 };
@@ -198,6 +199,7 @@ function normalizePackEntry(dataRoot: string, filePath: string, pack: JsonObject
         kind: firstString(item.kind) || undefined,
         title: firstString(item.title) || undefined,
         summary: firstString(item.summary) || undefined,
+        knowledge_role: firstString(item.knowledge_role) || undefined,
         score: typeof item.score === "number" ? item.score : undefined,
       })),
   };
@@ -507,6 +509,7 @@ export async function collectRecentTaskRecordsFromIndex(
       lifecycle_state: task.status,
       verification_status: trace ? "trace_recorded" : "unverified",
       retrieval_lane: "recent_task",
+      knowledge_role: "operations_evidence",
       aliases: [],
       modified_at_ms: Number.isFinite(Date.parse(task.updated_at)) ? Date.parse(task.updated_at) : 0,
     });

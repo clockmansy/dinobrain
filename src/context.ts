@@ -25,6 +25,17 @@ export type RetrievalLane =
   | "recent_task"
   | "other";
 
+export type KnowledgeRole =
+  | "behavior_guidance"
+  | "accepted_memory"
+  | "source_anchor"
+  | "fetched_source"
+  | "source_citation"
+  | "verified_claim_support"
+  | "project_context"
+  | "operations_evidence"
+  | "internal_memory";
+
 export type RetrievalScoreBreakdown = {
   exact_alias: number;
   sparse_field: number;
@@ -57,6 +68,7 @@ export type RankedRecord = {
   lifecycle_state: string;
   verification_status: string;
   retrieval_lane: RetrievalLane;
+  knowledge_role: KnowledgeRole;
   aliases: string[];
   modified_at_ms: number;
   score_breakdown?: RetrievalScoreBreakdown;
@@ -232,6 +244,37 @@ export function retrievalLaneForPath(relativePath: string, kind: RankedRecord["k
   return "other";
 }
 
+export function knowledgeRoleForRecord(
+  relativePath: string,
+  record: Record<string, unknown>,
+  kind: RankedRecord["kind"] = "curated_record",
+): KnowledgeRole {
+  const tags = stringArray(record.tags).map((tag) => tag.toLowerCase());
+  const verification = firstString(record.verification_status, record.source_status, record.review_status).toLowerCase();
+  if (kind === "recent_task" || relativePath.startsWith("60_Operations/") || relativePath.startsWith(".dino/")) {
+    return "operations_evidence";
+  }
+  if (relativePath.startsWith("30_Sources/")) {
+    if (/anchor_only|anchor-only/.test(verification) || tags.includes("source-anchor-unverified")) return "source_anchor";
+    if (/verified|reviewed/.test(verification)) return "source_citation";
+    return "fetched_source";
+  }
+  if (relativePath.startsWith("50_Instances/accepted/")) {
+    if (
+      tags.some((tag) => ["codex-session-derived", "user-preference", "operating-rule", "mistake-lesson"].includes(tag)) ||
+      verification === "internal"
+    ) {
+      return "behavior_guidance";
+    }
+    return "accepted_memory";
+  }
+  if (relativePath.startsWith("20_Wiki/") && /verified|reviewed|mixed_verified/.test(verification)) {
+    return "verified_claim_support";
+  }
+  if (relativePath.startsWith("40_Projects/")) return "project_context";
+  return "internal_memory";
+}
+
 function normalizedAliases(...values: unknown[]): string[] {
   return Array.from(
     new Set(
@@ -280,6 +323,7 @@ export function isDefaultRetrievalExcludedPath(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
   return (
     normalized.startsWith("30_Sources/private/") ||
+    normalized.startsWith("30_Sources/fetched/") ||
     normalized.startsWith("60_Operations/task-summaries/") ||
     normalized.startsWith(".dino/context-packs/") ||
     normalized.startsWith(".dino/events/") ||
@@ -396,6 +440,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
         lifecycle_state: lifecycleState,
         verification_status: verificationStatus,
         retrieval_lane: retrievalLaneForPath(relativePath),
+        knowledge_role: knowledgeRoleForRecord(relativePath, jsonRecord),
         aliases,
         modified_at_ms: stat.mtimeMs,
       });
@@ -426,6 +471,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       lifecycle_state: firstString(metadata.lifecycle_state, metadata.lifecycle, metadata.status, "active"),
       verification_status: firstString(metadata.verification_status, metadata.review_status, metadata.source_status, "unverified"),
       retrieval_lane: retrievalLaneForPath(relativePath),
+      knowledge_role: knowledgeRoleForRecord(relativePath, metadata as Record<string, unknown>),
       aliases: normalizedAliases(metadata.aliases, metadata.alias, metadata.aka, metadata.exact_aliases),
       modified_at_ms: stat.mtimeMs,
     });
@@ -491,6 +537,7 @@ export async function collectRecentTaskRecords(dataRoot: string, limit = 10): Pr
       lifecycle_state: String(task.status ?? "active"),
       verification_status: trace ? "trace_recorded" : "unverified",
       retrieval_lane: "recent_task",
+      knowledge_role: "operations_evidence",
       aliases: [],
       modified_at_ms: Number.isFinite(Date.parse(String(task.updated_at ?? task.created_at ?? "")))
         ? Date.parse(String(task.updated_at ?? task.created_at ?? ""))

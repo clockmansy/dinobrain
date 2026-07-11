@@ -27,7 +27,7 @@ import {
 import { withOperationsWriteLock } from "./operation-lock.js";
 import { buildWikiIndex, type WikiIndex, type WikiIndexEdge, type WikiIndexNode, type WikiIndexRecord } from "./wiki-index.js";
 
-export const SQLITE_SHARD_VERSION = 5;
+export const SQLITE_SHARD_VERSION = 6;
 export const SQLITE_INDEX_DIR = ".dino/index/sqlite";
 export const SQLITE_MANIFEST_RELATIVE_PATH = `${SQLITE_INDEX_DIR}/manifest.json`;
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
@@ -283,6 +283,7 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
       lifecycle_state TEXT NOT NULL,
       verification_status TEXT NOT NULL,
       retrieval_lane TEXT NOT NULL,
+      knowledge_role TEXT NOT NULL,
       aliases_json TEXT NOT NULL,
       root TEXT NOT NULL,
       mtime_ms REAL NOT NULL,
@@ -324,9 +325,9 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
   const insertRecord = db.prepare(`
     INSERT INTO records
       (id, path, kind, title, summary, tags_json, excerpt, context_text, contextual_chunk, source_sha256,
-       parent_record_path, language, lifecycle_state, verification_status, retrieval_lane, aliases_json,
+       parent_record_path, language, lifecycle_state, verification_status, retrieval_lane, knowledge_role, aliases_json,
        root, mtime_ms, size_bytes, links_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTerm = db.prepare("INSERT OR IGNORE INTO terms (term, record_id) VALUES (?, ?)");
   const insertNode = db.prepare(`
@@ -371,6 +372,7 @@ function insertWikiRecord(stmt: ReturnType<DatabaseSync["prepare"]>, record: Wik
     record.lifecycle_state,
     record.verification_status,
     record.retrieval_lane,
+    record.knowledge_role,
     JSON.stringify(record.aliases),
     record.root,
     record.mtime_ms,
@@ -437,6 +439,7 @@ async function writeOperationsShard(
       kind TEXT,
       title TEXT,
       summary TEXT,
+      knowledge_role TEXT,
       score REAL,
       PRIMARY KEY (pack_path, ordinal)
     );
@@ -476,8 +479,8 @@ async function writeOperationsShard(
   `);
   const insertPackItem = db.prepare(`
     INSERT OR REPLACE INTO context_pack_items
-      (pack_path, ordinal, path, kind, title, summary, score)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (pack_path, ordinal, path, kind, title, summary, knowledge_role, score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertEvent = db.prepare(`
     INSERT OR IGNORE INTO events (event_key, event, at, path, payload_json) VALUES (?, ?, ?, ?, ?)
@@ -559,6 +562,7 @@ function insertOperationPack(
       item.kind ?? null,
       item.title ?? null,
       item.summary ?? null,
+      item.knowledge_role ?? null,
       item.score ?? null,
     );
   });
@@ -663,6 +667,7 @@ function rowToRecord(row: Record<string, unknown>): RankedRecord {
     lifecycle_state: String(row.lifecycle_state ?? "active"),
     verification_status: String(row.verification_status ?? "unverified"),
     retrieval_lane: String(row.retrieval_lane ?? "other") as RankedRecord["retrieval_lane"],
+    knowledge_role: String(row.knowledge_role ?? "internal_memory") as RankedRecord["knowledge_role"],
     aliases: parseStringArray(row.aliases_json),
     modified_at_ms: Number(row.mtime_ms ?? 0),
   };
@@ -804,6 +809,7 @@ export async function collectRecentTaskRecordsFromSqlite(
         lifecycle_state: String(row.status ?? "unknown"),
         verification_status: row.trace_summary ? "trace_recorded" : "unverified",
         retrieval_lane: "recent_task" as const,
+        knowledge_role: "operations_evidence" as const,
         aliases: [],
         modified_at_ms: Number.isFinite(Date.parse(String(row.updated_at ?? "")))
           ? Date.parse(String(row.updated_at ?? ""))
@@ -861,8 +867,8 @@ export async function upsertSqliteOperationContextPack(
     const deleteItems = db.prepare("DELETE FROM context_pack_items WHERE pack_path = ?");
     const insertItem = db.prepare(`
       INSERT OR REPLACE INTO context_pack_items
-        (pack_path, ordinal, path, kind, title, summary, score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (pack_path, ordinal, path, kind, title, summary, knowledge_role, score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     db.exec("BEGIN");
     try {

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,6 +19,10 @@ function assert(condition, message) {
 function write(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function withFixture(fn) {
@@ -107,6 +112,33 @@ This is only an anchor catalog.
   );
 }
 
+function seedBareFactualWiki(dataRoot) {
+  write(
+    path.join(dataRoot, "20_Wiki", "Bare-Factual-Claim.md"),
+    `# Bare factual claim
+
+This unmarked Wiki sentence asserts that a public benchmark result is established.
+`,
+  );
+}
+
+function seedInternalTraceOnlyClaim(dataRoot) {
+  write(
+    path.join(dataRoot, "20_Wiki", "Trace-Only-Claim.md"),
+    `---
+title: Trace-only factual claim
+source_status: verified_summary
+source_paths: [.dino/traces/internal-trace.json]
+tags: [external, public]
+---
+# Trace-only factual claim
+
+This external factual claim cites only an internal execution trace.
+`,
+  );
+  write(path.join(dataRoot, ".dino", "traces", "internal-trace.json"), { summary: "Internal execution evidence only." });
+}
+
 function seedSourceChunk(
   dataRoot,
   {
@@ -127,20 +159,79 @@ function seedSourceChunk(
     chunk_type: "external_doc",
     claim_paths: [claimPath],
   };
+  const chunkText = includeChunkText ? "Verified source summary for the claim." : "";
+  const sourceContentSha256 = sha256(chunkText);
+  const chunkSha256 = sha256(chunkText);
+  const claimFile = path.join(dataRoot, ...claimPath.split("/"));
+  let claimSha256 = sha256(`missing:${claimPath}`);
+  try {
+    claimSha256 = sha256(readFileSync(claimFile));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const generationId = `lineage-${id}`;
+  const snapshotPath = `30_Sources/fetched/${id}.json`;
+  const chunkPath = `30_Sources/chunks/${id}.json`;
+  const provenancePath = `.dino/provenance/${id}.json`;
+  const generationPath = `.dino/provenance/generations/${generationId}.json`;
   if (includeUri) chunk.source_uri = "https://example.com/rag";
-  if (includeChunkText) chunk.chunk_text = "Verified source summary for the claim.";
-  if (includeVerification) chunk.verification_status = verificationStatus;
-  write(path.join(dataRoot, "30_Sources", "chunks", `${id}.json`), chunk);
+  if (includeChunkText) chunk.chunk_text = chunkText;
+  if (includeVerification) {
+    chunk.verification_status = verificationStatus;
+    chunk.last_verified = "2026-07-07";
+    chunk.verification_method = "fixture_direct_review";
+  }
+  chunk.source_snapshot_path = snapshotPath;
+  chunk.source_content_sha256 = sourceContentSha256;
+  chunk.chunk_sha256 = chunkSha256;
+  chunk.claim_bindings = [{ path: claimPath, sha256: claimSha256 }];
+  chunk.lineage_generation_id = generationId;
+  chunk.lineage_generation_path = generationPath;
+  write(path.join(dataRoot, ...snapshotPath.split("/")), {
+    version: "source_snapshot_v1",
+    type: "source_snapshot",
+    source_id: id,
+    source_uri: includeUri ? "https://example.com/rag" : null,
+    source_content_sha256: sourceContentSha256,
+    verification_status: includeVerification ? verificationStatus : null,
+    last_verified: includeVerification ? "2026-07-07" : null,
+    verification_method: includeVerification ? "fixture_direct_review" : null,
+  });
+  write(path.join(dataRoot, ...chunkPath.split("/")), chunk);
 
   if (includeProvenance) {
-    write(path.join(dataRoot, ".dino", "provenance", `${id}.json`), {
+    write(path.join(dataRoot, ...provenancePath.split("/")), {
       provenance_id: id,
-      source_chunk_path: `30_Sources/chunks/${id}.json`,
+      source_snapshot_path: snapshotPath,
+      source_chunk_path: chunkPath,
       claim_paths: [claimPath],
+      claim_bindings: [{ path: claimPath, sha256: claimSha256 }],
       source_uri: "https://example.com/rag",
       verification_status: verificationStatus,
+      verification_method: "fixture_direct_review",
+      source_content_sha256: sourceContentSha256,
+      chunk_sha256: chunkSha256,
+      lineage_generation_id: generationId,
+      lineage_generation_path: generationPath,
     });
   }
+  const artifactPaths = [snapshotPath, chunkPath, ...(includeProvenance ? [provenancePath] : [])];
+  write(path.join(dataRoot, ...generationPath.split("/")), {
+    version: "source_lineage_generation_v1",
+    type: "lineage_generation",
+    generation_id: generationId,
+    source_snapshot_path: snapshotPath,
+    source_chunk_path: chunkPath,
+    provenance_path: provenancePath,
+    source_content_sha256: sourceContentSha256,
+    chunk_sha256: chunkSha256,
+    verification_status: verificationStatus,
+    claim_bindings: [{ path: claimPath, sha256: claimSha256 }],
+    artifact_bindings: artifactPaths.map((artifactPath) => ({
+      path: artifactPath,
+      after_sha256: sha256(readFileSync(path.join(dataRoot, ...artifactPath.split("/")))),
+    })),
+  });
 }
 
 async function expectSignal(seed, signal) {
@@ -210,6 +301,18 @@ await expectSignal((dataRoot) => {
 }, "source_chunk_uri_missing");
 
 await expectSignal((dataRoot) => {
+  seedWikiClaim(dataRoot);
+  seedSourceChunk(dataRoot);
+  rmSync(path.join(dataRoot, "30_Sources", "fetched", "rag-source.json"), { force: true });
+}, "source_snapshot_missing");
+
+await expectSignal((dataRoot) => {
+  seedWikiClaim(dataRoot);
+  seedSourceChunk(dataRoot);
+  rmSync(path.join(dataRoot, ".dino", "provenance", "generations", "lineage-rag-source.json"), { force: true });
+}, "lineage_generation_missing");
+
+await expectSignal((dataRoot) => {
   seedFactualProject(dataRoot);
 }, "unsupported_factual_claim");
 
@@ -223,5 +326,13 @@ await expectSignal((dataRoot) => {
   });
   seedAnchorCatalog(dataRoot);
 }, "anchor_only_used_as_support");
+
+await expectSignal((dataRoot) => {
+  seedBareFactualWiki(dataRoot);
+}, "unsupported_factual_claim");
+
+await expectSignal((dataRoot) => {
+  seedInternalTraceOnlyClaim(dataRoot);
+}, "internal_trace_only_used_as_support");
 
 console.log("source lineage verification ok");
