@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverPath = path.join(root, "dist", "index.js");
 const { buildBehaviorRecallReport } = await import(pathToFileURL(path.join(root, "dist", "behavior-recall.js")).href);
@@ -44,7 +46,7 @@ for (const dir of [
   ".dino",
 ]) mkdirSync(path.join(dataRoot, dir), { recursive: true });
 
-const client = new Client({ name: "dinobrain-behavior-recall-e2e", version: "2.2.9" });
+const client = new Client({ name: "dinobrain-behavior-recall-e2e", version: DINOBRAIN_VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
