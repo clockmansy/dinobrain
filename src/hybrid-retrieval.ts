@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import type { RankedRecord } from "./context.js";
@@ -24,6 +24,33 @@ export type DenseVectorIndex = {
   query_vectors?: Record<string, number[]>;
   source_index_sha256?: string;
   record_metadata?: Record<string, DenseVectorRecordMetadata>;
+  record_count?: number;
+  record_count_verified?: boolean;
+  search_partitions?: DenseVectorSearchPartitions;
+};
+
+export type DenseVectorSearchPartitions = {
+  version: "dense_partition_v1";
+  centroids: Record<string, number[]>;
+  members: Record<string, string[]>;
+  probe_count: number;
+  max_vectors_per_query: number;
+};
+
+export type DenseVectorSearchStats = {
+  partitioned: boolean;
+  partition_count: number;
+  partitions_probed: number;
+  total_vector_count: number;
+  vectors_scanned: number;
+  max_vectors_per_query: number;
+  result_limit: number;
+  bounded: boolean;
+};
+
+export type DenseVectorSearchResult = {
+  candidates: DenseVectorCandidate[];
+  stats: DenseVectorSearchStats;
 };
 
 export type DenseVectorRecordMetadata = {
@@ -57,6 +84,62 @@ export const LEXICAL_FALLBACK_RANKING_INPUTS = [
   "reciprocal rank fusion",
   "provenance-aware reranking",
 ] as const;
+
+const DEFAULT_DENSE_INDEX_CACHE_CAPACITY = 1;
+const MAX_DENSE_INDEX_CACHE_CAPACITY = 2;
+const DEFAULT_DENSE_VECTOR_SCAN_LIMIT = 4_096;
+const denseIndexCache = new Map<string, { signature: string; index: DenseVectorIndex; bytes: number }>();
+let denseIndexCacheHits = 0;
+let denseIndexCacheMisses = 0;
+let denseIndexCacheParses = 0;
+let denseIndexCacheEvictions = 0;
+let denseIndexCacheParsedBytes = 0;
+
+function denseIndexCacheCapacity(): number {
+  const configured = Number(process.env.DINOBRAIN_DENSE_INDEX_CACHE_CAPACITY ?? DEFAULT_DENSE_INDEX_CACHE_CAPACITY);
+  if (!Number.isFinite(configured)) return DEFAULT_DENSE_INDEX_CACHE_CAPACITY;
+  return Math.max(1, Math.min(MAX_DENSE_INDEX_CACHE_CAPACITY, Math.floor(configured)));
+}
+
+function evictDenseIndexes(): void {
+  while (denseIndexCache.size > denseIndexCacheCapacity()) {
+    const oldestKey = denseIndexCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    denseIndexCache.delete(oldestKey);
+    denseIndexCacheEvictions += 1;
+  }
+}
+
+export function getDenseVectorIndexCacheStats(): {
+  entries: number;
+  capacity: number;
+  hits: number;
+  misses: number;
+  parses: number;
+  evictions: number;
+  parsed_bytes: number;
+  retained_file_bytes: number;
+} {
+  return {
+    entries: denseIndexCache.size,
+    capacity: denseIndexCacheCapacity(),
+    hits: denseIndexCacheHits,
+    misses: denseIndexCacheMisses,
+    parses: denseIndexCacheParses,
+    evictions: denseIndexCacheEvictions,
+    parsed_bytes: denseIndexCacheParsedBytes,
+    retained_file_bytes: Array.from(denseIndexCache.values()).reduce((sum, entry) => sum + entry.bytes, 0),
+  };
+}
+
+export function resetDenseVectorIndexCache(): void {
+  denseIndexCache.clear();
+  denseIndexCacheHits = 0;
+  denseIndexCacheMisses = 0;
+  denseIndexCacheParses = 0;
+  denseIndexCacheEvictions = 0;
+  denseIndexCacheParsedBytes = 0;
+}
 
 const STOPWORDS = new Set([
   "a",
@@ -290,6 +373,9 @@ function queryVector(index: DenseVectorIndex | null | undefined, query: string):
 }
 
 export function denseRecordVectorCount(index: DenseVectorIndex | null | undefined): number {
+  if (index?.record_count_verified === true && Number.isInteger(index.record_count) && Number(index.record_count) >= 0) {
+    return Number(index?.record_count);
+  }
   return Object.values(vectorMap(index, "records")).filter(validVector).length;
 }
 
@@ -323,9 +409,28 @@ export function loadDenseVectorIndex(dataRoot: string): DenseVectorIndex | null 
     : path.resolve(dataRoot, ...DENSE_VECTOR_INDEX_RELATIVE_PATH.split("/"));
   if (!existsSync(indexPath)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(indexPath, "utf8")) as DenseVectorIndex;
+    const stat = statSync(indexPath);
+    const signature = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    const cached = denseIndexCache.get(indexPath);
+    if (cached?.signature === signature) {
+      denseIndexCacheHits += 1;
+      denseIndexCache.delete(indexPath);
+      denseIndexCache.set(indexPath, cached);
+      return cached.index;
+    }
+    denseIndexCacheMisses += 1;
+    const raw = readFileSync(indexPath, "utf8");
+    const parsed = JSON.parse(raw) as DenseVectorIndex;
     const records = vectorMap(parsed, "records");
-    if (Object.keys(records).length === 0) return null;
+    const actualRecordCount = Object.keys(records).length;
+    if (actualRecordCount === 0) return null;
+    parsed.record_count = actualRecordCount;
+    parsed.record_count_verified = true;
+    denseIndexCacheParses += 1;
+    denseIndexCacheParsedBytes += Buffer.byteLength(raw, "utf8");
+    denseIndexCache.delete(indexPath);
+    denseIndexCache.set(indexPath, { signature, index: parsed, bytes: stat.size });
+    evictDenseIndexes();
     return parsed;
   } catch {
     return null;
@@ -338,6 +443,14 @@ export function denseVectorAvailable(
   denseVectorIndex?: DenseVectorIndex | null,
 ): boolean {
   if (!denseIndexUsesSemanticProvider(denseVectorIndex)) return false;
+  const totalVectorCount = denseRecordVectorCount(denseVectorIndex);
+  const partitions = denseVectorIndex?.search_partitions;
+  const hasPartitions = Boolean(
+    partitions &&
+    Object.keys(partitions.centroids).length > 0 &&
+    Object.keys(partitions.members).length > 0,
+  );
+  if (totalVectorCount > boundedScanLimit(partitions, DENSE_CANDIDATE_TOP_K_DEFAULT) && !hasPartitions) return false;
   const qv = queryVector(denseVectorIndex, query);
   if (!qv) return false;
   const recordVectors = vectorMap(denseVectorIndex, "records");
@@ -349,7 +462,7 @@ export function denseVectorCandidatePaths(
   query: string,
   limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
 ): Set<string> {
-  return new Set(denseVectorCandidates(denseVectorIndex, query, limit).map((candidate) => candidate.path));
+  return new Set(denseVectorCandidatesDetailed(denseVectorIndex, query, limit).candidates.map((candidate) => candidate.path));
 }
 
 export function denseVectorCandidates(
@@ -357,17 +470,132 @@ export function denseVectorCandidates(
   query: string,
   limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
 ): DenseVectorCandidate[] {
-  if (!denseIndexUsesSemanticProvider(denseVectorIndex)) return [];
+  return denseVectorCandidatesDetailed(denseVectorIndex, query, limit).candidates;
+}
+
+function candidateOrder(left: DenseVectorCandidate, right: DenseVectorCandidate): number {
+  return right.cosine - left.cosine || left.path.localeCompare(right.path);
+}
+
+function boundedDenseTopK(
+  recordPaths: string[],
+  recordVectors: Record<string, number[]>,
+  queryVector: number[],
+  dimensions: number,
+  limit: number,
+): DenseVectorCandidate[] {
+  const top: DenseVectorCandidate[] = [];
+  for (const recordPath of recordPaths) {
+    const vector = recordVectors[recordPath];
+    if (!validVector(vector) || (dimensions > 0 && vector.length !== dimensions)) continue;
+    const score = cosine(queryVector, vector);
+    if (score <= 0) continue;
+    const candidate = { path: recordPath, cosine: score };
+    if (top.length < limit) {
+      top.push(candidate);
+      top.sort(candidateOrder);
+      continue;
+    }
+    const worst = top[top.length - 1];
+    if (worst && candidateOrder(candidate, worst) < 0) {
+      top[top.length - 1] = candidate;
+      top.sort(candidateOrder);
+    }
+  }
+  return top;
+}
+
+function boundedScanLimit(partitions: DenseVectorSearchPartitions | undefined, limit: number): number {
+  const declared = Number(partitions?.max_vectors_per_query ?? DEFAULT_DENSE_VECTOR_SCAN_LIMIT);
+  if (!Number.isFinite(declared)) return Math.max(limit, DEFAULT_DENSE_VECTOR_SCAN_LIMIT);
+  return Math.max(limit, Math.min(65_536, Math.floor(declared)));
+}
+
+export function denseVectorCandidatesDetailed(
+  denseVectorIndex: DenseVectorIndex | null | undefined,
+  query: string,
+  limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
+): DenseVectorSearchResult {
+  const empty = (totalVectorCount = denseRecordVectorCount(denseVectorIndex)): DenseVectorSearchResult => ({
+    candidates: [],
+    stats: {
+      partitioned: false,
+      partition_count: 0,
+      partitions_probed: 0,
+      total_vector_count: totalVectorCount,
+      vectors_scanned: 0,
+      max_vectors_per_query: DEFAULT_DENSE_VECTOR_SCAN_LIMIT,
+      result_limit: Math.max(0, limit),
+      bounded: totalVectorCount <= DEFAULT_DENSE_VECTOR_SCAN_LIMIT,
+    },
+  });
+  if (!denseIndexUsesSemanticProvider(denseVectorIndex) || limit <= 0) return empty();
   const qv = queryVector(denseVectorIndex, query);
-  if (!qv || limit <= 0) return [];
+  if (!qv) return empty();
   const dimensions = denseVectorDimensions(denseVectorIndex);
-  if (dimensions > 0 && qv.length !== dimensions) return [];
-  return Object.entries(vectorMap(denseVectorIndex, "records"))
-    .filter(([, vector]) => validVector(vector) && (dimensions <= 0 || vector.length === dimensions))
-    .map(([recordPath, vector]) => ({ path: recordPath, cosine: cosine(qv, vector) }))
-    .filter((candidate) => candidate.cosine > 0)
-    .sort((a, b) => b.cosine - a.cosine || a.path.localeCompare(b.path))
-    .slice(0, limit);
+  if (dimensions > 0 && qv.length !== dimensions) return empty();
+
+  const recordVectors = vectorMap(denseVectorIndex, "records");
+  const totalVectorCount = denseRecordVectorCount(denseVectorIndex);
+  const partitions = denseVectorIndex?.search_partitions;
+  const partitionEntries = partitions
+    ? Object.entries(partitions.centroids).filter(([, vector]) => validVector(vector) && vector.length === qv.length)
+    : [];
+  const maxVectorsPerQuery = boundedScanLimit(partitions, limit);
+  let recordPaths: string[] = [];
+  let partitionsProbed = 0;
+
+  if (partitions && partitionEntries.length > 0) {
+    const probeCount = Math.max(1, Math.min(partitionEntries.length, Math.floor(partitions.probe_count || 1)));
+    const rankedPartitions = partitionEntries
+      .map(([id, centroid]) => ({ id, cosine: cosine(qv, centroid) }))
+      .sort((left, right) => right.cosine - left.cosine || left.id.localeCompare(right.id))
+      .slice(0, probeCount);
+    const selected = new Set<string>();
+    for (const partition of rankedPartitions) {
+      partitionsProbed += 1;
+      for (const recordPath of partitions.members[partition.id] ?? []) {
+        if (selected.size >= maxVectorsPerQuery) break;
+        if (recordVectors[recordPath]) selected.add(recordPath);
+      }
+      if (selected.size >= maxVectorsPerQuery) break;
+    }
+    recordPaths = Array.from(selected);
+  } else {
+    recordPaths = Object.keys(recordVectors);
+  }
+
+  const partitioned = Boolean(partitions && partitionEntries.length > 0);
+  if (!partitioned && totalVectorCount > maxVectorsPerQuery) {
+    return {
+      candidates: [],
+      stats: {
+        partitioned: false,
+        partition_count: 0,
+        partitions_probed: 0,
+        total_vector_count: totalVectorCount,
+        vectors_scanned: 0,
+        max_vectors_per_query: maxVectorsPerQuery,
+        result_limit: limit,
+        bounded: false,
+      },
+    };
+  }
+  const vectorsScanned = Math.min(recordPaths.length, maxVectorsPerQuery);
+  const scannedPaths = recordPaths.slice(0, vectorsScanned);
+  return {
+    candidates: boundedDenseTopK(scannedPaths, recordVectors, qv, dimensions, limit),
+    stats: {
+      partitioned,
+      partition_count: partitionEntries.length,
+      partitions_probed: partitionsProbed,
+      total_vector_count: totalVectorCount,
+      vectors_scanned: vectorsScanned,
+      max_vectors_per_query: maxVectorsPerQuery,
+      result_limit: limit,
+      bounded: totalVectorCount <= maxVectorsPerQuery || (partitioned && vectorsScanned <= maxVectorsPerQuery),
+    },
+  };
 }
 
 export function retrievalModeFor(

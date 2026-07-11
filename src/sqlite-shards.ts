@@ -8,9 +8,10 @@ import { isDefaultRetrievalExcludedPath, type RankedRecord } from "./context.js"
 import {
   type RetrievalMode,
   type DenseVectorIndex,
+  type DenseVectorSearchStats,
   DENSE_CANDIDATE_TOP_K_DEFAULT,
   contextualText,
-  denseVectorCandidates,
+  denseVectorCandidatesDetailed,
   rankRecordsHybridV2,
   retrievalModeFor,
   tokenizeHybrid,
@@ -44,6 +45,11 @@ export type SqliteRetrievalStats = {
   candidate_record_count: number;
   total_candidate_count: number;
   matching_terms: string[];
+  term_lookup: {
+    mode: "exact_prefix_index_range_v1";
+    related_term_limit: number;
+  };
+  dense_search: DenseVectorSearchStats;
   recent_task_count?: number;
 };
 
@@ -305,6 +311,7 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
       record_id TEXT,
       count INTEGER
     );
+    CREATE INDEX idx_nodes_type_count_id ON nodes(type, count DESC, id ASC);
     CREATE TABLE edges (
       from_id TEXT NOT NULL,
       to_id TEXT NOT NULL,
@@ -320,6 +327,8 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
     generated_at: wiki.generated_at,
     record_count: wiki.record_count,
     term_count: wiki.stats.term_count,
+    node_count: wiki.stats.node_count,
+    edge_count: wiki.stats.edge_count,
   });
 
   const insertRecord = db.prepare(`
@@ -595,7 +604,7 @@ async function shardSize(filePath: string): Promise<number> {
 export async function buildAndWriteSqliteShards(dataRoot: string): Promise<SqliteManifest> {
   await fs.mkdir(dataPath(dataRoot, ...SQLITE_INDEX_DIR.split("/")), { recursive: true });
 
-  const wiki = await buildWikiIndex(dataRoot);
+  const wiki = await buildWikiIndex(dataRoot, { includeAdjacency: false, includeColdHotset: false });
   const wikiPath = await writeWikiShard(dataRoot, wiki);
   const { operations, operationsPath } = await withOperationsWriteLock(dataRoot, async () => {
     const operations = await collectOperationEntries(dataRoot);
@@ -673,12 +682,54 @@ function rowToRecord(row: Record<string, unknown>): RankedRecord {
   };
 }
 
+const RELATED_TERM_LIMIT = 200;
+const SQLITE_BULK_PARAMETER_LIMIT = 500;
+
 function matchingSqliteTerms(db: DatabaseSync, queryTerm: string): string[] {
   const exact = db.prepare("SELECT term FROM terms WHERE term = ?").all(queryTerm) as Array<{ term: string }>;
   const related = db
-    .prepare("SELECT term FROM terms WHERE term LIKE ? AND term <> ? ORDER BY term LIMIT 200")
-    .all(`%${queryTerm}%`, queryTerm) as Array<{ term: string }>;
+    .prepare("SELECT DISTINCT term FROM terms WHERE term >= ? AND term < ? AND term <> ? ORDER BY term LIMIT ?")
+    .all(queryTerm, `${queryTerm}\uffff`, queryTerm, RELATED_TERM_LIMIT) as Array<{ term: string }>;
   return [...exact.map((row) => row.term), ...related.map((row) => row.term)];
+}
+
+function chunks<T>(values: T[], size = SQLITE_BULK_PARAMETER_LIMIT): T[][] {
+  const result: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += size) result.push(values.slice(offset, offset + size));
+  return result;
+}
+
+function rowsForTerms(db: DatabaseSync, terms: string[]): Array<{ term: string; record_id: string }> {
+  const rows: Array<{ term: string; record_id: string }> = [];
+  for (const chunk of chunks(terms)) {
+    if (chunk.length === 0) continue;
+    rows.push(...db
+      .prepare(`SELECT term, record_id FROM terms WHERE term IN (${chunk.map(() => "?").join(",")})`)
+      .all(...chunk) as Array<{ term: string; record_id: string }>);
+  }
+  return rows;
+}
+
+function recordsForIds(db: DatabaseSync, ids: string[]): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const chunk of chunks(ids)) {
+    if (chunk.length === 0) continue;
+    rows.push(...db
+      .prepare(`SELECT * FROM records WHERE id IN (${chunk.map(() => "?").join(",")})`)
+      .all(...chunk) as Array<Record<string, unknown>>);
+  }
+  return rows;
+}
+
+function recordsForPaths(db: DatabaseSync, paths: string[]): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const chunk of chunks(paths)) {
+    if (chunk.length === 0) continue;
+    rows.push(...db
+      .prepare(`SELECT * FROM records WHERE path IN (${chunk.map(() => "?").join(",")})`)
+      .all(...chunk) as Array<Record<string, unknown>>);
+  }
+  return rows;
 }
 
 export async function querySqliteWiki(
@@ -693,44 +744,51 @@ export async function querySqliteWiki(
     const queryTerms = tokenize(query);
     const scoreByRecordId = new Map<string, number>();
     const matchedTerms = new Set<string>();
-    const recordIdsForTerm = db.prepare("SELECT record_id FROM terms WHERE term = ?");
+    const weightByTerm = new Map<string, number>();
     for (const queryTerm of queryTerms) {
       for (const term of matchingSqliteTerms(db, queryTerm)) {
         matchedTerms.add(term);
         const weight = term === queryTerm ? 3 : 1;
-        for (const row of recordIdsForTerm.all(term) as Array<{ record_id: string }>) {
-          scoreByRecordId.set(row.record_id, (scoreByRecordId.get(row.record_id) ?? 0) + weight);
-        }
+        weightByTerm.set(term, (weightByTerm.get(term) ?? 0) + weight);
       }
+    }
+    for (const row of rowsForTerms(db, Array.from(weightByTerm.keys()))) {
+      scoreByRecordId.set(row.record_id, (scoreByRecordId.get(row.record_id) ?? 0) + (weightByTerm.get(row.term) ?? 0));
     }
 
     const candidateLimit = options.rankLimit ?? Math.max(limit * 25, 100);
-    const recordById = db.prepare("SELECT * FROM records WHERE id = ?");
-    let records = Array.from(scoreByRecordId.entries())
+    const selectedIds = Array.from(scoreByRecordId.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, candidateLimit)
-      .map(([recordId]) => recordById.get(recordId) as Record<string, unknown> | undefined)
-      .filter((row): row is Record<string, unknown> => Boolean(row))
+      .map(([recordId]) => recordId);
+    const selectedIdOrder = new Map(selectedIds.map((id, index) => [id, index]));
+    let records = recordsForIds(db, selectedIds)
+      .sort((left, right) => (selectedIdOrder.get(String(left.id ?? "")) ?? Number.MAX_SAFE_INTEGER) -
+        (selectedIdOrder.get(String(right.id ?? "")) ?? Number.MAX_SAFE_INTEGER))
       .filter((row) => !isDefaultRetrievalExcludedPath(String(row.path ?? "")))
       .map(rowToRecord);
     const { index: denseVectorIndex } =
       options.denseVectorIndex === undefined
         ? await loadDenseVectorIndexWithLiveQuery(dataRoot, query)
         : { index: options.denseVectorIndex };
-    const denseCandidates = denseVectorCandidates(
+    const denseSearch = denseVectorCandidatesDetailed(
       denseVectorIndex,
       query,
       Math.min(candidateLimit, DENSE_CANDIDATE_TOP_K_DEFAULT),
     );
-    if (denseCandidates.length > 0) {
+    if (denseSearch.candidates.length > 0) {
       const selectedPaths = new Set(records.map((record) => record.path));
-      const recordByPath = db.prepare("SELECT * FROM records WHERE path = ?");
-      for (const candidate of denseCandidates) {
-        const recordPath = candidate.path;
-        if (isDefaultRetrievalExcludedPath(recordPath)) continue;
-        if (records.length >= candidateLimit || selectedPaths.has(recordPath)) continue;
-        const row = recordByPath.get(recordPath) as Record<string, unknown> | undefined;
-        if (!row) continue;
+      const densePaths = denseSearch.candidates
+        .map((candidate) => candidate.path)
+        .filter((recordPath) => !isDefaultRetrievalExcludedPath(recordPath) && !selectedPaths.has(recordPath));
+      const densePathOrder = new Map(densePaths.map((recordPath, index) => [recordPath, index]));
+      const denseRows = recordsForPaths(db, densePaths)
+        .sort((left, right) => (densePathOrder.get(String(left.path ?? "")) ?? Number.MAX_SAFE_INTEGER) -
+          (densePathOrder.get(String(right.path ?? "")) ?? Number.MAX_SAFE_INTEGER));
+      for (const row of denseRows) {
+        if (records.length >= candidateLimit) break;
+        const recordPath = String(row.path ?? "");
+        if (!recordPath || selectedPaths.has(recordPath)) continue;
         records.push(rowToRecord(row));
         selectedPaths.add(recordPath);
       }
@@ -743,7 +801,7 @@ export async function querySqliteWiki(
         .map(rowToRecord);
     }
     const ranked = rankRecordsHybridV2(records, query, { limit, denseVectorIndex });
-    const recordCountRow = db.prepare("SELECT COUNT(*) AS count FROM records").get() as { count: number };
+    const recordCountRow = db.prepare("SELECT value FROM metadata WHERE key = 'record_count'").get() as { value?: string } | undefined;
     return {
       records,
       ranked,
@@ -751,10 +809,15 @@ export async function querySqliteWiki(
         retrieval_mode: retrievalModeFor(records, query, denseVectorIndex),
         candidate_source: "sqlite_shards_v2",
         index_path: sqliteRelativePath("wiki"),
-        index_record_count: recordCountRow.count,
+        index_record_count: Number(recordCountRow?.value ?? 0),
         candidate_record_count: records.length,
         total_candidate_count: scoreByRecordId.size,
         matching_terms: Array.from(matchedTerms).sort((a, b) => a.localeCompare(b)),
+        term_lookup: {
+          mode: "exact_prefix_index_range_v1",
+          related_term_limit: RELATED_TERM_LIMIT,
+        },
+        dense_search: denseSearch.stats,
       },
     };
   } finally {

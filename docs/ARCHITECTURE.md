@@ -99,6 +99,16 @@ Normal Context Packs may use recent task records. Versioned RAG and answer-quali
 
 Live semantic query vectors use a bounded LRU. A process keeps at most the configured semantic pipeline count and serializes inference per pipeline. Observatory coalesces in-flight state work, serves one bounded snapshot DTO, and polls only after the prior refresh completes. Multiple live stdio MCP connections still create separate processes and can duplicate one model residency per process; a shared embedding sidecar remains later scale work.
 
+At 50k scale, sparse term expansion uses an indexed exact/prefix range and
+matching terms plus candidate rows are fetched in bounded batches instead of
+N+1 statements. Dense search first probes semantic partition centroids and
+scans at most 4,096 vectors; an oversized unpartitioned index fails back to
+`lexical_fallback_v2`. The parsed dense index is an mtime-bound single-entry
+cache. SQLite shard builds omit JSON-only adjacency/cold-hotset materialization,
+store record/node/edge counts as metadata, and index graph node type/count.
+Observatory verifies a changed status-generation pointer immediately but does
+not rehash an unchanged multi-hundred-megabyte generation on every poll.
+
 ## SQLite Shards
 
 SQLite shards are the preferred speed layer over the JSON manifests.

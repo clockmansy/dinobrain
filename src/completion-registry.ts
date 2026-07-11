@@ -119,6 +119,8 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("verify:live-query-cache-budget", ["HG-04", "HG-10"]),
   command("verify:semantic-pipeline-cache", ["HG-04", "HG-10"]),
   command("verify:answer-quality", ["HG-04", "HG-07"]),
+  command("scale:50k:verify", ["HG-04", "HG-08", "HG-10"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("scale:50k:check", ["HG-04", "HG-08", "HG-10"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("observatory:verify", ["HG-08", "HG-10"]),
   command("graph:health", ["HG-05", "HG-08"]),
   command("graph:health:verify", ["HG-08"]),

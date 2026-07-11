@@ -212,6 +212,9 @@ Required evidence:
 - the calibration's hash-bound independent review artifact under
   `60_Operations/rag-evaluation/`;
 - `.dino/state/vector_index_migration.json`;
+- `.dino/evaluations/scale-50k-status.json` with `status=healthy`,
+  `qualifying=true`, zero failed assertions, and current code/generator/
+  environment bindings;
 - current-vault and scale-test reports, not fixture reports alone.
 
 ### HG-05: Durable Source, Chunk, Claim, And Provenance Lineage
@@ -452,6 +455,8 @@ the current-vault artifacts named above.
 | RAG regressions | `npm run verify:answer-quality` | HG-04 regression coverage |
 | Query cache budget | `npm run verify:live-query-cache-budget` | HG-04/HG-10 bounded live-query memory |
 | Semantic pipeline cache | `npm run verify:semantic-pipeline-cache` | HG-04/HG-10 one model pipeline per process/config |
+| 50k scale regression | `npm run scale:50k:verify` | HG-04/HG-08/HG-10 deterministic, adversarial, bounded-work coverage |
+| 50k scale current proof | `npm run scale:50k:check` | HG-04/HG-08/HG-10 require a qualifying hash-bound 50k/1,000-session report |
 | Observatory resource regression | `npm run observatory:verify` | HG-08/HG-10 coalesced refresh and bounded payload proof |
 | Graph | `npm run graph:health` | HG-08 current graph evidence |
 | Graph regression | `npm run graph:health:verify` | HG-08 regression coverage |
@@ -531,7 +536,12 @@ $commands = @(
   'npm run rag:vector:migration:verify',
   'npm run eval:rag:verify',
   'npm run verify:live-semantic-query',
+  'npm run verify:live-query-cache-budget',
+  'npm run verify:semantic-pipeline-cache',
   'npm run verify:answer-quality',
+  'npm run scale:50k:verify',
+  'npm run scale:50k:check',
+  'npm run observatory:verify',
   'npm run graph:health',
   'npm run graph:health:verify',
   'npm run session:verify',

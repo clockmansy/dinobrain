@@ -92,6 +92,26 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      const value = values[index];
+      if (value !== undefined) results[index] = await mapper(value, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function tokenizeForIndex(value: string): string[] {
   return Array.from(new Set(tokenizeHybrid(value)));
 }
@@ -211,7 +231,10 @@ async function indexRecord(dataRoot: string, record: RankedRecord): Promise<Wiki
   };
 }
 
-function buildGraph(records: WikiIndexRecord[]): Pick<WikiIndex, "nodes" | "edges" | "adjacency"> {
+function buildGraph(
+  records: WikiIndexRecord[],
+  options: { includeAdjacency?: boolean } = {},
+): Pick<WikiIndex, "nodes" | "edges" | "adjacency"> {
   const nodes = new Map<string, WikiIndexNode>();
   const edges = new Map<string, WikiIndexEdge>();
   const titleToRecordNode = new Map<string, string>();
@@ -268,17 +291,18 @@ function buildGraph(records: WikiIndexRecord[]): Pick<WikiIndex, "nodes" | "edge
     }
   }
 
-  const adjacencyMap = new Map<string, Set<string>>();
-  for (const edge of edges.values()) {
-    if (!adjacencyMap.has(edge.from)) adjacencyMap.set(edge.from, new Set<string>());
-    if (!adjacencyMap.has(edge.to)) adjacencyMap.set(edge.to, new Set<string>());
-    adjacencyMap.get(edge.from)?.add(edge.to);
-    adjacencyMap.get(edge.to)?.add(edge.from);
-  }
-
   const adjacency: Record<string, string[]> = {};
-  for (const [nodeId, neighbors] of adjacencyMap) {
-    adjacency[nodeId] = Array.from(neighbors).sort((a, b) => a.localeCompare(b));
+  if (options.includeAdjacency !== false) {
+    const adjacencyMap = new Map<string, Set<string>>();
+    for (const edge of edges.values()) {
+      if (!adjacencyMap.has(edge.from)) adjacencyMap.set(edge.from, new Set<string>());
+      if (!adjacencyMap.has(edge.to)) adjacencyMap.set(edge.to, new Set<string>());
+      adjacencyMap.get(edge.from)?.add(edge.to);
+      adjacencyMap.get(edge.to)?.add(edge.from);
+    }
+    for (const [nodeId, neighbors] of adjacencyMap) {
+      adjacency[nodeId] = Array.from(neighbors).sort((a, b) => a.localeCompare(b));
+    }
   }
 
   return {
@@ -390,21 +414,37 @@ export async function readWikiIndex(dataRoot: string): Promise<WikiIndex | null>
   }
 }
 
-export async function buildWikiIndex(dataRoot: string): Promise<WikiIndex> {
+export async function buildWikiIndex(
+  dataRoot: string,
+  options: { includeAdjacency?: boolean; includeColdHotset?: boolean } = {},
+): Promise<WikiIndex> {
   const curatedRecords = await collectCuratedRecords(dataRoot);
-  const records = (
-    await Promise.all(curatedRecords.map((record) => indexRecord(dataRoot, record)))
-  ).filter((record): record is WikiIndexRecord => Boolean(record));
+  const configuredConcurrency = Number(process.env.DINOBRAIN_INDEX_READ_CONCURRENCY ?? 64);
+  const concurrency = Number.isFinite(configuredConcurrency)
+    ? Math.max(1, Math.min(128, Math.floor(configuredConcurrency)))
+    : 64;
+  const records = (await mapWithConcurrency(
+    curatedRecords,
+    concurrency,
+    async (record) => await indexRecord(dataRoot, record),
+  )).filter((record): record is WikiIndexRecord => Boolean(record));
   records.sort((a, b) => a.path.localeCompare(b.path));
 
   const invertedIndex = buildInvertedIndex(records);
-  const graph = buildGraph(records);
+  const graph = buildGraph(records, options);
   const recentRecordIds = [...records]
     .sort((a, b) => b.mtime_ms - a.mtime_ms)
     .slice(0, 50)
     .map((record) => record.id);
   const hotset = new Set(recentRecordIds);
-  const coldRecordIds = records.filter((record) => !hotset.has(record.id)).map((record) => record.id);
+  const coldRecordIds = options.includeColdHotset === false
+    ? []
+    : records.filter((record) => !hotset.has(record.id)).map((record) => record.id);
+
+  let maxCandidatesPerTerm = 0;
+  for (const recordIds of Object.values(invertedIndex)) {
+    maxCandidatesPerTerm = Math.max(maxCandidatesPerTerm, recordIds.length);
+  }
 
   return {
     version: WIKI_INDEX_VERSION,
@@ -423,7 +463,7 @@ export async function buildWikiIndex(dataRoot: string): Promise<WikiIndex> {
       term_count: Object.keys(invertedIndex).length,
       node_count: graph.nodes.length,
       edge_count: graph.edges.length,
-      max_candidates_per_term: Math.max(0, ...Object.values(invertedIndex).map((recordIds) => recordIds.length)),
+      max_candidates_per_term: maxCandidatesPerTerm,
     },
   };
 }
@@ -489,7 +529,7 @@ export async function getIndexedPackItems(
   options: { includeRecentTasks?: boolean } = {},
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: IndexedRetrievalStats }> {
   const index = await ensureWikiIndex(dataRoot);
-  const candidateLimit = Math.min(index.record_count, Math.max(limit * 200, 1000));
+  const candidateLimit = Math.min(index.record_count, Math.max(limit * 80, 400));
   const candidates = selectCandidates(index, question, candidateLimit);
   const recentTasks = options.includeRecentTasks === false ? [] : await collectRecentTaskRecords(dataRoot, 10);
   const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);

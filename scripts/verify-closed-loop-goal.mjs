@@ -618,6 +618,22 @@ function main() {
       timeoutMs: 180000,
     }),
     runCheck({
+      id: "scale_50k_regression",
+      description:
+        "Scale verifier must prove deterministic corpus generation, bounded dense/index work, indexed graph polling, budget failure, and report tamper detection.",
+      command: node,
+      args: ["scripts/verify-scale-proof.mjs"],
+      timeoutMs: 600000,
+    }),
+    runCheck({
+      id: "scale_50k_current",
+      description:
+        "Current data vault must contain a qualifying healthy 50k-record and 1,000-session scale report bound to current code, generator, and hardware.",
+      command: node,
+      args: ["scripts/verify-scale-proof-current.mjs"],
+      timeoutMs: 180000,
+    }),
+    runCheck({
       id: "os_memory_growth_quality",
       description:
         "OS verifier must prove configured MCP tools, compounding memory loop, retrieval quality, and behavior quality.",
@@ -868,6 +884,15 @@ function main() {
           : hasAnswerQualityEvidence(byId.answer_quality_current)
             ? null
             : classifyAnswerQualityBlocker(byId.answer_quality_current),
+    },
+    {
+      requirement: "retrieval_50k_scale_latency_and_resource_proof",
+      ok: byId.scale_50k_regression.ok === true && byId.scale_50k_current.ok === true,
+      evidence: "scale_50k_regression + current hash-bound 50k/1,000-session report",
+      blocker:
+        byId.scale_50k_regression.ok === true && byId.scale_50k_current.ok === true
+          ? null
+          : "scale_50k_evidence_not_verified",
     },
     {
       requirement: "os_memory_growth_and_retrieval_quality",

@@ -36,10 +36,11 @@ export async function getContextPackItems(
     return await getIndexedPackItems(dataRoot, question, limit, options);
   }
 
+  const candidateLimit = Math.max(limit * 80, 400);
   const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
-  const sqlite = await querySqliteWiki(dataRoot, question, Math.max(limit * 200, 1000), {
+  const sqlite = await querySqliteWiki(dataRoot, question, candidateLimit, {
     includeExcerpt: false,
-    rankLimit: Math.max(limit * 200, 1000),
+    rankLimit: candidateLimit,
     denseVectorIndex,
   });
   const recentTasks = options.includeRecentTasks === false

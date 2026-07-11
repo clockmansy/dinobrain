@@ -161,6 +161,27 @@ publication files leak.
 
 `npm run status:answer-quality` requires `.dino/evaluations/answer-quality-golden.json` and a hash-bound `.dino/evaluations/answer-quality-calibration.json`. The deterministic generator receives only the current request and retrieved reviewed guidance; golden actions are judge-only labels. Completion additionally requires at least three independent LLM or Ragas judge identities, blinded and randomized arms, a durable raw review artifact, answer hashes, the combined answer/retrieval runtime hash, dense-index hash, declared disagreement bound, current-instruction safety, and RAM/latency budgets. Missing, stale, tampered, or self-derived calibration fails closed.
 
+`npm run scale:50k` creates an isolated deterministic vault with 50,000 curated
+records and 1,000 completed sessions, then exercises the real SQLite shard,
+Context Pack, Wiki search, recent-task, incremental-write, graph, and
+Observatory paths. It deletes the synthetic vault and writes only
+`.dino/evaluations/scale-50k-status.json` to the configured data root. A
+qualifying report must meet the HG-04 warm p95 targets, the three-minute cold
+build target, the process-RSS/payload budgets, indexed term/graph query plans,
+partition-probed dense top-K, one cached dense-index parse, and one full
+status-generation verification per Observatory window. The report binds the
+runtime source files, generator, hardware environment, curated corpus, session
+growth, and payload by SHA-256.
+
+`npm run scale:50k:verify` uses smaller non-qualifying fixtures to prove
+deterministic generation, explicit budget failure, report tamper detection,
+stale code-binding detection, bounded Observatory output, and fail-closed
+behavior for an oversized unpartitioned dense index. `npm run scale:50k:check`
+does not rebuild 50k records; it verifies that the current qualifying report is
+healthy and still matches the current runtime code, generator, and hardware.
+The completion audit imports the same report with
+`--external scale_50k=<data-root>/.dino/evaluations/scale-50k-status.json`.
+
 Resource regressions are covered by `npm run verify:live-query-cache-budget`, `npm run verify:semantic-pipeline-cache`, and `npm run observatory:verify`. These verify bounded query-vector retention, one semantic pipeline construction per model/configuration, serialized inference, coalesced Observatory refreshes, bounded payloads, and non-overlapping browser polling.
 
 `npm run eval:rag:verify` proves that lexical fallback is not treated as healthy full RAG, then proves a dense-vector fixture can pass with memory-on lift and `hybrid_contextual_v2`. This still remains scaffold health unless the dense provider is semantic and generated-answer quality metrics are present.

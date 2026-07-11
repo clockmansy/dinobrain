@@ -246,6 +246,8 @@ export async function buildAndWriteRagProof(
     provider: vectorProvider,
     model: vectorModel,
     dimensions: vectorDimensions,
+    record_count: Object.keys(records).length,
+    record_count_verified: true,
     semantic_embedding_provider: semanticProvider,
     cache_dir: cacheDir,
     generated_at: generatedAt,

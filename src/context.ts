@@ -363,118 +363,123 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
     await walkSupportedRecords(dataPath(dataRoot, root), files);
   }
 
+  const configuredConcurrency = Number(process.env.DINOBRAIN_RECORD_READ_CONCURRENCY ?? 64);
+  const concurrency = Number.isFinite(configuredConcurrency)
+    ? Math.max(1, Math.min(128, Math.floor(configuredConcurrency)))
+    : 64;
   const records: RankedRecord[] = [];
-  for (const file of files) {
-    const stat = await fs.stat(file);
-    if (stat.size > 256 * 1024) continue;
+  for (let offset = 0; offset < files.length; offset += concurrency) {
+    const chunk = await Promise.all(files.slice(offset, offset + concurrency).map(async (file): Promise<RankedRecord | null> => {
+      const stat = await fs.stat(file);
+      if (stat.size > 256 * 1024) return null;
 
-    const relativePath = relDataPath(dataRoot, file);
-    if (isDefaultRetrievalExcludedPath(relativePath)) continue;
-    if (coldPartitionPaths.has(relativePath)) continue;
+      const relativePath = relDataPath(dataRoot, file);
+      if (isDefaultRetrievalExcludedPath(relativePath) || coldPartitionPaths.has(relativePath)) return null;
 
-    const raw = await fs.readFile(file, "utf8");
-    const extension = path.extname(file).toLowerCase();
+      const raw = await fs.readFile(file, "utf8");
+      const extension = path.extname(file).toLowerCase();
 
-    if (extension === ".json") {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw) as unknown;
-      } catch {
-        continue;
+      if (extension === ".json") {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw) as unknown;
+        } catch {
+          return null;
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+        const jsonRecord = parsed as Record<string, unknown>;
+        if (isQuarantinedRecord(jsonRecord, relativePath, quarantinedPaths)) return null;
+        if (!(await isAcceptedMemoryRetrievable(dataRoot, relativePath, jsonRecord))) return null;
+        const claim = firstString(jsonRecord.claim);
+        const reusableRule = firstString(jsonRecord.reusable_rule, jsonRecord.rule, jsonRecord.decision);
+        const evidence = evidenceSnippet(jsonRecord);
+        const summary = firstString(jsonRecord.summary, claim, evidence);
+        const title = firstString(jsonRecord.title, claim, path.basename(file, extension));
+        const excerpt = raw.replace(/\s+/g, " ").trim().slice(0, 900);
+        const aliases = normalizedAliases(jsonRecord.aliases, jsonRecord.alias, jsonRecord.aka, jsonRecord.exact_aliases);
+        const lifecycleState = firstString(jsonRecord.lifecycle_state, jsonRecord.lifecycle, jsonRecord.status, "active");
+        const verificationStatus = firstString(
+          jsonRecord.verification_status,
+          jsonRecord.review_status,
+          jsonRecord.source_status,
+          relativePath.startsWith("50_Instances/accepted/") ? "accepted" : "unverified",
+        );
+        const reviewLineage = [
+          typeof jsonRecord.source_candidate_path === "string" ? `source_candidate_path=${jsonRecord.source_candidate_path}` : "",
+          typeof jsonRecord.reviewed_by === "string" ? `reviewed_by=${jsonRecord.reviewed_by}` : "",
+          typeof jsonRecord.reviewed_at === "string" ? `reviewed_at=${jsonRecord.reviewed_at}` : "",
+          String(jsonRecord.review_status ?? "").toLowerCase() === "accepted_by_agent_review"
+            ? "review_status=accepted_by_agent_review"
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return {
+          path: relativePath,
+          kind: "curated_record",
+          title,
+          summary: [
+            summary,
+            reusableRule && reusableRule !== summary ? `Rule: ${reusableRule}` : "",
+            evidence && evidence !== summary ? `Evidence: ${evidence}` : "",
+            reviewLineage ? `Review: ${reviewLineage}` : "",
+          ]
+            .filter(Boolean)
+            .join(" | ")
+            .slice(0, 1000),
+          tags: stringArray(jsonRecord.tags),
+          score: 0,
+          reasons: [],
+          excerpt,
+          contextual_chunk: boundedContextChunk(title, summary, excerpt),
+          source_sha256: sha256(raw),
+          parent_record_path:
+            firstString(
+              jsonRecord.parent_record_path,
+              jsonRecord.parent_path,
+              jsonRecord.source_path,
+              jsonRecord.source_candidate_path,
+            ) || null,
+          language: detectLanguage([title, summary, excerpt].join(" ")),
+          lifecycle_state: lifecycleState,
+          verification_status: verificationStatus,
+          retrieval_lane: retrievalLaneForPath(relativePath),
+          knowledge_role: knowledgeRoleForRecord(relativePath, jsonRecord),
+          aliases,
+          modified_at_ms: stat.mtimeMs,
+        };
       }
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
-      const jsonRecord = parsed as Record<string, unknown>;
-      if (isQuarantinedRecord(jsonRecord, relativePath, quarantinedPaths)) continue;
-      if (!(await isAcceptedMemoryRetrievable(dataRoot, relativePath, jsonRecord))) continue;
-      const claim = firstString(jsonRecord.claim);
-      const reusableRule = firstString(jsonRecord.reusable_rule, jsonRecord.rule, jsonRecord.decision);
-      const evidence = evidenceSnippet(jsonRecord);
-      const summary = firstString(jsonRecord.summary, claim, evidence);
-      const title = firstString(jsonRecord.title, claim, path.basename(file, extension));
-      const excerpt = raw.replace(/\s+/g, " ").trim().slice(0, 900);
-      const aliases = normalizedAliases(jsonRecord.aliases, jsonRecord.alias, jsonRecord.aka, jsonRecord.exact_aliases);
-      const lifecycleState = firstString(jsonRecord.lifecycle_state, jsonRecord.lifecycle, jsonRecord.status, "active");
-      const verificationStatus = firstString(
-        jsonRecord.verification_status,
-        jsonRecord.review_status,
-        jsonRecord.source_status,
-        relativePath.startsWith("50_Instances/accepted/") ? "accepted" : "unverified",
-      );
-      const reviewLineage = [
-        typeof jsonRecord.source_candidate_path === "string" ? `source_candidate_path=${jsonRecord.source_candidate_path}` : "",
-        typeof jsonRecord.reviewed_by === "string" ? `reviewed_by=${jsonRecord.reviewed_by}` : "",
-        typeof jsonRecord.reviewed_at === "string" ? `reviewed_at=${jsonRecord.reviewed_at}` : "",
-        String(jsonRecord.review_status ?? "").toLowerCase() === "accepted_by_agent_review"
-          ? "review_status=accepted_by_agent_review"
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      records.push({
+
+      if (relativePath.startsWith("50_Instances/accepted/")) return null;
+      const { metadata, body } = parseFrontmatter(raw);
+      if (isQuarantinedRecord(metadata, relativePath, quarantinedPaths)) return null;
+      const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));
+      const summary = String(metadata.summary ?? firstParagraph(body));
+      const tags = stringArray(metadata.tags);
+      const excerpt = body.replace(/\s+/g, " ").trim().slice(0, 600);
+      return {
         path: relativePath,
         kind: "curated_record",
         title,
-        summary: [
-          summary,
-          reusableRule && reusableRule !== summary ? `Rule: ${reusableRule}` : "",
-          evidence && evidence !== summary ? `Evidence: ${evidence}` : "",
-          reviewLineage ? `Review: ${reviewLineage}` : "",
-        ]
-          .filter(Boolean)
-          .join(" | ")
-          .slice(0, 1000),
-        tags: stringArray(jsonRecord.tags),
+        summary,
+        tags,
         score: 0,
         reasons: [],
         excerpt,
         contextual_chunk: boundedContextChunk(title, summary, excerpt),
         source_sha256: sha256(raw),
         parent_record_path:
-          firstString(
-            jsonRecord.parent_record_path,
-            jsonRecord.parent_path,
-            jsonRecord.source_path,
-            jsonRecord.source_candidate_path,
-          ) || null,
+          firstString(metadata.parent_record_path, metadata.parent_path, metadata.source_path) || null,
         language: detectLanguage([title, summary, excerpt].join(" ")),
-        lifecycle_state: lifecycleState,
-        verification_status: verificationStatus,
+        lifecycle_state: firstString(metadata.lifecycle_state, metadata.lifecycle, metadata.status, "active"),
+        verification_status: firstString(metadata.verification_status, metadata.review_status, metadata.source_status, "unverified"),
         retrieval_lane: retrievalLaneForPath(relativePath),
-        knowledge_role: knowledgeRoleForRecord(relativePath, jsonRecord),
-        aliases,
+        knowledge_role: knowledgeRoleForRecord(relativePath, metadata as Record<string, unknown>),
+        aliases: normalizedAliases(metadata.aliases, metadata.alias, metadata.aka, metadata.exact_aliases),
         modified_at_ms: stat.mtimeMs,
-      });
-      continue;
-    }
-
-    if (relativePath.startsWith("50_Instances/accepted/")) continue;
-    const { metadata, body } = parseFrontmatter(raw);
-    if (isQuarantinedRecord(metadata, relativePath, quarantinedPaths)) continue;
-    const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));
-    const summary = String(metadata.summary ?? firstParagraph(body));
-    const tags = stringArray(metadata.tags);
-    const excerpt = body.replace(/\s+/g, " ").trim().slice(0, 600);
-    records.push({
-      path: relativePath,
-      kind: "curated_record",
-      title,
-      summary,
-      tags,
-      score: 0,
-      reasons: [],
-      excerpt,
-      contextual_chunk: boundedContextChunk(title, summary, excerpt),
-      source_sha256: sha256(raw),
-      parent_record_path:
-        firstString(metadata.parent_record_path, metadata.parent_path, metadata.source_path) || null,
-      language: detectLanguage([title, summary, excerpt].join(" ")),
-      lifecycle_state: firstString(metadata.lifecycle_state, metadata.lifecycle, metadata.status, "active"),
-      verification_status: firstString(metadata.verification_status, metadata.review_status, metadata.source_status, "unverified"),
-      retrieval_lane: retrievalLaneForPath(relativePath),
-      knowledge_role: knowledgeRoleForRecord(relativePath, metadata as Record<string, unknown>),
-      aliases: normalizedAliases(metadata.aliases, metadata.alias, metadata.aka, metadata.exact_aliases),
-      modified_at_ms: stat.mtimeMs,
-    });
+      };
+    }));
+    records.push(...chunk.filter((record): record is RankedRecord => record !== null));
   }
 
   return records;

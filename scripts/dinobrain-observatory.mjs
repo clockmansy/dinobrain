@@ -22,11 +22,17 @@ const execFileAsync = promisify(execFile);
 const readinessVersion = "observatory_readiness_v1";
 const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 2000);
 const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 2000;
+const configuredGenerationVerifyTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_GENERATION_VERIFY_TTL_MS ?? 30_000);
+const generationVerifyTtlMs = Number.isFinite(configuredGenerationVerifyTtlMs)
+  ? Math.max(1_000, configuredGenerationVerifyTtlMs)
+  : 30_000;
 const statePayloadBudgetBytes = 256 * 1024;
 const statePayloadTargetBytes = 240 * 1024;
 const stateLimits = Object.freeze({ events: 60, tasks: 24, context_packs: 12, traces: 12, memory_audits: 8 });
+const graphWindowLimits = Object.freeze({ wiki_nodes: 380, total_nodes: 420, total_edges: 800 });
+const graphNodeTypeLimits = Object.freeze({ root: 32, folder: 80, kind: 16, tag: 60, wikilink: 12, record: 221 });
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
-let statusGenerationCache = { loaded_at: 0, value: null, in_flight: null };
+let statusGenerationCache = { loaded_at: 0, pointer_signature: null, value: null, in_flight: null };
 const resourceCounters = {
   http_requests: 0,
   http_active: 0,
@@ -39,6 +45,8 @@ const resourceCounters = {
   jsonl_files_read: 0,
   jsonl_bytes_read: 0,
   sqlite_opens: 0,
+  status_generation_verifications: 0,
+  status_generation_stat_checks: 0,
 };
 const resourceCaches = new Map(
   ["state", "graph", "readiness", "snapshot"].map((name) => [name, {
@@ -134,16 +142,48 @@ function rel(filePath) {
 }
 
 async function currentStatusGeneration() {
-  if (statusGenerationCache.value && Date.now() - statusGenerationCache.loaded_at < 250) {
-    return statusGenerationCache.value;
+  const pointerPath = path.join(dataRoot, STATUS_GENERATION_POINTER_RELATIVE_PATH.replaceAll("/", path.sep));
+  let pointerSignature = "missing";
+  try {
+    const pointerStat = await fs.stat(pointerPath);
+    pointerSignature = `${pointerStat.size}:${pointerStat.mtimeMs}:${pointerStat.ctimeMs}`;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const cacheFresh =
+    statusGenerationCache.value &&
+    statusGenerationCache.pointer_signature === pointerSignature &&
+    Date.now() - statusGenerationCache.loaded_at < generationVerifyTtlMs;
+  if (cacheFresh) {
+    const manifestEntries = Array.isArray(statusGenerationCache.value?.manifest?.entries)
+      ? statusGenerationCache.value.manifest.entries
+      : [];
+    let sourcesUnchanged = manifestEntries.length > 0;
+    for (const entry of manifestEntries) {
+      resourceCounters.status_generation_stat_checks += 1;
+      try {
+        const sourcePath = path.join(dataRoot, ...String(entry.source_path ?? "").split("/"));
+        const sourceStat = await fs.stat(sourcePath);
+        if (sourceStat.size !== entry.size_bytes || sourceStat.mtime.toISOString() !== entry.source_mtime) {
+          sourcesUnchanged = false;
+          break;
+        }
+      } catch {
+        sourcesUnchanged = false;
+        break;
+      }
+    }
+    if (sourcesUnchanged) return statusGenerationCache.value;
   }
   if (statusGenerationCache.in_flight) return statusGenerationCache.in_flight;
+  resourceCounters.status_generation_verifications += 1;
   statusGenerationCache.in_flight = loadCurrentStatusGeneration(dataRoot, {
     verifyEntries: true,
     verifySourceCoherence: true,
   }).then((value) => {
     statusGenerationCache.value = value;
     statusGenerationCache.loaded_at = Date.now();
+    statusGenerationCache.pointer_signature = pointerSignature;
     return value;
   }).finally(() => {
     statusGenerationCache.in_flight = null;
@@ -370,7 +410,7 @@ function normalizeGraphEdge(edge) {
   };
 }
 
-function selectGraphWindow(nodes, edges, limit = 450) {
+function selectGraphWindow(nodes, edges, limit = graphWindowLimits.wiki_nodes) {
   const priority = new Map([
     ["root", 0],
     ["folder", 1],
@@ -379,17 +419,32 @@ function selectGraphWindow(nodes, edges, limit = 450) {
     ["record", 4],
     ["wikilink", 5],
   ]);
-  const selectedNodes = [...nodes]
-    .sort((a, b) => {
-      const typeDelta = (priority.get(a.type) ?? 9) - (priority.get(b.type) ?? 9);
-      if (typeDelta !== 0) return typeDelta;
-      const countDelta = (b.count ?? 0) - (a.count ?? 0);
-      if (countDelta !== 0) return countDelta;
-      return a.id.localeCompare(b.id);
-    })
-    .slice(0, limit);
+  const orderedNodes = [...nodes].sort((a, b) => {
+    const typeDelta = (priority.get(a.type) ?? 9) - (priority.get(b.type) ?? 9);
+    if (typeDelta !== 0) return typeDelta;
+    const countDelta = (b.count ?? 0) - (a.count ?? 0);
+    if (countDelta !== 0) return countDelta;
+    return a.id.localeCompare(b.id);
+  });
+  const selectedNodes = [];
+  const selectedNodeIds = new Set();
+  for (const [type, typeLimit] of Object.entries(graphNodeTypeLimits)) {
+    for (const node of orderedNodes.filter((entry) => entry.type === type).slice(0, typeLimit)) {
+      if (selectedNodes.length >= limit || selectedNodeIds.has(node.id)) break;
+      selectedNodes.push(node);
+      selectedNodeIds.add(node.id);
+    }
+  }
+  for (const node of orderedNodes) {
+    if (selectedNodes.length >= limit) break;
+    if (selectedNodeIds.has(node.id)) continue;
+    selectedNodes.push(node);
+    selectedNodeIds.add(node.id);
+  }
   const selectedIds = new Set(selectedNodes.map((node) => node.id));
-  const selectedEdges = edges.filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target));
+  const selectedEdges = edges
+    .filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
+    .slice(0, graphWindowLimits.total_edges);
   return {
     nodes: selectedNodes,
     edges: selectedEdges,
@@ -424,32 +479,40 @@ async function readWikiGraph() {
           .all()
           .map((row) => [String(row.key), String(row.value)]),
       );
-      const nodeCount = Number(db.prepare("SELECT COUNT(*) AS count FROM nodes").get().count ?? 0);
-      const edgeCount = Number(db.prepare("SELECT COUNT(*) AS count FROM edges").get().count ?? 0);
-      const nodes = db.prepare(`
-        SELECT id, type, label, path, record_id, count
-        FROM nodes
-        ORDER BY CASE type
-          WHEN 'root' THEN 0
-          WHEN 'folder' THEN 1
-          WHEN 'kind' THEN 2
-          WHEN 'tag' THEN 3
-          WHEN 'record' THEN 4
-          WHEN 'wikilink' THEN 5
-          ELSE 9
-        END, count DESC, id ASC
-        LIMIT 450
-      `).all().map(normalizeGraphNode);
+      const metadataCount = (key, table) => {
+        const declared = Number(metadata[key] ?? Number.NaN);
+        return Number.isFinite(declared)
+          ? declared
+          : Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count ?? 0);
+      };
+      const nodeCount = metadataCount("node_count", "nodes");
+      const edgeCount = metadataCount("edge_count", "edges");
+      const nodes = Object.entries(graphNodeTypeLimits).flatMap(([type, typeLimit]) => db
+        .prepare(`
+          SELECT id, type, label, path, record_id, count
+          FROM nodes
+          WHERE type = ?
+          ORDER BY count DESC, id ASC
+          LIMIT ?
+        `)
+        .all(type, typeLimit)
+        .map(normalizeGraphNode))
+        .slice(0, graphWindowLimits.wiki_nodes);
       const nodeIds = nodes.map((node) => node.id);
+      const selectedNodeIds = new Set(nodeIds);
       const edges = nodeIds.length === 0
         ? []
         : db.prepare(`
             SELECT from_id, to_id, type
             FROM edges
             WHERE from_id IN (${nodeIds.map(() => "?").join(",")})
-              AND to_id IN (${nodeIds.map(() => "?").join(",")})
-          `).all(...nodeIds, ...nodeIds).map(normalizeGraphEdge);
-      const recordCount = db.prepare("SELECT COUNT(*) AS count FROM records").get().count;
+            ORDER BY from_id ASC, type ASC, to_id ASC
+            LIMIT ${graphWindowLimits.total_edges * 4}
+          `).all(...nodeIds)
+          .map(normalizeGraphEdge)
+          .filter((edge) => selectedNodeIds.has(edge.target))
+          .slice(0, graphWindowLimits.total_edges);
+      const recordCount = metadataCount("record_count", "records");
       return {
         ok: true,
         index_mode: "sqlite_wiki_graph_v0",
@@ -1044,6 +1107,7 @@ async function buildReadiness(existingState = null) {
     ragEvalArtifact,
     liveSemanticQueryArtifact,
     answerQualityArtifact,
+    scaleArtifact,
     releaseManifestArtifact,
     graphArtifact,
     audits,
@@ -1066,6 +1130,7 @@ async function buildReadiness(existingState = null) {
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
     readStatusArtifact(".dino/state/answer_quality_status.json"),
+    readStatusArtifact(".dino/evaluations/scale-50k-status.json"),
     readStatusArtifact(".dino/state/release_manifest_status.json"),
     readStatusArtifact(".dino/index/graph-health.json"),
     existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
@@ -1216,6 +1281,14 @@ async function buildReadiness(existingState = null) {
       blockerReason: answerQualityBlocker,
     }),
     hardGateFromArtifact({
+      id: "scale_50k",
+      label: "50k Scale + Latency",
+      artifact: scaleArtifact,
+      expectedStatuses: ["healthy"],
+      proofPath: scaleArtifact.artifact_path,
+      blockerReason: scaleArtifact.value?.qualifying === true ? null : "qualifying_50k_scale_proof_missing",
+    }),
+    hardGateFromArtifact({
       id: "release_manifest",
       label: "Release Manifest",
       artifact: releaseManifestArtifact,
@@ -1337,6 +1410,16 @@ async function buildReadiness(existingState = null) {
       evaluator_class: answerQualityArtifact.value?.evaluator_class ?? null,
       counts: answerQualityArtifact.value?.counts ?? null,
       metrics: answerQualityArtifact.value?.metrics ?? null,
+    },
+    scale_50k_status: {
+      artifact_path: scaleArtifact.artifact_path,
+      artifact_parse_status: scaleArtifact.artifact_parse_status,
+      status: scaleArtifact.value?.status ?? "missing",
+      qualifying: scaleArtifact.value?.qualifying === true,
+      corpus: scaleArtifact.value?.corpus ?? null,
+      measurements: scaleArtifact.value?.measurements ?? null,
+      bounded_work: scaleArtifact.value?.bounded_work ?? null,
+      warnings: artifactWarnings(scaleArtifact),
     },
     controlled_compounding_status: {
       artifact_path: compoundingArtifact.artifact_path,
@@ -1692,23 +1775,44 @@ function withActivityGraph(wikiGraph, operationState) {
     else addEdge(rootId, nodeId, "event");
   }
 
+  const activityTypes = new Set(["activity_root", "active_task", "task", "context_pack", "trace", "event", "memory_ref"]);
+  const nodePriority = new Map([["root", 1], ["folder", 2], ["kind", 3], ["tag", 4], ["record", 5], ["wikilink", 6]]);
+  const boundedNodes = nodes
+    .map((node, index) => ({ node, index }))
+    .sort((left, right) => {
+      const leftPriority = activityTypes.has(left.node.type) ? 0 : (nodePriority.get(left.node.type) ?? 7);
+      const rightPriority = activityTypes.has(right.node.type) ? 0 : (nodePriority.get(right.node.type) ?? 7);
+      return leftPriority - rightPriority || left.index - right.index;
+    })
+    .slice(0, graphWindowLimits.total_nodes)
+    .map((entry) => entry.node);
+  const boundedNodeIds = new Set(boundedNodes.map((node) => node.id));
+  const boundedEdges = edges
+    .filter((edge) => boundedNodeIds.has(edge.source) && boundedNodeIds.has(edge.target))
+    .slice(0, graphWindowLimits.total_edges);
+  const addedNodeCount = Math.max(0, nodes.length - wikiGraph.nodes.length);
+  const addedEdgeCount = Math.max(0, edges.length - wikiGraph.edges.length);
+  const totalNodeCount = Number(wikiGraph.stats.nodes ?? wikiGraph.nodes.length) + addedNodeCount;
+  const totalEdgeCount = Number(wikiGraph.stats.edges ?? wikiGraph.edges.length) + addedEdgeCount;
+
   return {
     ...wikiGraph,
     index_mode: `${wikiGraph.index_mode}+operations_activity_v2`,
     stats: {
       ...wikiGraph.stats,
-      nodes: nodes.length,
-      edges: edges.length,
-      shown_nodes: nodes.length,
-      shown_edges: edges.length,
-      operation_nodes: nodes.length - wikiGraph.nodes.length,
+      nodes: totalNodeCount,
+      edges: totalEdgeCount,
+      shown_nodes: boundedNodes.length,
+      shown_edges: boundedEdges.length,
+      truncated: Boolean(wikiGraph.stats.truncated) || totalNodeCount > boundedNodes.length || totalEdgeCount > boundedEdges.length,
+      operation_nodes: addedNodeCount,
       active_tasks: activeTasks.length,
       trace_nodes: nodes.filter((node) => node.type === "trace").length,
       memory_reference_nodes: nodes.filter((node) => node.type === "memory_ref").length,
       memory_edges: edges.filter((edge) => ["retrieves_memory", "used_memory"].includes(edge.type)).length,
     },
-    nodes,
-    edges,
+    nodes: boundedNodes,
+    edges: boundedEdges,
   };
 }
 
@@ -3508,7 +3612,7 @@ function html() {
 }
 
 function sendJson(response, value) {
-  const body = JSON.stringify(value, null, 2);
+  const body = JSON.stringify(value);
   response.writeHead(200, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
@@ -3534,6 +3638,7 @@ const server = http.createServer(async (request, response) => {
         resources: {
           ...resourceCounters,
           state_payload_budget_bytes: statePayloadBudgetBytes,
+          generation_verify_ttl_ms: generationVerifyTtlMs,
           process_memory: process.memoryUsage(),
         },
         endpoints: ["/api/health", "/api/snapshot", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],

@@ -68,7 +68,7 @@ release evidence required by the normative contract.
 The first foundation slice is implemented and remains intentionally
 `NOT_COMPLETE`:
 
-- FND-01 now has a typed 12-gate registry, 61 mandatory command instances,
+- FND-01 now has a typed 12-gate registry, 78 mandatory command instances,
   bounded command-result ledger, hashed artifact manifest, verdict-last atomic
   publication, post-write integrity verification, and tamper regression tests;
 - the first current-vault plan-only evidence pack is
@@ -123,9 +123,12 @@ The first foundation slice is implemented and remains intentionally
   tamper/conflict regressions now prevent the same debt pattern from recurring.
 - The latest full executable audit is
   `completion-20260710-170538330-91239ab7-e2a7-4e77-b75d-bd94834d0a2e`.
-  It ran all 61 mandatory command instances, returned `NOT_COMPLETE`, and now
-  records HG-03 as `PASS`; HG-10 is blocked only by the external 50k-scale
-  evidence requirement.
+  It ran all 61 then-current mandatory command instances, returned
+  `NOT_COMPLETE`, and now
+  records HG-03 as `PASS`. It predates the qualifying RAG-04 report and must be
+  rerun in the final certification phase; the external 50k-scale blocker itself
+  is now closed, while release-candidate concurrency/final-generation evidence
+  remains open.
 - LOOP-03 now uses a one-time challenge rather than trusting hand-authored proof
   JSON. The server binds five required calls (`os_begin_task`,
   `get_context_pack`, `wiki_search`, `search_memory`, `finish_task`) to one task,
@@ -633,6 +636,28 @@ golden nonce, and tamper regressions.
 
 **Acceptance:** all latency targets in HG-04 pass on declared reference hardware
 and the report is bound to code, data generator, and environment hashes.
+
+**Implemented evidence (2026-07-11):** RAG-04 is complete. The deterministic
+`scale_50k_v1` run generated 50,000 curated records with Wiki/Source/Project/
+accepted-behavior/Operations/Error-Book and age skew plus 1,000 completed
+task/trace/Context-Pack sessions in an isolated temporary vault. The qualifying
+report is `.dino/evaluations/scale-50k-status.json`; it is bound to the exact
+runtime code, corpus generator, environment, corpus, session growth, and report
+payload hashes. On the declared 31.93 GB Windows reference machine, full shard
+build was 23.855 s, warm Context Pack p95 410.995 ms, Wiki search p95 141.175 ms,
+recent-task p95 20.422 ms, incremental operation write p95 32.458 ms, graph
+refresh p95 174.199 ms, and Observatory polling p95 63.085 ms. Dense retrieval
+probed 8/100 partitions and at most 4,000/50,000 vectors. The report observed a
+1.474 GB in-process RSS peak; an external Windows process monitor observed a
+2.252 GB private-memory peak. All assertions, report integrity, and current
+code/generator/environment binding checks pass. `scale:50k:verify` covers
+determinism, latency failure, report tamper, stale binding, oversized
+unpartitioned-dense fail-closed behavior, indexed term/graph plans, payload
+budget, and generation-verification reuse. Plan-only completion audit
+`completion-20260711-071340132-91c0865a-c204-40c4-b24e-cd2320176799`
+imported the report as `scale_50k` with `status=PASS`, zero warnings, and gates
+HG-04/HG-08/HG-10; the overall audit correctly remains `NOT_COMPLETE` because
+other work packages and mandatory commands were not executed in that run.
 
 ### Phase 4 - Privacy, Scoped Sync, Backup, And Recovery (P1, 4-7 engineer-days)
 

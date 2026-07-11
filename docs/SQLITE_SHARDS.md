@@ -31,6 +31,12 @@ When SQLite shards exist:
 - MCP writes update `operations.sqlite` incrementally
 - sparse rows preserve bounded chunk context, source SHA-256, parent path, language, lifecycle, verification status, retrieval lane, knowledge role, and aliases
 - semantic candidates are selected as an independent bounded cosine top-K before RRF/reranking
+- exact/prefix term expansion uses indexed ranges; matching term rows and
+  candidate records are fetched in bounded batches rather than N+1 statements
+- record, node, edge, and term counts come from immutable shard metadata on
+  warm paths instead of repeated whole-table `COUNT(*)`
+- graph windows use `(type, count, id)` and source-edge indexes with explicit
+  node/edge quotas
 
 If the shards are missing or use an old shard metadata version, DinoBrain falls back to the JSON indexes and legacy scanners.
 
@@ -50,6 +56,8 @@ The installer runs `npm run index:sqlite` after building the app so fresh machin
 ```powershell
 npm run build
 npm run index:verify:sqlite
+npm run scale:50k:verify
+npm run scale:50k:check
 ```
 
 The verifier creates a synthetic vault with more than 1,200 Wiki records and 1,200 operational records. It proves:
@@ -68,4 +76,8 @@ This is still a local single-user SQLite layer.
 
 The first hot/warm/cold session growth layer is implemented by `import_session`; see `docs/SESSION_INGEST.md`.
 
-Large-scale follow-up work should shard accepted memories by project, time, and temperature, and then rebuild SQLite indexes from reviewed records. Raw session archives remain local-only and outside retrieval.
+The qualifying 50k proof demonstrates the current single Wiki shard within the
+declared HG-04 latency and memory budgets. Physical project/time/temperature
+sharding remains an optional next step beyond that tested envelope, not a
+substitute for lifecycle-based hot/cold exclusion. Raw session archives remain
+local-only and outside retrieval.
