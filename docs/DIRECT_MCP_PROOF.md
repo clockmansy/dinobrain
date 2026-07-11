@@ -1,6 +1,7 @@
 # Direct MCP Proof Protocol
 
-Status: implemented protocol, live two-client evidence pending
+Status: implemented protocol, current local two-client evidence verified;
+clean-machine certification pending
 
 ## Purpose
 
@@ -84,6 +85,28 @@ npm run proof:mcp:claude
 Installed systems also expose `DinoBrain Codex MCP Proof.cmd` and
 `DinoBrain Claude MCP Proof.cmd`. Each launcher creates the challenge, copies the
 exact prompt, and waits for the matching client-generated v2 proof.
+
+## Current Local Evidence
+
+On 2026-07-11, `status:mcp-direct` independently revalidated fresh v2 proofs
+from both installed clients and reported `release_parity_verified: true`:
+
+- Codex MCP client `0.144.0-alpha.4` produced
+  `.dino/proofs/client-mcp/codex-client-mcp-6e10d97c-558a-48b7-9a13-f8a29fe8c1f9.json`
+  with SHA-256
+  `adbdef85d5cd74f51006cbd8a8b741db26a329edcda83ae1dfe5c9d4386a3dab`.
+- Claude Code `2.1.207` produced
+  `.dino/proofs/client-mcp/claude-client-mcp-930b7d11-fe19-4a13-8584-3ecff1018b7e.json`
+  with SHA-256
+  `1636160353d5b856d80cc1c7bf6ec0733f6323c724e933aa6cca40d7f7ab7fd3`.
+
+The Claude run exposed and then verified the fix for proof launches being
+filtered before a durable task id was returned. A verified active challenge now
+forces server-observed `client_mcp_proof` launch provenance; the proof prompt
+must stop if `os_begin_task` does not return a task id and may never substitute
+the challenge id. Both proofs contain successful, ordered receipts for all five
+required tools against one task. This is current-machine evidence only and does
+not replace the DIST-02 clean Windows recovery run.
 
 ## Trust Boundary
 

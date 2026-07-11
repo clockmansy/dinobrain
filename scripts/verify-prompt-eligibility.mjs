@@ -131,6 +131,12 @@ async function main() {
   const interactive = classifyPromptLaunch({ request: "Fix prompt task deduplication", launchKind: "codex_desktop" });
   assert(interactive.classification === "user_interactive", "Interactive prompt was not classified as user work");
   assert(interactive.durable_task_eligible === true, "Interactive prompt was filtered");
+  const directProof = classifyPromptLaunch({
+    request: "Run the one-time direct MCP challenge and retain the returned task id.",
+    launchKind: "client_mcp_proof",
+  });
+  assert(directProof.classification === "user_interactive", "Direct MCP proof launch was not classified as durable client work");
+  assert(directProof.durable_task_eligible === true, "Direct MCP proof launch was filtered");
 
   const mcpRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-prompt-eligibility-mcp-"));
   const hookRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-prompt-eligibility-hook-"));

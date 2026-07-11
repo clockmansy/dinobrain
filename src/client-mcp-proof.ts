@@ -340,10 +340,11 @@ export async function createClientMcpProofChallenge(
     `DinoBrain direct MCP proof challenge for ${agent}: ${challengeId}`,
     "Use the real client MCP tool surface only.",
     "1. Call begin_client_mcp_proof with this challenge_id.",
-    "2. Call os_begin_task for this proof and retain its task_id and Context Pack path.",
+    "2. Call os_begin_task for this proof with launch_kind direct_mcp. Retain its returned task_id, lease_id, and Context Pack path.",
+    "   If os_begin_task does not return a task_id, stop and report failure. Never substitute the challenge_id as a task_id.",
     "3. Call get_context_pack with that same active task_id.",
     "4. Call wiki_search and search_memory with a narrow query about DinoBrain direct MCP parity.",
-    "5. Call finish_task with the same task_id, outcome completed, growth_policy trace_only, and the Context Pack paths used.",
+    "5. Call finish_task with the same task_id and lease_id, outcome completed, growth_policy trace_only, and the Context Pack paths used.",
     "6. Call finalize_client_mcp_proof with this challenge_id.",
     "Do not create or edit proof JSON manually.",
   ].join("\n");

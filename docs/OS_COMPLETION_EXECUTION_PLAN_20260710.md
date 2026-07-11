@@ -355,8 +355,19 @@ and call order, captures MCP `clientInfo`, and requires Codex/Claude to be the
 server's direct parent process. Regression tests reject legacy/self-authored
 JSON, missing `get_context_pack`, process spoofing, challenge replay, stale proof,
 foreign local identity, and receipt/proof tampering. Installer-generated Codex
-and Claude proof launchers issue the challenge and wait for the real client;
-fresh live proofs remain pending and are not replaced by fixtures.
+and Claude proof launchers issue the challenge and wait for the real client.
+
+**Current-machine execution evidence (2026-07-11):** Codex MCP client
+`0.144.0-alpha.4` and Claude Code `2.1.207` each completed the five canonical
+tool calls through a server instance whose direct parent was the named client.
+`status:mcp-direct` reports both agents `verified`, exact single-name discovery,
+no missing tools, and `release_parity_verified: true`. Proof SHA-256 values are
+`adbdef85d5cd74f51006cbd8a8b741db26a329edcda83ae1dfe5c9d4386a3dab`
+for Codex and
+`1636160353d5b856d80cc1c7bf6ec0733f6323c724e933aa6cca40d7f7ab7fd3`
+for Claude. A fresh post-build Codex prompt also passed the ordered live-hook
+verifier with OS version `2.2.13`. LOOP-03 current-machine acceptance is met;
+the DIST-02 clean Windows proof remains a separate global completion gate.
 See `docs/DIRECT_MCP_PROOF.md` for the artifact contract and trust boundary.
 
 #### LOOP-04: Task debt settlement and prevention
@@ -758,8 +769,8 @@ replacement is now the public `origin/main`; a fresh clone and the real local
 checkout both pass with 5,057 committed files, zero current/history blockers,
 zero warnings, and matching HEAD. Local realignment preserved 28,007 files and
 372,849,563 bytes with an unchanged aggregate SHA-256. SAFE-01 acceptance is
-met. HG-09 remains `NOT_COMPLETE` until SAFE-02 has one real receipted remote
-push and SAFE-03/clean-machine/final audit evidence is complete. See
+met. HG-09 remains `NOT_COMPLETE` until SAFE-03, clean-machine, and final audit
+evidence are complete. See
 `docs/PUBLIC_DATA_HISTORY_MIGRATION.md`.
 
 #### SAFE-02: Task-scoped automatic sync
@@ -821,9 +832,23 @@ reports neighboring dirty backlog as out of scope, permits only a clean exact
 scope, and rejects unregistered paths. This removes the prior whole-worktree
 false block without weakening fail-closed behavior.
 
-HG-09/HG-12 remain `NOT_COMPLETE` until one real receipted data-remote push,
-encrypted restore, clean-machine equivalence, and final audit are independently
-cleared.
+**Real remote execution evidence (2026-07-12):** task-scoped `os_gate` selected
+five approved conditional artifacts while leaving 7,741 neighboring dirty paths
+out of scope. `auto_sync` committed those five artifacts plus their public
+receipt and pushed data commit
+`b64dd1858818a54604cce42eff8cef4419c4b0ce`. Receipt
+`60_Operations/task-sync-receipts/task-sync-receipt-a8fc8479a3939575a5e78c2299219defd676991ab4653bdd106df9d37b4272f2.json`
+has file SHA-256
+`019c9d59366411cd59dbba6c0c689822b751a7cac355741d13b7b1acaad8b895`
+and Git blob `5bd70cac5ede727e50deb387c45558a8c7df31bb`. A fresh clone at that commit
+contained 5,063 committed files, zero blockers, zero warnings, and one required
+receipt commit independently verified. Local and remote HEAD match and the
+neighboring backlog remains unstaged. SAFE-02 acceptance and its real-push
+predicate are met.
+
+HG-09/HG-12 remain `NOT_COMPLETE` until the real encrypted restore,
+clean-machine equivalence, immutable release parity, and final audit are
+independently cleared.
 
 Post-package regressions pass for `check`, `safety:task-sync:verify`, `smoke`,
 `flow:audit`, `hook:verify`, `session:verify`, `pre-response:gate:verify`,
@@ -1213,16 +1238,24 @@ completion evidence foundation
 
 ## 13. Immediate Next Sprint
 
-The next implementation sprint should contain only these items:
+The foundation, task prevention, lifecycle, retrieval, safety classifier,
+task-scoped real push, read model, and current-machine direct-client proof are
+implemented. The next sprint is therefore limited to the remaining global
+certification predicates:
 
-1. FND-01 canonical gate registry and evidence-pack writer;
-2. FND-03 single version authority to resolve `2.2.9` versus `2.2.1`;
-3. FND-02 atomic migration of completion/status writers plus fault tests;
-4. LOOP-01 prompt eligibility rules that stop internal Codex jobs creating
-   durable tasks;
-5. a dry-run lifecycle/backlog migration report, with no bulk apply yet.
+1. run and settle the 24-hour real-client lifecycle soak for LOOP-04;
+2. create a real encrypted private backup with the recovery key held outside
+   the app/data roots, then restore it on the clean profile;
+3. execute DIST-02 on a clean Windows profile with both Codex and Claude,
+   including install, update, interrupted rollback, uninstall, and purge;
+4. import fresh clean-machine live-hook and direct-MCP proofs without editing
+   their evidence artifacts;
+5. publish immutable release assets from the exact audited app/data refs and
+   verify downloaded checksums;
+6. rerun the mandatory command set and mechanical completion audit after every
+   artifact is final.
 
-Sprint exit requires a truthful completion audit that still reports
-`NOT_COMPLETE`, but does so from one parseable, hash-bound audit run and no
-longer creates new lifecycle pollution during normal Codex use. That foundation
-makes every later green result credible.
+Sprint exit is `COMPLETE` only when the final audit has no pending, stale,
+warning, degraded, unknown, malformed, mixed-generation, or unresolved state.
+Until then, the document must continue to report `NOT_COMPLETE` with the exact
+remaining predicates.

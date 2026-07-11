@@ -2268,7 +2268,16 @@ registerTool(
     },
   },
   async ({ request, project, mode, sensitivity, limit, ...launchMetadata }) => {
-    const metadata = sanitizeTaskLaunchMetadata(launchMetadata as TaskLaunchMetadata);
+    let metadata = sanitizeTaskLaunchMetadata(launchMetadata as TaskLaunchMetadata);
+    if (clientMcpProofRuntime.hasActiveChallenge()) {
+      metadata = {
+        ...metadata,
+        launch_kind: "direct_mcp",
+        prompt_surface: "client_mcp_proof",
+        task_type: "client_mcp_proof",
+        launch_source: "server_observed_client_mcp_challenge",
+      };
+    }
     const sanitized = sanitizeTaskRequest(request);
     const storedRequest = sanitized.request;
     const storedProject = project ? redactSensitiveText(project).text : null;

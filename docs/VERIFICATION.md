@@ -451,6 +451,11 @@ blockers, zero warnings, and public remote parity. The local history
 realignment preserved all 28,007 worktree files and 372,849,563 bytes with the
 same aggregate SHA-256 while replacing only Git HEAD/index metadata.
 
+The first receipt-gated follow-up is data commit
+`b64dd1858818a54604cce42eff8cef4419c4b0ce`. An independent fresh clone reports
+5,063 committed files, zero blockers, zero warnings, two commits checked, one
+sanitized root baseline, and one required receipt commit verified.
+
 ### Task-Scoped Automatic Sync
 
 `npm run safety:task-sync:verify` runs the SAFE-02 regression against an
@@ -477,6 +482,13 @@ The scope ledger itself is local-only and ignored by Git; the public receipt is
 the portable proof that lets another clone re-evaluate the exact authorization.
 The one-time sanitized root is treated as a fully scanned migration baseline;
 every later commit containing conditional artifacts requires a receipt.
+The real data-remote proof is commit
+`b64dd1858818a54604cce42eff8cef4419c4b0ce`, containing exactly five scoped
+artifacts and receipt
+`60_Operations/task-sync-receipts/task-sync-receipt-a8fc8479a3939575a5e78c2299219defd676991ab4653bdd106df9d37b4272f2.json`.
+The receipt file SHA-256 is
+`019c9d59366411cd59dbba6c0c689822b751a7cac355741d13b7b1acaad8b895`
+and its Git blob id is `5bd70cac5ede727e50deb387c45558a8c7df31bb`.
 `safety:public-data:check` and encrypted restore evidence remain independent
 completion gates.
 

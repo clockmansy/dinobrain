@@ -88,3 +88,19 @@ committed files, zero current or historical blockers, zero warnings, and the
 same HEAD. Local migration retained an external recovery ref and exact index
 backup and preserved all 28,007 worktree files, 372,849,563 bytes, and the
 aggregate worktree SHA-256.
+
+## First Receipt-Gated Follow-Up
+
+After the root replacement, task-scoped automatic sync pushed commit
+`b64dd1858818a54604cce42eff8cef4419c4b0ce` on top of the sanitized root. The
+commit contains exactly five task artifacts and one
+`task_sync_public_receipt_20260712_v1` record. The receipt is
+`60_Operations/task-sync-receipts/task-sync-receipt-a8fc8479a3939575a5e78c2299219defd676991ab4653bdd106df9d37b4272f2.json`,
+with SHA-256
+`019c9d59366411cd59dbba6c0c689822b751a7cac355741d13b7b1acaad8b895`
+and Git blob `5bd70cac5ede727e50deb387c45558a8c7df31bb`.
+
+A fresh clone at the follow-up commit passed the unified current/history scan
+with 5,063 committed files, zero blockers, zero warnings, and the receipt/trailer
+binding independently verified. The neighboring local backlog remained
+unstaged and outside the six-file commit.

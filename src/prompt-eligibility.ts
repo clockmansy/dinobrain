@@ -44,6 +44,7 @@ const USER_LAUNCH_KINDS = new Set([
   "user_interactive",
   "verification_fixture",
   "direct_mcp",
+  "client_mcp_proof",
 ]);
 
 const TITLE_PATTERNS = [
