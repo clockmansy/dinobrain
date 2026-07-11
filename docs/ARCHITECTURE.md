@@ -123,6 +123,25 @@ The tool stores only redacted local-only archives under `10_Conversations/raw`, 
 
 Raw archives, candidates, and review records are excluded from default retrieval. Only reviewed accepted instances can become normal Context Pack input. See `docs/SESSION_INGEST.md`.
 
+## Unified Public Data Classification Boundary
+
+`src/data-classification.ts` is the only public-data classifier. Policy version
+`data_classification_20260711_v1` classifies every path through an explicit
+allowlist and performs a complete scan of supported regular files before they
+can be treated as syncable. It fails closed on unclassified paths, symlinks,
+submodules, unsupported or binary file types, files over the complete-scan limit, invalid UTF-8, malformed
+JSON/JSONL, secret shapes, machine-local paths, raw transcript markers, and
+missing accepted-memory review lineage.
+
+The MCP `git_sync`/`auto_sync` paths import this module directly. The public-data
+audit and installed data Git hooks call the same built module through
+`scripts/classify-data-git-surface.mjs`. Hook configuration is local-only under
+the data repository Git directory and binds the Node executable, classifier
+entrypoint, and policy version. Missing or mismatched runtime configuration is a
+blocking result. Pre-push scans only the commits named by Git's push update
+stream, including intermediate blobs that were later deleted, while the public
+audit scans every unique historical blob in bounded batches.
+
 ## Review Backpressure And Cold Boundary
 
 The review queue is bounded before candidate/review publication. One serialized

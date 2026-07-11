@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DATA_CLASSIFICATION_POLICY_VERSION } from "../dist/data-classification.js";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -557,10 +558,16 @@ try {
   if (gitSync.commit_allowed_by_tool !== false || gitSync.manual_approval_required !== true) {
     throw new Error("git_sync did not require manual approval");
   }
+  if (gitSync.policy_version !== DATA_CLASSIFICATION_POLICY_VERSION) {
+    throw new Error("git_sync did not report the unified classifier policy version");
+  }
   const syncFiles = new Map(gitSync.files.map((file) => [file.path, file]));
   const syncableFile = syncFiles.get("20_Wiki/Syncable-Change.md");
   if (!syncableFile || syncableFile.classification !== "syncable") {
     throw new Error("git_sync did not classify syncable Wiki change correctly");
+  }
+  if (syncableFile.classifier?.policy_version !== DATA_CLASSIFICATION_POLICY_VERSION || syncableFile.sensitivity_scan?.complete !== true) {
+    throw new Error("git_sync did not expose a complete shared-classifier result");
   }
   const conditionalFile = syncFiles.get("80_Review_Queue/review-needed.md");
   if (!conditionalFile || conditionalFile.classification !== "conditional") {

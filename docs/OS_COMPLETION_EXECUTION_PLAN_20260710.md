@@ -679,6 +679,26 @@ other work packages and mandatory commands were not executed in that run.
 **Acceptance:** the same file receives the same decision in every surface;
 history-injected secrets and raw transcripts are blocked before commit/push.
 
+**Implemented 2026-07-11:** policy `data_classification_20260711_v1` now lives
+in `src/data-classification.ts` and is consumed directly by MCP sync plus the
+public-data and Git-hook CLI surfaces. Unknown paths, scans disabled by callers,
+files over 8 MiB, symlinks/submodules, unsupported/binary files, invalid UTF-8, malformed JSON/JSONL,
+secret and machine-local patterns, raw transcript markers, and missing review
+lineage fail closed. `npm run safety:classifier:verify` proves cross-surface
+parity and catches a token committed and then removed before push;
+`npm run hooks:data:verify` proves the installed wrappers use the version-bound
+engine. SAFE-01 implementation acceptance passes.
+
+HG-09 remains `NOT_COMPLETE`. The current real-vault unified audit scanned 5,049
+tracked files, 4,605 untracked files, and 7,629 unique historical blob paths. It
+reported 3,039 blockers and 4,595 warnings. Every tracked path now has an
+explicit path rule (153 syncable, 4,896 conditional, zero blocked/unclassified),
+but content checks still found 990 current machine-local path findings, 116
+unclassified untracked files, and 1,910 historical risk blob paths. No OpenAI, GitHub, AWS, bearer, JWT, or
+private-key shape was found in the historical finding counts. SAFE-02/SAFE-03
+and an explicit legacy cleanup/baseline decision are still required; these
+findings must not be hidden by the passing SAFE-01 regression.
+
 #### SAFE-02: Task-scoped automatic sync
 
 **Hard gates:** HG-07, HG-09, HG-12

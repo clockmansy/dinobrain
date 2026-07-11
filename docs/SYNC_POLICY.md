@@ -1,7 +1,7 @@
 # DinoBrain Sync Policy
 
-Date: 2026-07-01
-Status: Phase 1 foundation
+Date: 2026-07-11
+Status: SAFE-01 unified classifier implemented; HG-09 cleanup and recovery pending
 
 ## Goal
 
@@ -48,6 +48,9 @@ These paths may be synced only when the records are curated and non-sensitive:
 - `.dino/compounding`
 - `.dino/audits`
 - `.dino/quarantine`
+- `.dino/migrations` except explicitly local-only migration families
+- `.dino/proofs`
+- `.dino/state`
 
 ## Local Only By Default
 
@@ -70,7 +73,10 @@ These data types are local-only unless the plan is explicitly changed:
 
 ## `git_sync` And `auto_sync` Behavior
 
-`git_sync` is the dry-run classifier. It reports what would be safe, conditional, or blocked without committing.
+`git_sync` is the dry-run surface over the versioned unified classifier in
+`src/data-classification.ts`. It reports what would be safe, conditional, or
+blocked without committing. `auto_sync`, the public-data audit, and data Git
+hooks use the same policy version and file decision object.
 
 It must report:
 
@@ -96,7 +102,14 @@ Behavior-recall migration maps are also local-only because they contain task and
 trace identities. Their reviewed public evidence is limited to hash-only
 summaries under `60_Operations/behavior-recall-migrations/`.
 
-The data repo also carries Git hooks under `.githooks`. Install/update must set `core.hooksPath = .githooks`. These hooks block local-only paths and auto-generated accepted memories without review lineage at `pre-commit` and `pre-push` time. This is required because a long-lived stale MCP process may not yet know the newest in-process sync policy.
+The data repo also carries thin Git launchers under `.githooks`. Install/update
+must set `core.hooksPath = .githooks` and write a local-only
+`.git/dinobrain-classifier.json` binding to the installed Node runtime,
+classifier CLI, and exact policy version. The launchers contain no duplicate
+classification rules. Missing config, a missing runtime, or version drift fails
+closed. Pre-commit scans staged blobs; pre-push scans every changed blob in the
+Git-provided push range, so a secret added in one commit and deleted in a later
+commit remains blocked.
 
 Required dry-run fields:
 
@@ -108,7 +121,12 @@ Required dry-run fields:
 
 ## Public Data Safety Report
 
-The public-data safety report is stricter than a minimal token scan. It scans tracked accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, indexes, source/provenance records, and currently untracked candidate sync records. It classifies local untracked records so blocked local-only material is visible before a future sync.
+The public-data safety report is stricter than a minimal token scan. It scans
+tracked accepted memories, tasks, traces, Context Packs, events, gates, audits,
+operations records, indexes, source/provenance records, currently untracked
+candidate sync records, and every unique blob in Git history. Historical blobs
+are read in bounded batches; files that are too large, unsupported, or not
+strict UTF-8 are blockers rather than partially scanned successes.
 
 The report is written to:
 

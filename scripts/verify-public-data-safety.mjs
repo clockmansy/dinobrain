@@ -1,8 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  DATA_CLASSIFICATION_POLICY_VERSION,
+  PUBLIC_DATA_MAX_SCAN_BYTES,
+  classifyDataFile,
+  classifyDataPath,
+} from "../dist/data-classification.js";
+import { classifyCompleteGitHistory } from "./lib/data-classifier-git.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
@@ -10,7 +18,7 @@ const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR || path.join(appRoo
 const shouldWrite = process.argv.includes("--write");
 const failOnWarnings = process.argv.includes("--fail-on-warnings");
 const jsonOnly = process.argv.includes("--json");
-const maxScanBytes = 8 * 1024 * 1024;
+const maxScanBytes = PUBLIC_DATA_MAX_SCAN_BYTES;
 const generatedAt = new Date().toISOString();
 
 function git(args, cwd = dataRoot, options = {}) {
@@ -32,26 +40,24 @@ function pathExists(relativePath) {
   return existsSync(path.join(dataRoot, relativePath));
 }
 
-function readText(relativePath) {
+function readContent(relativePath) {
   const fullPath = path.join(dataRoot, relativePath);
   let size = 0;
+  let fileKind = "file";
   try {
-    size = statSync(fullPath).size;
+    const stat = lstatSync(fullPath);
+    size = stat.size;
+    fileKind = stat.isSymbolicLink() ? "symlink" : stat.isFile() ? "file" : "other";
   } catch (error) {
-    if (error.code === "ENOENT") return { text: "", size: 0, truncated: false, missing: true };
+    if (error.code === "ENOENT") return { content: null, size: 0, fileKind: "other", missing: true };
     throw error;
   }
-  const buffer = readFileSync(fullPath);
-  const truncated = size > maxScanBytes;
+  const content = fileKind === "file" && size <= maxScanBytes ? readFileSync(fullPath) : null;
   return {
-    text: buffer.subarray(0, Math.min(buffer.length, maxScanBytes)).toString("utf8"),
+    content,
     size,
-    truncated,
+    fileKind,
   };
-}
-
-function lineFor(text, index) {
-  return text.slice(0, index).split(/\r\n|\r|\n/).length;
 }
 
 function parseGitHubRepo(remoteUrl) {
@@ -115,79 +121,6 @@ function fetchGitHubRepoInfo(repo) {
   });
 }
 
-const blockedPathRules = [
-  { id: "raw_conversation_path", pattern: /^10_Conversations\/raw\// },
-  { id: "raw_instance_path", pattern: /^50_Instances\/raw\// },
-  { id: "private_attachment_path", pattern: /^attachments\/private\// },
-  { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
-  { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups|review-admissions)\// },
-  { id: "generated_index_path", pattern: /^\.dino\/index\// },
-  { id: "operation_event_path", pattern: /^\.dino\/events\// },
-  { id: "private_behavior_recall_migration_path", pattern: /^\.dino\/migrations\/behavior-recall\// },
-  { id: "private_behavior_recall_migration_status", pattern: /^\.dino\/state\/behavior_recall_evidence_migration\.json$/ },
-  { id: "environment_file", pattern: /(^|\/)\.env(?:\.|$)/ },
-  { id: "private_key_file", pattern: /\.(?:pem|key|p12|pfx)$/i },
-];
-
-const conditionalPathRules = [
-  { id: "candidate_instance_path", pattern: /^50_Instances\/candidates\// },
-  { id: "review_queue_path", pattern: /^80_Review_Queue\// },
-  { id: "operation_task_path", pattern: /^\.dino\/tasks\// },
-  { id: "operation_trace_path", pattern: /^\.dino\/traces\// },
-  { id: "operation_context_pack_path", pattern: /^\.dino\/context-packs\// },
-  { id: "operation_gate_path", pattern: /^\.dino\/gates\// },
-  { id: "operation_audit_path", pattern: /^\.dino\/audits\// },
-  { id: "operation_evaluation_path", pattern: /^\.dino\/evaluations\// },
-  { id: "operation_lifecycle_path", pattern: /^\.dino\/lifecycle\// },
-  { id: "operation_quarantine_path", pattern: /^\.dino\/quarantine\// },
-  { id: "operation_compounding_path", pattern: /^\.dino\/compounding\// },
-  { id: "node_lifecycle_status_path", pattern: /^\.dino\/state\/node_lifecycle\.json$/ },
-  { id: "review_queue_status_path", pattern: /^\.dino\/state\/(?:review_worklist|review_worklist_actions|review_queue_backpressure|review_queue_admission|cold_partitions)\.json$/ },
-];
-
-const syncablePathRules = [
-  { id: "home_path", pattern: /^00_Home\// },
-  { id: "wiki_path", pattern: /^20_Wiki\// },
-  { id: "source_path", pattern: /^30_Sources\// },
-  { id: "project_path", pattern: /^40_Projects\// },
-  { id: "accepted_instance_path", pattern: /^50_Instances\/accepted\// },
-  { id: "instance_readme_path", pattern: /^50_Instances\/README\.md$/ },
-  { id: "operations_path", pattern: /^60_Operations\// },
-  { id: "error_book_path", pattern: /^70_Error_Book\// },
-  { id: "dino_readme_path", pattern: /^\.dino\/README\.md$/ },
-  { id: "readme_path", pattern: /^README\.md$/ },
-  { id: "gitignore_path", pattern: /^\.gitignore$/ },
-];
-
-const sensitivePatterns = [
-  {
-    id: "private_key_block",
-    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  },
-  { id: "openai_key_shape", pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g },
-  { id: "github_token_shape", pattern: /\b(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,})\b/g },
-  { id: "aws_access_key_shape", pattern: /\bAKIA[0-9A-Z]{16}\b/g },
-  { id: "bearer_token_shape", pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{16,}\b/gi },
-  { id: "jwt_shape", pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  {
-    id: "credential_assignment",
-    pattern: /\b(api[_-]?key|secret|token|password|session[_-]?id|session[_-]?token|cookie|refresh[_-]?token)\s*[:=]\s*["']?[^"'\s,;}]{8,}/gi,
-  },
-];
-
-const rawTranscriptPatterns = [
-  { id: "raw_full_transcript_true", pattern: /raw_full_transcript_stored["']?\s*[:=]\s*true/gi },
-  { id: "message_content_true", pattern: /message_content_stored["']?\s*[:=]\s*true/gi },
-  { id: "conversation_messages_with_content", pattern: /"messages"\s*:\s*\[[\s\S]{0,3000}"content"\s*:/g },
-  { id: "codex_rollout_item", pattern: /"(response_item|turn_context|session_meta)"\s*:/g },
-];
-
-const machineLocalPatterns = [
-  { id: "windows_user_path", pattern: /\b[A-Z]:\\Users\\[^"'\s]+/g },
-  { id: "windows_drive_path", pattern: /\b[A-Z]:\\(?!Users\\)[^"'\s]+/g },
-  { id: "posix_user_path", pattern: /(?:^|[\s"'])\/(?:Users|home)\/[^"'\s]+/g },
-];
-
 function hasReviewLineage(record) {
   return Boolean(
     record.source_candidate_path ||
@@ -195,19 +128,6 @@ function hasReviewLineage(record) {
       record.reviewed_at ||
       String(record.review_status || "").toLowerCase().includes("accepted"),
   );
-}
-
-function classifyPath(relativePath) {
-  for (const rule of blockedPathRules) {
-    if (rule.pattern.test(relativePath)) return { classification: "blocked", policy: rule.id };
-  }
-  for (const rule of conditionalPathRules) {
-    if (rule.pattern.test(relativePath)) return { classification: "conditional", policy: rule.id };
-  }
-  for (const rule of syncablePathRules) {
-    if (rule.pattern.test(relativePath)) return { classification: "syncable", policy: rule.id };
-  }
-  return { classification: "unknown", policy: "unclassified_path" };
 }
 
 const findings = [];
@@ -230,89 +150,19 @@ function addFinding(level, id, relativePath, detail = {}) {
 }
 
 function scanFile(relativePath, tracked) {
-  const policy = classifyPath(relativePath);
+  const policy = classifyDataPath(relativePath);
   if (tracked && policy.classification === "blocked") {
     addFinding("blocker", "blocked_path_is_tracked", relativePath, { policy: policy.policy });
   }
-  if (tracked && policy.classification === "unknown") {
-    addFinding("warning", "unclassified_tracked_path", relativePath, { policy: policy.policy });
-  }
-
-  const { text, size, truncated, missing } = readText(relativePath);
+  const { content, size, fileKind, missing } = readContent(relativePath);
   if (missing) return policy;
-  if (truncated) {
-    addFinding("warning", "large_file_partially_scanned", relativePath, { size_bytes: size, scanned_bytes: maxScanBytes });
-  }
-
-  for (const { id, pattern } of sensitivePatterns) {
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) {
-      addFinding("blocker", "sensitive_pattern_detected", relativePath, {
-        pattern: id,
-        line: lineFor(text, match.index || 0),
-      });
-    }
-  }
-
-  for (const { id, pattern } of rawTranscriptPatterns) {
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) {
-      addFinding("blocker", "raw_transcript_marker_detected", relativePath, {
-        marker: id,
-        line: lineFor(text, match.index || 0),
-      });
-    }
-  }
-
-  for (const { id, pattern } of machineLocalPatterns) {
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) {
-      addFinding("warning", "machine_local_path_marker", relativePath, {
-        pattern: id,
-        line: lineFor(text, match.index || 0),
-      });
-    }
-  }
-
-  if (/^60_Operations\/review-worklists\/.+\.json$/.test(relativePath)) {
-    const leakedFields = [
-      ["representative_claim", /"representative_claim"\s*:/],
-      ["candidate_paths", /"candidate_paths"\s*:/],
-      ["review_paths", /"review_paths"\s*:/],
-      ["members", /"members"\s*:/],
-      ["source_session_refs", /"source_session_refs"\s*:/],
-    ].filter(([, pattern]) => pattern.test(text)).map(([field]) => field);
-    if (leakedFields.length > 0) {
-      addFinding(tracked ? "blocker" : "warning", "unsafe_review_worklist_summary", relativePath, {
-        leaked_fields: leakedFields,
-      });
-    }
-  }
-
-  if (/^60_Operations\/behavior-recall-migrations\/.+\.json$/.test(relativePath)) {
-    const leakedFields = [
-      ["recall_id", /"recall_id"\s*:/],
-      ["task_id", /"task_id"\s*:/],
-      ["old_evidence_path", /"old_evidence_path"\s*:/],
-      ["new_evidence_path", /"new_evidence_path"\s*:/],
-      ["data_root", /"data_root"\s*:/],
-    ].filter(([, pattern]) => pattern.test(text)).map(([field]) => field);
-    if (leakedFields.length > 0) {
-      addFinding(tracked ? "blocker" : "warning", "unsafe_behavior_recall_migration_summary", relativePath, {
-        leaked_fields: leakedFields,
-      });
-    }
-  }
-
-  if (/^50_Instances\/accepted\/.+\.json$/.test(relativePath)) {
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed && parsed.auto_generated === true && !hasReviewLineage(parsed)) {
-        addFinding("blocker", "auto_generated_accepted_without_review_lineage", relativePath);
-      }
-    } catch (error) {
-      addFinding("blocker", "accepted_json_unreadable", relativePath, { error: error.message });
-    }
+  const classification = classifyDataFile({ relativePath, content, sizeBytes: size, maxScanBytes, fileKind });
+  for (const finding of classification.findings) {
+    addFinding(finding.severity === "blocker" ? "blocker" : "warning", finding.id, relativePath, {
+      category: finding.category,
+      ...(finding.line ? { line: finding.line } : {}),
+      ...(finding.detail ? { detail: finding.detail } : {}),
+    });
   }
 
   return policy;
@@ -456,6 +306,8 @@ function writeMarkdownReport(report, outputPath) {
     `- tracked files scanned: ${report.scanned.tracked_files}`,
     `- untracked files classified: ${report.scanned.untracked_files}`,
     `- max bytes per file: ${report.scanned.max_scan_bytes}`,
+    `- history blob paths scanned: ${report.scanned.git_history.history_unique_blob_paths}`,
+    `- classifier policy: ${report.policy_version}`,
     "",
     "## Required Categories",
     "",
@@ -516,13 +368,11 @@ async function main() {
   }
 
   for (const relativePath of untrackedFiles) {
-    const policy = classifyPath(relativePath);
+    const policy = classifyDataPath(relativePath);
     if (policy.classification === "blocked") {
       addFinding("warning", "local_only_untracked_present", relativePath, { policy: policy.policy });
     } else if (policy.classification === "conditional") {
       addFinding("warning", "conditional_untracked_present", relativePath, { policy: policy.policy });
-    } else if (policy.classification === "unknown") {
-      addFinding("warning", "unknown_untracked_present", relativePath, { policy: policy.policy });
     }
     if (pathExists(relativePath)) {
       scanFile(relativePath, false);
@@ -531,6 +381,14 @@ async function main() {
 
   const indexExclusion = checkIndexExclusions();
   const docVisibility = checkAppDocsAgainstVisibility(githubVisibility);
+  const gitHistory = classifyCompleteGitHistory(dataRoot);
+  for (let index = 0; index < gitHistory.summary.blocked; index += 1) {
+    const example = gitHistory.blocker_examples[index] ?? null;
+    addFinding("blocker", "git_history_risk_detected", example?.path ?? "(historical blob)", {
+      policy: example?.policy ?? "historical_content_block",
+      findings: example?.findings ?? [],
+    });
+  }
   const findingSummary = summarizeFindings();
   const blockerCount = findingSummary.by_level.blocker || 0;
   const warningCount = findingSummary.by_level.warning || 0;
@@ -538,6 +396,7 @@ async function main() {
 
   const report = {
     report_type: "dinobrain_public_data_safety",
+    policy_version: DATA_CLASSIFICATION_POLICY_VERSION,
     generated_at: generatedAt,
     status,
     result: {
@@ -555,7 +414,9 @@ async function main() {
       tracked_files: trackedFiles.length,
       untracked_files: untrackedFiles.length,
       max_scan_bytes: maxScanBytes,
+      scan_completeness_policy: "fail_closed_no_partial_scan",
       path_policy_counts: policyCounts,
+      git_history: gitHistory,
       required_category_counts: countRequiredCategories(trackedFiles),
       index_exclusion: indexExclusion,
       doc_visibility: docVisibility,

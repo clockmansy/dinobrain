@@ -369,7 +369,7 @@ last_verified: 2026-07-01
     "{\"note\":\"This path must be blocked even without secret-looking values.\"}\n",
     "utf8",
   );
-  writeFileSync(path.join(dataRoot, "20_Wiki", "Sensitive-Pattern.md"), `api_${"key"}: pretend\n`, "utf8");
+  writeFileSync(path.join(dataRoot, "20_Wiki", "Sensitive-Pattern.md"), `api_${"key"}: pretend-sensitive-value\n`, "utf8");
 
   if (gitAvailable) {
     spawnSync("git", ["init"], { cwd: dataRoot, stdio: "ignore" });

@@ -383,14 +383,33 @@ It verifies by construction:
 
 `npm run safety:public-data` scans the real configured data vault and writes a public-safety report under `60_Operations/public-data-safety`.
 
+Run `npm run safety:classifier:verify` first for the deterministic SAFE-01
+regression. It proves that MCP-compatible direct classification, staged Git
+classification, pre-push history classification, and full-history
+classification use policy `data_classification_20260711_v1`. The fixture covers
+explicit path allowlisting, secrets, machine-local paths, raw transcripts,
+review lineage, invalid JSON, strict UTF-8 decoding, symlinks, unsupported binary files,
+the 8 MiB complete-scan limit, and a secret committed and then deleted before
+push.
+
 It verifies:
 
 - tracked local-only paths such as `10_Conversations/raw` are blocked
 - obvious secret, token, credential, private-key, and raw transcript markers are not present in public tracked data
+- every pushed path has an explicit classifier rule and every supported file is fully decoded and scanned; partial scans never pass
+- every unique Git-history blob is inspected, while pre-push checks the exact remote-to-local commit range supplied by Git
 - accepted memories, tasks, traces, Context Packs, events, gates, audits, operations records, and currently untracked sync candidates are included in the scan scope
 - candidate and review queue records are not present in the default Wiki index
 - app documentation does not claim the data repo is private when GitHub reports it as public
 - matched secret values are not printed in the report
+
+The July 11 SAFE-01 implementation proof passes, but the current real vault is
+not yet HG-09 clean. The current unified audit found 5,049 tracked and 4,605
+untracked files, with 3,039 blockers and 4,595 warnings. All tracked paths have
+explicit rules, but machine-local content, unclassified untracked files, and
+1,910 risky historical blob paths remain. This is legacy data
+debt, not a passing safety report; SAFE-02/SAFE-03 and an explicit cleanup plan
+must resolve it before completion.
 
 ### RAG Source Anchor Seeding
 

@@ -26,6 +26,11 @@ import {
   runCompoundingCycle,
 } from "./compounding.js";
 import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
+import {
+  DATA_CLASSIFICATION_POLICY_VERSION,
+  classifyDataFileAtPath,
+  type DataFileClassification,
+} from "./data-classification.js";
 import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
@@ -598,12 +603,6 @@ function safeError(error: unknown): string {
 
 type SyncClassification = "syncable" | "conditional" | "blocked";
 
-type PathClassification = {
-  classification: SyncClassification;
-  policy: string;
-  reasons: string[];
-};
-
 type SensitivityHit = {
   pattern: string;
   line: number;
@@ -619,8 +618,13 @@ type SyncFileReport = {
   sensitivity_scan: {
     enabled: boolean;
     scanned: boolean;
+    complete: boolean;
   };
   sensitive_patterns: SensitivityHit[];
+  classifier: Pick<
+    DataFileClassification,
+    "policy_version" | "path_classification" | "explicit_allowlist" | "findings" | "scan"
+  >;
 };
 
 type SyncPlan = {
@@ -671,147 +675,6 @@ function compoundingSyncPaths(value: Record<string, unknown> | null): string[] {
   return Array.from(new Set(paths.filter(Boolean)));
 }
 
-function classifyPath(normalizedPath: string): PathClassification {
-  const blockedPrefixes = [
-    "10_Conversations/raw/",
-    "50_Instances/raw/",
-    "attachments/private/",
-    ".dino/cache/",
-    ".dino/tmp/",
-    ".dino/locks/",
-    ".dino/local-backups/",
-    ".dino/review-admissions/",
-    ".dino/events/",
-    ".dino/migrations/behavior-recall/",
-  ];
-  const blockedExact = new Set([
-    ".env",
-    ".dino/secrets.json",
-    ".dino/local.json",
-    ".dino/state/behavior_recall_evidence_migration.json",
-  ]);
-  const blockedExtensions = [".pem", ".key", ".p12", ".pfx"];
-  const conditionalPrefixes = [
-    "50_Instances/candidates/",
-    "80_Review_Queue/",
-    ".dino/index/",
-    ".dino/evaluations/",
-    ".dino/tasks/",
-    ".dino/traces/",
-    ".dino/context-packs/",
-    ".dino/compounding/",
-    ".dino/audits/",
-    ".dino/proofs/",
-    ".dino/quarantine/",
-  ];
-  const syncablePrefixes = [
-    "00_Home/",
-    "20_Wiki/",
-    "30_Sources/",
-    "40_Projects/",
-    "50_Instances/accepted/",
-    "60_Operations/",
-    "70_Error_Book/",
-  ];
-  const syncableExact = new Set(["README.md", ".gitignore"]);
-
-  if (
-    blockedExact.has(normalizedPath) ||
-    blockedPrefixes.some((prefix) => normalizedPath.startsWith(prefix)) ||
-    blockedExtensions.some((extension) => normalizedPath.toLowerCase().endsWith(extension))
-  ) {
-    return {
-      classification: "blocked",
-      policy: "local_only",
-      reasons: ["path is local-only or secret-bearing"],
-    };
-  }
-
-  if (conditionalPrefixes.some((prefix) => normalizedPath.startsWith(prefix))) {
-    return {
-      classification: "conditional",
-      policy: "requires_review",
-      reasons: ["path requires review before sync"],
-    };
-  }
-
-  if (syncableExact.has(normalizedPath) || syncablePrefixes.some((prefix) => normalizedPath.startsWith(prefix))) {
-    return {
-      classification: "syncable",
-      policy: "syncable_after_review",
-      reasons: ["path is allowed by sync policy"],
-    };
-  }
-
-  return {
-    classification: "conditional",
-    policy: "unclassified_requires_review",
-    reasons: ["path is not explicitly classified"],
-  };
-}
-
-async function sensitivityHits(filePath: string): Promise<SensitivityHit[]> {
-  try {
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile() || stat.size > 512 * 1024) return [];
-    const text = await fs.readFile(filePath, "utf8");
-    const patterns: Array<[string, RegExp]> = [
-      ["api_key_assignment", /api[_-]?key\s*[:=]/i],
-      ["secret_assignment", /secret\s*[:=]/i],
-      ["token_assignment", /token\s*[:=]/i],
-      ["password_assignment", /password\s*[:=]/i],
-      ["private_key_block", /BEGIN [A-Z ]*PRIVATE KEY/],
-      ["openai_key_shape", /sk-[A-Za-z0-9]{20,}/],
-      ["github_token_shape", /(?:github_pat_[A-Za-z0-9_]{20,}|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,})/],
-      ["aws_access_key_shape", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
-      ["jwt_shape", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
-      ["cookie_assignment", /(session[_-]?id|session[_-]?token|cookie)\s*[:=]/i],
-    ];
-    const hits: SensitivityHit[] = [];
-    const lines = text.split(/\r?\n/);
-    for (const [patternName, pattern] of patterns) {
-      const lineIndex = lines.findIndex((line) => pattern.test(line));
-      if (lineIndex >= 0) {
-        hits.push({ pattern: patternName, line: lineIndex + 1 });
-      }
-    }
-    return hits;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-}
-
-async function largeUnscannedFinding(normalizedPath: string, deleted: boolean): Promise<string | null> {
-  if (deleted) return null;
-  try {
-    const stat = await fs.stat(dataPath(normalizedPath));
-    if (!stat.isFile()) return null;
-    return stat.size > 512 * 1024 ? "file exceeds automatic sensitivity scan size limit" : null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function acceptedInstancePolicyFinding(normalizedPath: string, deleted: boolean): Promise<string | null> {
-  if (deleted || !normalizedPath.startsWith("50_Instances/accepted/") || !normalizedPath.endsWith(".json")) return null;
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(await fs.readFile(dataPath(normalizedPath), "utf8")) as Record<string, unknown>;
-  } catch {
-    return "accepted JSON is unreadable";
-  }
-  if (parsed.auto_generated !== true) return null;
-  const hasReviewLineage = Boolean(
-    parsed.source_candidate_path ||
-      parsed.reviewed_by ||
-      parsed.reviewed_at ||
-      String(parsed.review_status ?? "").toLowerCase().includes("accepted"),
-  );
-  return hasReviewLineage ? null : "auto-generated accepted memory lacks review lineage";
-}
-
 async function buildSyncPlan(options: {
   includeSensitiveScan: boolean;
   allowConditionalAutoSync?: boolean;
@@ -838,7 +701,7 @@ async function buildSyncPlan(options: {
       would_push: false,
       manual_approval_required: options.dryRun,
       commit_allowed_by_tool: false,
-      policy_version: options.dryRun ? "phase-6-dry-run" : "phase-7-auto-sync",
+      policy_version: DATA_CLASSIFICATION_POLICY_VERSION,
       files: [],
       summary: {
         syncable: 0,
@@ -855,41 +718,40 @@ async function buildSyncPlan(options: {
   const changes = parseGitStatus(stdout);
   const files: SyncFileReport[] = [];
   for (const change of changes) {
-    const classification = classifyPath(change.path);
     const deleted = change.status.includes("D");
-    const hits = options.includeSensitiveScan && !deleted ? await sensitivityHits(dataPath(change.path)) : [];
-    const largeFinding = options.includeSensitiveScan ? await largeUnscannedFinding(change.path, deleted) : null;
-    const acceptedFinding = await acceptedInstancePolicyFinding(change.path, deleted);
-    const finalClassification: SyncClassification =
-      hits.length > 0 || acceptedFinding || largeFinding ? "blocked" : classification.classification;
-    const reasons = [
-      ...classification.reasons,
-      ...(hits.length > 0 ? ["sensitive pattern detected"] : []),
-      ...(acceptedFinding ? [acceptedFinding] : []),
-      ...(largeFinding ? [largeFinding] : []),
-    ];
+    const classification = await classifyDataFileAtPath({
+      root: DATA_ROOT,
+      relativePath: change.path,
+      deleted,
+      scanContent: options.includeSensitiveScan,
+    });
+    const hits = classification.findings
+      .filter((finding) => finding.category === "secret")
+      .map((finding) => ({ pattern: finding.id, line: finding.line ?? 0 }));
     const file: SyncFileReport = {
       ...change,
-      classification: finalClassification,
-      policy: hits.length > 0
-        ? "sensitive_pattern_block"
-        : acceptedFinding
-          ? "unreviewed_generated_accepted_block"
-          : largeFinding
-            ? "large_unscanned_file_block"
-            : classification.policy,
-      reasons,
+      classification: classification.classification,
+      policy: classification.policy,
+      reasons: classification.reasons,
       action:
-        finalClassification === "syncable"
+        classification.classification === "syncable"
           ? "ready_for_manual_commit"
-          : finalClassification === "conditional"
+          : classification.classification === "conditional"
             ? "requires_review"
             : "do_not_sync",
       sensitivity_scan: {
         enabled: options.includeSensitiveScan,
-        scanned: options.includeSensitiveScan && !deleted,
+        scanned: classification.scan.deleted || classification.scan.decode_status === "utf8",
+        complete: classification.scan.complete,
       },
       sensitive_patterns: hits,
+      classifier: {
+        policy_version: classification.policy_version,
+        path_classification: classification.path_classification,
+        explicit_allowlist: classification.explicit_allowlist,
+        findings: classification.findings,
+        scan: classification.scan,
+      },
     };
     if (!options.dryRun && isAutoSyncAllowed(file, options.allowConditionalAutoSync === true)) {
       file.action = "ready_for_auto_commit";
@@ -916,7 +778,7 @@ async function buildSyncPlan(options: {
     would_push: !options.dryRun && options.wouldPush === true && summary.ready_for_auto_commit > 0,
     manual_approval_required: options.dryRun,
     commit_allowed_by_tool: !options.dryRun,
-    policy_version: options.dryRun ? "phase-6-dry-run" : "phase-7-auto-sync",
+    policy_version: DATA_CLASSIFICATION_POLICY_VERSION,
     files,
     summary,
   };
@@ -4580,7 +4442,7 @@ registerTool(
         dry_run: false,
         data_root: DATA_ROOT,
         error: safeError(error),
-        policy_version: "phase-7-auto-sync",
+        policy_version: DATA_CLASSIFICATION_POLICY_VERSION,
       });
     }
   },

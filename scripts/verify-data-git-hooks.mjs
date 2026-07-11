@@ -11,9 +11,31 @@ function run(cmd, args, options = {}) {
   return spawnSync(cmd, args, {
     cwd: options.cwd,
     env: { ...process.env, ...(options.env || {}) },
+    input: options.input,
     encoding: "utf8",
     stdio: options.stdio || "pipe",
   });
+}
+
+function configureHooks(repo) {
+  const install = run(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      path.join(appRoot, "scripts", "install-data-git-hooks.ps1"),
+      "-DataDir",
+      repo,
+      "-AppDir",
+      appRoot,
+      "-NodePath",
+      process.execPath,
+    ],
+    { cwd: appRoot },
+  );
+  assert(install.status === 0, `data hook installer failed:\n${install.stderr}\n${install.stdout}`);
 }
 
 function runGit(args, options = {}) {
@@ -43,7 +65,7 @@ function initRepo(name) {
   assert(runGit(["config", "user.email", "dinobrain-hooks@example.local"], { cwd: dir }).status === 0, "git config email failed");
   assert(runGit(["config", "user.name", "DinoBrain Hook Verify"], { cwd: dir }).status === 0, "git config name failed");
   copyHookFiles(dir);
-  assert(runGit(["config", "core.hooksPath", ".githooks"], { cwd: dir }).status === 0, "git hooksPath config failed");
+  configureHooks(dir);
   return dir;
 }
 
@@ -58,6 +80,7 @@ function commitAll(repo, message) {
 }
 
 function verifyConfiguredDataRepo() {
+  configureHooks(dataRoot);
   assert(existsSync(path.join(dataRoot, ".git")), `Data root is not a git repo: ${dataRoot}`);
   for (const file of [".githooks/pre-commit", ".githooks/pre-push", ".githooks/verify-public-data-guard.ps1"]) {
     assert(existsSync(path.join(dataRoot, file)), `Missing tracked hook file in data repo: ${file}`);
@@ -65,6 +88,90 @@ function verifyConfiguredDataRepo() {
   const configured = runGit(["config", "--get", "core.hooksPath"], { cwd: dataRoot });
   assert(configured.status === 0, `Data repo core.hooksPath is not configured:\n${configured.stderr}`);
   assert(configured.stdout.trim() === ".githooks", `Data repo core.hooksPath must be .githooks, got: ${configured.stdout.trim()}`);
+  assert(existsSync(path.join(dataRoot, ".git", "dinobrain-classifier.json")), "Unified classifier config is missing from the data Git directory");
+}
+
+function verifySecretContentBlocked() {
+  const repo = initRepo("secret-content");
+  try {
+    const fakeToken = ["github", "pat", "HOOK", "abcdefghijklmnopqrstuvwxyz0123456789"].join("_");
+    mkdirSync(path.join(repo, "20_Wiki"), { recursive: true });
+    writeFileSync(path.join(repo, "20_Wiki", "secret.md"), `${fakeToken}\n`, "utf8");
+    const commit = commitAll(repo, "secret content");
+    assert(commit.status !== 0, "pre-commit allowed a secret pattern in an allowlisted path");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyMissingClassifierConfigBlocked() {
+  const repo = initRepo("missing-classifier-config");
+  try {
+    rmSync(path.join(repo, ".git", "dinobrain-classifier.json"), { force: true });
+    mkdirSync(path.join(repo, "20_Wiki"), { recursive: true });
+    writeFileSync(path.join(repo, "20_Wiki", "clean.md"), "clean content\n", "utf8");
+    const commit = commitAll(repo, "missing classifier config");
+    assert(commit.status !== 0, "pre-commit failed open when classifier config was missing");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyClassifierPolicyDriftBlocked() {
+  const repo = initRepo("classifier-policy-drift");
+  try {
+    const configPath = path.join(repo, ".git", "dinobrain-classifier.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.policy_version = "stale_policy_version";
+    writeJson(configPath, config);
+    mkdirSync(path.join(repo, "20_Wiki"), { recursive: true });
+    writeFileSync(path.join(repo, "20_Wiki", "clean.md"), "clean content\n", "utf8");
+    const commit = commitAll(repo, "classifier policy drift");
+    assert(commit.status !== 0, "pre-commit failed open on classifier policy version drift");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyUnclassifiedPathBlocked() {
+  const repo = initRepo("unclassified-path");
+  try {
+    mkdirSync(path.join(repo, "misc"), { recursive: true });
+    writeFileSync(path.join(repo, "misc", "note.md"), "not explicitly allowlisted\n", "utf8");
+    const commit = commitAll(repo, "unclassified path");
+    assert(commit.status !== 0, "pre-commit allowed a path without an explicit classification rule");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyHistoryInjectedSecretBlocked() {
+  const repo = initRepo("history-secret");
+  try {
+    const target = path.join(repo, "20_Wiki", "history.md");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, "clean baseline\n", "utf8");
+    assert(commitAll(repo, "base").status === 0, "clean base commit failed");
+    const base = runGit(["rev-parse", "HEAD"], { cwd: repo }).stdout.trim();
+
+    const fakeToken = ["github", "pat", "HISTORY", "abcdefghijklmnopqrstuvwxyz0123456789"].join("_");
+    writeFileSync(target, `${fakeToken}\n`, "utf8");
+    assert(runGit(["add", "20_Wiki/history.md"], { cwd: repo }).status === 0, "secret history add failed");
+    assert(runGit(["commit", "--no-verify", "-m", "inject secret"], { cwd: repo }).status === 0, "secret history commit failed");
+    writeFileSync(target, "clean again\n", "utf8");
+    assert(runGit(["add", "20_Wiki/history.md"], { cwd: repo }).status === 0, "clean history add failed");
+    assert(runGit(["commit", "--no-verify", "-m", "remove secret"], { cwd: repo }).status === 0, "clean history commit failed");
+    const head = runGit(["rev-parse", "HEAD"], { cwd: repo }).stdout.trim();
+    const pushInput = `refs/heads/main ${head} refs/heads/main ${base}\n`;
+    const guard = run(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ".githooks/verify-public-data-guard.ps1", "-Mode", "pre-push"],
+      { cwd: repo, input: pushInput },
+    );
+    assert(guard.status !== 0, "pre-push allowed a secret that was injected and removed inside the pushed history range");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 }
 
 function verifyBadAcceptedBlocked() {
@@ -172,6 +279,10 @@ function verifyReviewedAcceptedAllowedAndPrePushChecked() {
 }
 
 verifyConfiguredDataRepo();
+verifySecretContentBlocked();
+verifyMissingClassifierConfigBlocked();
+verifyClassifierPolicyDriftBlocked();
+verifyUnclassifiedPathBlocked();
 verifyBadAcceptedBlocked();
 verifyAcceptedAtOnlyBlocked();
 verifyLocalOnlyBlocked();
@@ -179,6 +290,7 @@ verifyLocalLifecycleBackupBlocked();
 verifyLocalAdmissionReceiptBlocked();
 verifyUnsafeReviewWorklistSummaryBlocked();
 verifyReviewedAcceptedAllowedAndPrePushChecked();
+verifyHistoryInjectedSecretBlocked();
 
 console.log(
   JSON.stringify(
@@ -188,6 +300,10 @@ console.log(
       hooks_path: ".githooks",
       checks: [
         "configured_data_repo",
+        "secret_content_blocked",
+        "missing_classifier_config_blocked",
+        "classifier_policy_drift_blocked",
+        "unclassified_path_blocked",
         "bad_accepted_blocked",
         "accepted_at_only_blocked",
         "local_only_blocked",
@@ -196,6 +312,7 @@ console.log(
         "unsafe_review_worklist_summary_blocked",
         "reviewed_accepted_allowed",
         "pre_push_clean_head",
+        "history_injected_secret_blocked",
       ],
     },
     null,

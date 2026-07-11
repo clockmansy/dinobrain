@@ -641,8 +641,15 @@ function main() {
       args: ["scripts/verify-dinobrain-os.mjs"],
     }),
     runCheck({
+      id: "unified_data_classifier",
+      description:
+        "One versioned classifier must fail closed across path, content, file type, decoding, review lineage, and pushed Git history.",
+      command: node,
+      args: ["scripts/verify-unified-data-classifier.mjs"],
+    }),
+    runCheck({
       id: "data_git_safety_hooks",
-      description: "Data repo Git hooks must block local-only and unreviewed generated memory paths.",
+      description: "Data repo Git hooks must invoke the unified classifier and block unsafe staged files and pushed history.",
       command: node,
       args: ["scripts/verify-data-git-hooks.mjs"],
     }),
@@ -902,10 +909,15 @@ function main() {
     },
     {
       requirement: "data_push_safety_guardrails",
-      ok: byId.data_git_safety_hooks.ok === true && byId.public_data_safety.ok === true,
-      evidence: "data_git_safety_hooks + public_data_safety",
+      ok:
+        byId.unified_data_classifier.ok === true &&
+        byId.data_git_safety_hooks.ok === true &&
+        byId.public_data_safety.ok === true,
+      evidence: "unified_data_classifier + data_git_safety_hooks + public_data_safety",
       blocker:
-        byId.data_git_safety_hooks.ok === true && byId.public_data_safety.ok === true
+        byId.unified_data_classifier.ok === true &&
+        byId.data_git_safety_hooks.ok === true &&
+        byId.public_data_safety.ok === true
           ? null
           : "data_safety_verifier_failed",
     },
