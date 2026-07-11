@@ -1,7 +1,7 @@
 # SQLite Shards
 
 Date: 2026-07-05
-Status: v3 implemented
+Status: v5 contextual retrieval rows and private-source exclusion implemented
 
 ## Goal
 
@@ -17,7 +17,7 @@ SQLite shards are the next speed layer:
 
 The shards split the hot retrieval surface by domain:
 
-- `wiki.sqlite`: curated Wiki/Source/Project/accepted records, terms, graph nodes, graph edges
+- `wiki.sqlite`: curated Wiki/Source/Project/accepted records, contextual row metadata, terms, graph nodes, graph edges
 - `operations.sqlite`: tasks, traces, Context Packs, Context Pack items, events
 
 ## Runtime Behavior
@@ -29,6 +29,8 @@ When SQLite shards exist:
 - recent task context routes through `operations.sqlite`
 - Observatory reads recent rows from `operations.sqlite`
 - MCP writes update `operations.sqlite` incrementally
+- sparse rows preserve bounded chunk context, source SHA-256, parent path, language, lifecycle, verification status, retrieval lane, and aliases
+- semantic candidates are selected as an independent bounded cosine top-K before RRF/reranking
 
 If the shards are missing or use an old shard metadata version, DinoBrain falls back to the JSON indexes and legacy scanners.
 
@@ -58,6 +60,7 @@ The verifier creates a synthetic vault with more than 1,200 Wiki records and 1,2
 - routed Context Pack retrieval reports `retrieval_mode: lexical_fallback_v2` when no dense vector index is configured
 - recent task lookup comes from SQLite
 - incremental task/event writes are visible without rebuilding the shard
+- contextual row metadata and per-result score contribution breakdowns survive SQLite routing
 
 ## Session Growth Boundary
 

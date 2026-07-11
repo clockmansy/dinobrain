@@ -23,6 +23,37 @@ function text(filePath, value) {
   writeFileSync(filePath, value, "utf8");
 }
 
+function acceptedLifecycle(record, id, at, evidencePath, candidatePath, reviewPath) {
+  const transitionId = `node-transition-${id}`;
+  return {
+    ...record,
+    node_id: id,
+    lifecycle_version: "node_lifecycle_v3",
+    lifecycle_state: "accepted",
+    lifecycle_state_entered_at: at,
+    lifecycle_last_transition_id: transitionId,
+    lifecycle_history: [{
+      transition_id: transitionId,
+      idempotency_key: `verify-answer-quality|${id}|accepted`,
+      from_state: null,
+      to_state: "accepted",
+      reason_code: "verified_fixture",
+      reason: "Seed a reviewed accepted memory for answer-quality verification.",
+      actor: "verify-answer-quality",
+      evidence_paths: [evidencePath],
+      predecessor_paths: [],
+      successor_paths: [],
+      at,
+    }],
+    predecessor_paths: [],
+    successor_paths: [],
+    source_candidate_path: candidatePath,
+    source_review_path: reviewPath,
+    status: "accepted",
+    updated_at: at,
+  };
+}
+
 function seedVault(dataRoot, expectedPath = "50_Instances/accepted/answer-rule.json") {
   text(
     path.join(dataRoot, "20_Wiki", "README.md"),
@@ -42,7 +73,16 @@ tags: [wiki]
     chunk_text: "Generated answers should cite reviewed memory and avoid unsupported private claims.",
     last_verified: "2026-07-07",
   });
-  json(path.join(dataRoot, "50_Instances", "accepted", "answer-rule.json"), {
+  const acceptedPath = "50_Instances/accepted/answer-rule.json";
+  const candidatePath = "50_Instances/candidates/answer-rule.json";
+  const reviewPath = "50_Instances/reviews/answer-rule.json";
+  json(path.join(dataRoot, ...candidatePath.split("/")), { candidate_id: "answer-rule", status: "reviewed" });
+  json(path.join(dataRoot, ...reviewPath.split("/")), {
+    status: "approved",
+    candidate_path: candidatePath,
+    accepted_path: acceptedPath,
+  });
+  json(path.join(dataRoot, ...acceptedPath.split("/")), acceptedLifecycle({
     title: "Answer quality rule",
     summary:
       "When answering with memory, include reviewed memory, cite evidence paths, avoid unsupported private claims, and compare memory-on behavior against memory-off.",
@@ -55,7 +95,7 @@ tags: [wiki]
     reviewed_by: "verify-answer-quality",
     reviewed_at: "2026-07-07T00:00:00.000Z",
     review_status: "accepted_by_agent_review",
-  });
+  }, "answer-rule", "2026-07-07T00:00:00.000Z", "30_Sources/chunks/answer-quality-source.json", candidatePath, reviewPath));
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
     version: 1,
     description: "Answer quality fixture.",

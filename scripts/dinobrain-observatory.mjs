@@ -17,7 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-controlled-compounding-v2";
+const observatoryVersion = "2026-07-11-contextual-rag-v1";
 const execFileAsync = promisify(execFile);
 const readinessVersion = "observatory_readiness_v1";
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
@@ -867,6 +867,7 @@ async function readiness(existingState = null) {
     reviewBackpressureArtifact,
     coldPartitionsArtifact,
     ragProofArtifact,
+    vectorMigrationArtifact,
     ragEvalArtifact,
     liveSemanticQueryArtifact,
     answerQualityArtifact,
@@ -888,6 +889,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/review_queue_backpressure.json"),
     readStatusArtifact(".dino/state/cold_partitions.json"),
     readStatusArtifact(".dino/state/rag_proof_status.json"),
+    readStatusArtifact(".dino/state/vector_index_migration.json"),
     readStatusArtifact(".dino/state/rag_eval_status.json"),
     readStatusArtifact(".dino/state/live_semantic_query_status.json"),
     readStatusArtifact(".dino/state/answer_quality_status.json"),
@@ -1010,6 +1012,13 @@ async function readiness(existingState = null) {
       blockerReason: ragBlocker,
     }),
     hardGateFromArtifact({
+      id: "vector_index_migration",
+      label: "Controlled Vector Migration",
+      artifact: vectorMigrationArtifact,
+      expectedStatuses: ["initialized", "same_identity_updated", "applied"],
+      proofPath: vectorMigrationArtifact.artifact_path,
+    }),
+    hardGateFromArtifact({
       id: "rag_eval_quality",
       label: "Generated Answer Evaluation",
       artifact: ragEvalArtifact,
@@ -1128,6 +1137,15 @@ async function readiness(existingState = null) {
       semantic_embedding_provider: ragProof?.dense_vector?.semantic_embedding_provider === true,
       blocker: ragBlocker,
       eval_caveats: Array.isArray(ragEval?.caveats) ? ragEval.caveats : [],
+    },
+    vector_index_migration_status: {
+      artifact_path: vectorMigrationArtifact.artifact_path,
+      artifact_parse_status: vectorMigrationArtifact.artifact_parse_status,
+      status: vectorMigrationArtifact.value?.status ?? "missing",
+      migration_required: vectorMigrationArtifact.value?.migration_required === true,
+      migration_id: vectorMigrationArtifact.value?.migration_id ?? vectorMigrationArtifact.value?.latest_migration?.migration_id ?? null,
+      manifest_path: vectorMigrationArtifact.value?.manifest_path ?? vectorMigrationArtifact.value?.latest_migration?.manifest_path ?? null,
+      latest_migration_status: vectorMigrationArtifact.value?.latest_migration?.status ?? null,
     },
     live_semantic_query_status: {
       artifact_path: liveSemanticQueryArtifact.artifact_path,
@@ -2270,6 +2288,8 @@ function html() {
         ["RAG provider", readiness.rag_status?.provider],
         ["semantic", readiness.rag_status?.semantic_embedding_provider],
         ["RAG blocker", readiness.rag_status?.blocker],
+        ["vector migration", readiness.vector_index_migration_status?.status],
+        ["vector migration id", readiness.vector_index_migration_status?.migration_id],
         ["live semantic query", readiness.live_semantic_query_status?.status],
         ["live query blocker", readiness.live_semantic_query_status?.blocker],
         ["answer quality", readiness.answer_quality_status?.status],

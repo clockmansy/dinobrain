@@ -36,6 +36,7 @@ export const STATUS_GENERATION_ARTIFACT_PATHS = [
   ".dino/state/task_lifecycle_settlement.json",
   ".dino/state/node_lifecycle.json",
   ".dino/state/rag_proof_status.json",
+  ".dino/state/vector_index_migration.json",
   ".dino/state/rag_eval_status.json",
   ".dino/state/live_semantic_query_status.json",
   ".dino/state/answer_quality_status.json",

@@ -238,6 +238,14 @@ tags: [context-pack]
     dense_vector: { provider: "local_text_hashing_v1", dimensions: 128, semantic_embedding_provider: false },
     warnings: ["local_text_hashing_vectors_are_not_external_embedding_provider"],
   });
+  writeJson(".dino/state/vector_index_migration.json", {
+    status: "same_identity_updated",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    migration_required: false,
+    migration_id: null,
+    manifest_path: null,
+    warnings: [],
+  });
   writeJson(".dino/state/rag_eval_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -384,6 +392,7 @@ tags: [context-pack]
     );
     assert(readiness.live_semantic_query_status?.blocker === "live_semantic_query_not_healthy", "Live semantic query readiness status missing");
     assert(readiness.answer_quality_status?.status === "needs_attention", "Answer-quality readiness status missing");
+    assert(readiness.vector_index_migration_status?.status === "same_identity_updated", "Vector migration readiness status missing");
     assert(readiness.release_manifest_status?.status === "healthy", "Release manifest readiness status missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality"), "Answer-quality pending lane missing");
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");

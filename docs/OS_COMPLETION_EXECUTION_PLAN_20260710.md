@@ -539,6 +539,20 @@ complete; global completion remains open for RAG-01 and later packages.
 **Acceptance:** paraphrase and bilingual cases use real dense retrieval; exact
 rare aliases remain stable; fallback is honestly labeled and cannot pass HG-04.
 
+Implementation evidence (2026-07-11): Wiki index v5 and SQLite shard v5 now
+persist the bounded contextual row contract; `30_Sources/private` is excluded
+from normal retrieval. Semantic candidates are an independent cosine top-64,
+exact aliases and rare lexical terms retain priority, and every result exposes
+typed sparse/BM25/dense/RRF/rerank/provenance/lifecycle/type-budget/recency/noise
+contributions. Provider/model/dimension/schema changes use a serialized,
+hash-verified migration with exact before/after artifacts and rollback/reapply.
+`rag:retrieval:verify`, `rag:vector:migration:verify`, Wiki, SQLite, RAG proof,
+RAG eval, live semantic, answer-quality, Observatory, generation, and freshness
+regressions pass. Current-vault evidence is 79 public curated rows, 384-dimension
+MiniLM semantic vectors, 12/12 retrieval cases, 12/12 answer-quality cases, and
+an applied v1-to-v2 vector migration. RAG-01 is complete; HG-04 remains open for
+RAG-03/RAG-04 external evaluation and declared 50k scale/latency evidence.
+
 #### RAG-02: Transactional source/chunk/claim lineage
 
 **Hard gates:** HG-05, HG-10

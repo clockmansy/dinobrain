@@ -254,7 +254,11 @@ try {
   assert(sensitiveGate.gates.some((gate) => gate.id === "sensitivity_auto_escalated"), "sensitivity escalation gate absent");
 
   json(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), {
-    version: 1,
+    version: 2,
+    provider: "test_semantic_provider",
+    model: "test-semantic-model",
+    dimensions: 2,
+    semantic_embedding_provider: true,
     queries: {
       "meaning bridge lookup": [1, 0],
     },

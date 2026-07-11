@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -483,18 +484,31 @@ export async function collectRecentTaskRecordsFromIndex(
   for (const task of index.recent_tasks.filter((entry) => !coldPaths.has(entry.path)).slice(0, limit)) {
     const trace = task.trace_path ? await readJson<JsonObject>(dataPath(dataRoot, task.trace_path)) : null;
     const traceSummary = trace && typeof trace.summary === "string" ? trace.summary : "";
+    const title = `Task: ${task.request.slice(0, 96)}`;
+    const summary = [`status=${task.status}`, task.project ? `project=${task.project}` : "", traceSummary]
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 420);
+    const hasKorean = /[\uac00-\ud7a3]/.test(task.request);
+    const hasLatin = /[A-Za-z]/.test(task.request);
     records.push({
       path: task.path,
       kind: "recent_task",
-      title: `Task: ${task.request.slice(0, 96)}`,
-      summary: [`status=${task.status}`, task.project ? `project=${task.project}` : "", traceSummary]
-        .filter(Boolean)
-        .join(" | ")
-        .slice(0, 420),
+      title,
+      summary,
       tags: ["recent-task", task.status],
       score: 0,
       reasons: [],
       excerpt: task.request,
+      contextual_chunk: [`title: ${title}`, `summary: ${summary}`, `content: ${task.request}`].join("\n").slice(0, 1_600),
+      source_sha256: createHash("sha256").update(JSON.stringify(task), "utf8").digest("hex"),
+      parent_record_path: task.trace_path,
+      language: hasKorean && hasLatin ? "mixed" : hasKorean ? "ko" : hasLatin ? "en" : "unknown",
+      lifecycle_state: task.status,
+      verification_status: trace ? "trace_recorded" : "unverified",
+      retrieval_lane: "recent_task",
+      aliases: [],
+      modified_at_ms: Number.isFinite(Date.parse(task.updated_at)) ? Date.parse(task.updated_at) : 0,
     });
   }
   return records;

@@ -199,6 +199,7 @@ Required evidence:
 - `.dino/state/rag_eval_status.json`;
 - `.dino/state/live_semantic_query_status.json`;
 - `.dino/state/answer_quality_status.json`;
+- `.dino/state/vector_index_migration.json`;
 - current-vault and scale-test reports, not fixture reports alone.
 
 ### HG-05: Durable Source, Chunk, Claim, And Provenance Lineage
@@ -430,6 +431,8 @@ the current-vault artifacts named above.
 | Live semantic | `npm run status:live-semantic-query` | HG-04 arbitrary-query semantic status |
 | Answer quality | `npm run status:answer-quality` | HG-04 memory-on/off generated-answer status |
 | RAG regressions | `npm run rag:proof:verify` | HG-04 regression coverage |
+| Contextual hybrid retrieval | `npm run rag:retrieval:verify` | HG-04/HG-05 independent dense top-K, exact alias, score contribution, and lane-budget coverage |
+| Vector migration | `npm run rag:vector:migration:verify` | HG-04/HG-10 provider/model/dimension migration, rollback, and tamper coverage |
 | RAG regressions | `npm run eval:rag:verify` | HG-04 regression coverage |
 | RAG regressions | `npm run verify:live-semantic-query` | HG-04 regression coverage |
 | RAG regressions | `npm run verify:answer-quality` | HG-04 regression coverage |
@@ -506,6 +509,8 @@ $commands = @(
   'npm run status:live-semantic-query',
   'npm run status:answer-quality',
   'npm run rag:proof:verify',
+  'npm run rag:retrieval:verify',
+  'npm run rag:vector:migration:verify',
   'npm run eval:rag:verify',
   'npm run verify:live-semantic-query',
   'npm run verify:answer-quality',

@@ -23,6 +23,37 @@ function text(filePath, value) {
   writeFileSync(filePath, value, "utf8");
 }
 
+function acceptedLifecycle(record, id, at, evidencePath, candidatePath, reviewPath) {
+  const transitionId = `node-transition-${id}`;
+  return {
+    ...record,
+    node_id: id,
+    lifecycle_version: "node_lifecycle_v3",
+    lifecycle_state: "accepted",
+    lifecycle_state_entered_at: at,
+    lifecycle_last_transition_id: transitionId,
+    lifecycle_history: [{
+      transition_id: transitionId,
+      idempotency_key: `verify-rag-eval|${id}|accepted`,
+      from_state: null,
+      to_state: "accepted",
+      reason_code: "verified_fixture",
+      reason: "Seed a reviewed accepted memory for RAG evaluation.",
+      actor: "verify-rag-eval",
+      evidence_paths: [evidencePath],
+      predecessor_paths: [],
+      successor_paths: [],
+      at,
+    }],
+    predecessor_paths: [],
+    successor_paths: [],
+    source_candidate_path: candidatePath,
+    source_review_path: reviewPath,
+    status: "accepted",
+    updated_at: at,
+  };
+}
+
 async function seedVault(dataRoot) {
   const query = "How should DinoBrain prove RAG quality?";
   text(
@@ -43,7 +74,16 @@ tags: [wiki]
     chunk_text: "RAG quality should separate verified chunks from anchor-only source records.",
     last_verified: "2026-07-07",
   });
-  json(path.join(dataRoot, "50_Instances", "accepted", "rag-quality.json"), {
+  const acceptedPath = "50_Instances/accepted/rag-quality.json";
+  const candidatePath = "50_Instances/candidates/rag-quality.json";
+  const reviewPath = "50_Instances/reviews/rag-quality.json";
+  json(path.join(dataRoot, ...candidatePath.split("/")), { candidate_id: "rag-quality", status: "reviewed" });
+  json(path.join(dataRoot, ...reviewPath.split("/")), {
+    status: "approved",
+    candidate_path: candidatePath,
+    accepted_path: acceptedPath,
+  });
+  json(path.join(dataRoot, ...acceptedPath.split("/")), acceptedLifecycle({
     candidate_id: "rag-quality",
     title: "RAG quality proof requires grounded evaluation",
     claim:
@@ -61,7 +101,7 @@ tags: [wiki]
     reviewed_at: "2026-07-07T00:00:00.000Z",
     review_status: "accepted_by_agent_review",
     last_verified: "2026-07-07",
-  });
+  }, "rag-quality", "2026-07-07T00:00:00.000Z", "30_Sources/chunks/rag-method.json", candidatePath, reviewPath));
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
     version: 1,
     description: "RAG eval fixture converted from behavior golden.",
@@ -101,8 +141,11 @@ async function main() {
     );
 
     json(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), {
-      version: 1,
+      version: 2,
+      provider: "test_semantic_provider",
+      model: "test-semantic-model",
       dimensions: 2,
+      semantic_embedding_provider: true,
       records: {
         "50_Instances/accepted/rag-quality.json": [1, 0],
       },

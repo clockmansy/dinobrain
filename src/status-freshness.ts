@@ -34,6 +34,7 @@ import { SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
 import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
 import { WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
+import { VECTOR_INDEX_MIGRATION_STATUS_RELATIVE_PATH } from "./vector-index-migration.js";
 
 export const STATUS_FRESHNESS_VERSION = "status_freshness_v1";
 export const MONITORING_STATUS_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/monitoring_status.json`;
@@ -366,6 +367,13 @@ const ARTIFACTS: ArtifactSpec[] = [
       "60_Operations",
       "70_Error_Book",
     ],
+    required: true,
+  },
+  {
+    id: "vector_index_migration",
+    label: "controlled vector index migration",
+    artifactPath: VECTOR_INDEX_MIGRATION_STATUS_RELATIVE_PATH,
+    sourceRoots: [".dino/index/dense-vectors.json"],
     required: true,
   },
   {

@@ -1816,7 +1816,7 @@ async function buildContextPackRecord(
   const packId = makePackId(question);
   const createdAt = nowIso();
   const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
-  const items = ranked.map(({ path: recordPath, kind, title, summary, tags, score, reasons }) => ({
+  const items = ranked.map(({
     path: recordPath,
     kind,
     title,
@@ -1824,6 +1824,34 @@ async function buildContextPackRecord(
     tags,
     score,
     reasons,
+    score_breakdown,
+    source_sha256,
+    parent_record_path,
+    language,
+    lifecycle_state,
+    verification_status,
+    retrieval_lane,
+    aliases,
+    contextual_chunk,
+    modified_at_ms,
+  }) => ({
+    path: recordPath,
+    kind,
+    title,
+    summary,
+    tags,
+    score,
+    reasons,
+    score_breakdown,
+    source_sha256,
+    parent_record_path,
+    language,
+    lifecycle_state,
+    verification_status,
+    retrieval_lane,
+    aliases,
+    contextual_chunk,
+    modified_at_ms,
   }));
   const trace = {
     pack_id: packId,

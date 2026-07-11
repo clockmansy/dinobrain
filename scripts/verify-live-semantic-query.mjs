@@ -25,7 +25,7 @@ function text(filePath, value) {
 }
 
 async function seedVault(dataRoot) {
-  const recordPath = "50_Instances/accepted/live-semantic-proof.json";
+  const recordPath = "20_Wiki/live-semantic-proof.md";
   const recordText = [
     "DinoBrain completion requires semantic embeddings for live user questions.",
     "The retrieval path must compute dense query vectors on demand.",
@@ -42,15 +42,18 @@ tags: [wiki]
 # Wiki
 `,
   );
-  json(path.join(dataRoot, recordPath), {
-    title: "Live semantic query proof",
-    summary: recordText,
-    tags: ["rag", "retrieval", "semantic", "live-query"],
-    source_status: "internal_session_evidence",
-    reviewed_by: "verify-live-semantic-query",
-    reviewed_at: "2026-07-07T00:00:00.000Z",
-    review_status: "accepted_by_agent_review",
-  });
+  text(path.join(dataRoot, recordPath), `---
+title: Live semantic query proof
+summary: ${recordText}
+tags: [rag, retrieval, semantic, live-query]
+verification_status: verified
+lifecycle_state: active
+---
+
+# Live semantic query proof
+
+${recordText}
+`);
   const wiki = await buildAndWriteWikiIndex(dataRoot);
   const semantic = await tryEmbedTextsWithSemanticProvider([recordText]);
   assert(semantic, "semantic provider unavailable for live semantic query verification");

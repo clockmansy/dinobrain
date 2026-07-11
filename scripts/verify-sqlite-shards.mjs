@@ -120,6 +120,17 @@ assert(existsSync(operationsShardPath), "operations sqlite shard was not written
 assert(existsSync(manifestPath), "sqlite manifest was not written");
 assert(manifest.shards.wiki.records === 1201, `unexpected wiki record count: ${manifest.shards.wiki.records}`);
 assert(manifest.shards.operations.tasks === 1200, `unexpected task count: ${manifest.shards.operations.tasks}`);
+const wikiDb = new DatabaseSync(wikiShardPath, { readOnly: true });
+try {
+  const contextualRow = wikiDb
+    .prepare("SELECT contextual_chunk, source_sha256, language, lifecycle_state, verification_status, retrieval_lane, aliases_json FROM records WHERE path = ?")
+    .get("20_Wiki/SQLite-Shard-Target.md");
+  assert(contextualRow.contextual_chunk.length > 0, "SQLite contextual chunk missing");
+  assert(/^[a-f0-9]{64}$/.test(contextualRow.source_sha256), "SQLite source hash missing");
+  assert(contextualRow.retrieval_lane === "wiki", "SQLite retrieval lane missing");
+} finally {
+  wikiDb.close();
+}
 const operationDb = new DatabaseSync(operationsShardPath, { readOnly: true });
 try {
   const taskRows = operationDb.prepare("SELECT COUNT(*) AS count FROM tasks").get().count;
@@ -145,6 +156,7 @@ const directSearch = await querySqliteWiki(dataRoot, "sqlite-shard-target", 5);
 assert(directSearch.stats.retrieval_mode === "lexical_fallback_v2", "direct sqlite query did not report lexical fallback mode without dense vectors");
 assert(directSearch.stats.candidate_source === "sqlite_shards_v2", "direct sqlite query did not report sqlite candidate source");
 assert(directSearch.ranked.some((record) => record.path === "20_Wiki/SQLite-Shard-Target.md"), "direct sqlite query missed target");
+assert(directSearch.ranked.every((record) => record.score_breakdown), "SQLite score contribution breakdown missing");
 
 const routedSearch = await searchWiki(dataRoot, "sqlite-shard-target", 5);
 assert(routedSearch.stats.retrieval_mode === "lexical_fallback_v2", "searchWiki did not report lexical fallback mode without dense vectors");

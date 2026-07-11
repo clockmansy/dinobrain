@@ -16,10 +16,29 @@ export type DenseVectorIndex = {
   dimensions?: number;
   semantic_embedding_provider?: boolean;
   cache_dir?: string | null;
+  generated_at?: string;
+  source_index_path?: string;
   records?: Record<string, number[]>;
   record_vectors?: Record<string, number[]>;
   queries?: Record<string, number[]>;
   query_vectors?: Record<string, number[]>;
+  source_index_sha256?: string;
+  record_metadata?: Record<string, DenseVectorRecordMetadata>;
+};
+
+export type DenseVectorRecordMetadata = {
+  contextual_chunk: string;
+  source_sha256: string;
+  parent_record_path: string | null;
+  language: string;
+  lifecycle_state: string;
+  verification_status: string;
+  retrieval_lane: string;
+};
+
+export type DenseVectorCandidate = {
+  path: string;
+  cosine: number;
 };
 
 export const HYBRID_RANKING_INPUTS = [
@@ -87,6 +106,7 @@ const MIN_BM25_IDF = 0.15;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_TOTAL = 3;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_PER_TOPIC = 2;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_CHARS = 2400;
+export const DENSE_CANDIDATE_TOP_K_DEFAULT = 64;
 
 type ScoredRecord = {
   record: RankedRecord;
@@ -241,6 +261,7 @@ export function denseVectorAvailable(
   query: string,
   denseVectorIndex?: DenseVectorIndex | null,
 ): boolean {
+  if (!denseIndexUsesSemanticProvider(denseVectorIndex)) return false;
   const qv = queryVector(denseVectorIndex, query);
   if (!qv) return false;
   const recordVectors = vectorMap(denseVectorIndex, "records");
@@ -250,10 +271,27 @@ export function denseVectorAvailable(
 export function denseVectorCandidatePaths(
   denseVectorIndex: DenseVectorIndex | null | undefined,
   query: string,
+  limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
 ): Set<string> {
-  if (!queryVector(denseVectorIndex, query)) return new Set();
-  const recordVectors = vectorMap(denseVectorIndex, "records");
-  return new Set(Object.entries(recordVectors).filter(([, vector]) => validVector(vector)).map(([recordPath]) => recordPath));
+  return new Set(denseVectorCandidates(denseVectorIndex, query, limit).map((candidate) => candidate.path));
+}
+
+export function denseVectorCandidates(
+  denseVectorIndex: DenseVectorIndex | null | undefined,
+  query: string,
+  limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
+): DenseVectorCandidate[] {
+  if (!denseIndexUsesSemanticProvider(denseVectorIndex)) return [];
+  const qv = queryVector(denseVectorIndex, query);
+  if (!qv || limit <= 0) return [];
+  const dimensions = denseVectorDimensions(denseVectorIndex);
+  if (dimensions > 0 && qv.length !== dimensions) return [];
+  return Object.entries(vectorMap(denseVectorIndex, "records"))
+    .filter(([, vector]) => validVector(vector) && (dimensions <= 0 || vector.length === dimensions))
+    .map(([recordPath, vector]) => ({ path: recordPath, cosine: cosine(qv, vector) }))
+    .filter((candidate) => candidate.cosine > 0)
+    .sort((a, b) => b.cosine - a.cosine || a.path.localeCompare(b.path))
+    .slice(0, limit);
 }
 
 export function retrievalModeFor(
@@ -307,7 +345,12 @@ export function contextualText(record: RankedRecord): string {
     `title: ${record.title}`,
     `summary: ${record.summary}`,
     `tags: ${record.tags.join(" ")}`,
-    `chunk: ${record.excerpt}`,
+    `aliases: ${record.aliases.join(" ")}`,
+    `language: ${record.language}`,
+    `lifecycle: ${record.lifecycle_state}`,
+    `verification: ${record.verification_status}`,
+    `parent: ${record.parent_record_path ?? ""}`,
+    `chunk: ${record.contextual_chunk || record.excerpt}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -332,13 +375,68 @@ function provenanceBonus(record: RankedRecord): number {
   else if (record.path.startsWith("30_Sources/") && hasProvenanceMetadata) bonus += 1.2;
   if (record.path.startsWith("50_Instances/accepted/") && hasProvenanceMetadata) bonus += 1.5;
   if (hasProvenanceMetadata) bonus += 1.2;
+  if (/verified|accepted|reviewed|trace_recorded/.test(record.verification_status.toLowerCase())) bonus += 1.2;
+  if (record.source_sha256.length === 64) bonus += 0.4;
+  if (record.parent_record_path) bonus += 0.4;
   if (record.path.startsWith("50_Instances/accepted/") && /"auto_generated"\s*:\s*true/.test(text) && !reviewed) bonus -= 4;
   if (record.path.startsWith("50_Instances/accepted/behavior-rule-") && /"support_count"\s*:\s*1/.test(text) && !reviewed) {
     bonus -= 3;
   }
   if (record.path.startsWith("60_Operations/task-summaries/")) bonus -= 3;
-  if (/(pending_review|candidate|quarantine)/.test(text)) bonus -= 2;
   return bonus;
+}
+
+function lifecycleContribution(record: RankedRecord): number {
+  const lifecycle = record.lifecycle_state.toLowerCase();
+  const verification = record.verification_status.toLowerCase();
+  if (/(deleted|tombstone|quarantine|rejected|excluded)/.test(`${lifecycle} ${verification}`)) return -12;
+  if (/(hold|held|pending|candidate)/.test(`${lifecycle} ${verification}`)) return -4;
+  if (/(accepted|active|promoted|verified|reviewed)/.test(`${lifecycle} ${verification}`)) return 1;
+  return 0;
+}
+
+function typeBudgetContribution(record: RankedRecord): number {
+  if (["wiki", "source", "project", "error_book"].includes(record.retrieval_lane)) return 0.5;
+  if (record.retrieval_lane === "accepted_behavior") return 0.25;
+  if (record.retrieval_lane === "operations") return -0.5;
+  if (record.retrieval_lane === "recent_task") return -0.75;
+  return -0.25;
+}
+
+function recencyContribution(record: RankedRecord): number {
+  if (!(record.modified_at_ms > 0)) return 0;
+  const ageDays = Math.max(0, (Date.now() - record.modified_at_ms) / 86_400_000);
+  if (ageDays <= 7) return 0.75;
+  if (ageDays <= 30) return 0.4;
+  if (ageDays <= 180) return 0.15;
+  return 0;
+}
+
+function noiseContribution(record: RankedRecord): number {
+  const text = `${record.title} ${record.summary} ${record.contextual_chunk}`.trim();
+  let penalty = 0;
+  if (record.path.endsWith("/README.md") && text.length < 220) penalty -= 3;
+  if (record.summary.length < 24) penalty -= 1;
+  if (/use this folder for|placeholder|todo|coming soon/i.test(text)) penalty -= 2;
+  return penalty;
+}
+
+function normalizeExact(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+function exactLexicalBonus(record: RankedRecord, query: string, queryTerms: string[], documentFrequency: Map<string, number>): number {
+  const normalizedQuery = normalizeExact(query);
+  if (!normalizedQuery) return 0;
+  if (record.aliases.some((alias) => normalizeExact(alias) === normalizedQuery)) return 42;
+  if (normalizeExact(record.title) === normalizedQuery) return 34;
+  if (normalizeExact(recordDisplayName(record.path)) === normalizedQuery) return 30;
+
+  const exactTokens = new Set(
+    tokenizeHybrid([record.path, record.title, record.aliases.join(" ")].join(" ")),
+  );
+  const rareMatches = queryTerms.filter((term) => exactTokens.has(term) && (documentFrequency.get(term) ?? 0) <= 2);
+  return Math.min(18, rareMatches.length * 6);
 }
 
 function isCodexSessionKnowledge(record: RankedRecord): boolean {
@@ -377,7 +475,8 @@ function rootIntentBonus(record: RankedRecord, query: string): number {
   const lower = query.toLowerCase();
   const matched = rootIntentsForQuery(lower);
   if (matched.length === 0) return 0;
-  if (matched.some((prefix) => record.path.startsWith(prefix))) return 4.5;
+  const matchingPrefix = matched.find((prefix) => record.path.startsWith(prefix));
+  if (matchingPrefix) return record.path === `${matchingPrefix}README.md` ? 12 : 4.5;
   if (record.path.endsWith("/README.md")) return -8;
   return -3;
 }
@@ -420,6 +519,37 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
   let controlledRuleChars = 0;
   const controlledTopicCounts = new Map<string, number>();
   const maxRecentTasks = allowsRecentTaskContext(query) ? Math.min(1, limit) : 0;
+  const laneCounts = new Map<RankedRecord["retrieval_lane"], number>();
+  let supplementalLaneCount = 0;
+  const intentPrefixes = rootIntentsForQuery(query);
+  const intentLanes = new Set(
+    intentPrefixes.map((prefix) =>
+      prefix.startsWith("20_Wiki/")
+        ? "wiki"
+        : prefix.startsWith("30_Sources/")
+          ? "source"
+          : prefix.startsWith("40_Projects/")
+            ? "project"
+            : prefix.startsWith("50_Instances/accepted/")
+              ? "accepted_behavior"
+              : prefix.startsWith("60_Operations/")
+                ? "operations"
+                : "error_book",
+    ),
+  );
+  const laneLimit = (lane: RankedRecord["retrieval_lane"]): number => {
+    if (lane === "recent_task") return maxRecentTasks;
+    if (lane === "operations") return Math.min(intentLanes.has(lane) ? 4 : 1, limit);
+    if (lane === "other") return Math.min(1, limit);
+    if (intentLanes.has(lane)) return lane === "accepted_behavior" ? Math.max(3, Math.ceil(limit * 0.75)) : limit;
+    if (lane === "accepted_behavior") return Math.max(2, Math.ceil(limit * 0.5));
+    return Math.max(2, Math.ceil(limit * 0.4));
+  };
+  const acceptedBehaviorAvailable = records.some((record) => record.retrieval_lane === "accepted_behavior");
+  const maxSupplementalLanes =
+    acceptedBehaviorAvailable && (intentLanes.size === 0 || intentLanes.has("accepted_behavior"))
+      ? Math.min(2, limit)
+      : limit;
   for (const record of records) {
     if (record.kind === "recent_task" || record.path.startsWith(".dino/tasks/")) {
       if (recentTaskCount >= maxRecentTasks) continue;
@@ -435,6 +565,11 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
       controlledRuleChars += chars;
       controlledTopicCounts.set(topic, (controlledTopicCounts.get(topic) ?? 0) + 1);
     }
+    const lane = record.retrieval_lane;
+    if ((laneCounts.get(lane) ?? 0) >= laneLimit(lane)) continue;
+    if (lane !== "accepted_behavior" && supplementalLaneCount >= maxSupplementalLanes) continue;
+    laneCounts.set(lane, (laneCounts.get(lane) ?? 0) + 1);
+    if (lane !== "accepted_behavior") supplementalLaneCount += 1;
     selected.push(record);
     if (selected.length >= limit) break;
   }
@@ -449,8 +584,7 @@ function applyContextPackIntentBudget(records: RankedRecord[], query: string, li
 
   const primary = records.filter((record) => intents.some((prefix) => record.path.startsWith(prefix)));
   const secondary = records.filter((record) => !intents.some((prefix) => record.path.startsWith(prefix)));
-  const maxSecondary = Math.min(2, targetLimit);
-  return takeWithContextPackBudgets([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit, query);
+  return takeWithContextPackBudgets([...primary, ...secondary.slice(0, Math.min(2, targetLimit))], targetLimit, query);
 }
 
 function hasReviewLineage(record: RankedRecord): boolean {
@@ -527,7 +661,9 @@ function denseVectorRank(
   records: RankedRecord[],
   query: string,
   denseVectorIndex?: DenseVectorIndex | null,
+  limit = DENSE_CANDIDATE_TOP_K_DEFAULT,
 ): ScoredRecord[] | null {
+  if (!denseIndexUsesSemanticProvider(denseVectorIndex)) return null;
   const qv = queryVector(denseVectorIndex, query);
   if (!qv) return null;
   const recordVectors = vectorMap(denseVectorIndex, "records");
@@ -543,7 +679,8 @@ function denseVectorRank(
       };
     })
     .filter((entry): entry is ScoredRecord => entry !== null && entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.record.path.localeCompare(b.record.path));
+    .sort((a, b) => b.score - a.score || a.record.path.localeCompare(b.record.path))
+    .slice(0, limit);
   return ranked.length > 0 ? ranked : null;
 }
 
@@ -576,6 +713,36 @@ function sparseFieldRank(records: RankedRecord[], queryTerms: string[]): ScoredR
     .sort((a, b) => b.score - a.score || a.record.path.localeCompare(b.record.path));
 }
 
+function exactLexicalRank(
+  records: RankedRecord[],
+  query: string,
+  queryTerms: string[],
+  documentFrequency: Map<string, number>,
+): ScoredRecord[] {
+  return records
+    .map((record) => {
+      const score = exactLexicalBonus(record, query, queryTerms, documentFrequency);
+      return {
+        record,
+        score,
+        reasons:
+          score >= 42
+            ? [`exact_alias:${normalizeExact(query)}`]
+            : score >= 30
+              ? ["exact_title_or_path"]
+              : score > 0
+                ? ["rare_lexical_exact"]
+                : [],
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.record.path.localeCompare(b.record.path));
+}
+
+function scoreMap(entries: ScoredRecord[]): Map<string, number> {
+  return new Map(entries.map((entry) => [entry.record.path, entry.score]));
+}
+
 function rrf(lists: ScoredRecord[][]): Map<string, { record: RankedRecord; score: number; reasons: string[] }> {
   const fused = new Map<string, { record: RankedRecord; score: number; reasons: string[] }>();
   const k = 60;
@@ -593,14 +760,32 @@ function rrf(lists: ScoredRecord[][]): Map<string, { record: RankedRecord; score
 export function rankRecordsHybridV2(
   records: RankedRecord[],
   query: string,
-  options: { limit?: number; denseVectorIndex?: DenseVectorIndex | null; contextPackBudget?: boolean } = {},
+  options: {
+    limit?: number;
+    denseVectorIndex?: DenseVectorIndex | null;
+    contextPackBudget?: boolean;
+    denseTopK?: number;
+  } = {},
 ): RankedRecord[] {
   const eligibleRecords = records.filter((record) => !isUnreviewedAutoGeneratedAccepted(record));
   const queryTerms = filterQueryTermsByCorpus(eligibleRecords, unique(tokenizeHybrid(query)));
+  const documentFrequency = docFrequencyByTerm(eligibleRecords);
+  const exact = exactLexicalRank(eligibleRecords, query, queryTerms, documentFrequency);
   const sparse = sparseFieldRank(eligibleRecords, queryTerms);
   const bm25 = bm25Rank(eligibleRecords, queryTerms);
-  const dense = denseVectorRank(eligibleRecords, query, options.denseVectorIndex) ?? denseLexicalRank(eligibleRecords, query);
-  const fused = rrf([sparse, bm25, dense]);
+  const semanticDense = denseVectorRank(
+    eligibleRecords,
+    query,
+    options.denseVectorIndex,
+    options.denseTopK ?? DENSE_CANDIDATE_TOP_K_DEFAULT,
+  );
+  const lexicalDense = semanticDense ? [] : denseLexicalRank(eligibleRecords, query).slice(0, options.denseTopK ?? DENSE_CANDIDATE_TOP_K_DEFAULT);
+  const dense = semanticDense ?? lexicalDense;
+  const fused = rrf([exact, sparse, bm25, dense]);
+  const exactScores = scoreMap(exact);
+  const sparseScores = scoreMap(sparse);
+  const bm25Scores = scoreMap(bm25);
+  const denseScores = scoreMap(dense);
 
   for (const record of eligibleRecords) {
     if (fused.has(record.path)) continue;
@@ -615,10 +800,19 @@ export function rankRecordsHybridV2(
       const rootIntent = rootIntentBonus(entry.record, query);
       const sessionKnowledge = sessionKnowledgeIntentBonus(entry.record, query, queryTerms);
       const taskSpecificity = taskMemorySpecificityPenalty(entry.record, query);
-      const finalScore = entry.score * 100 + phrase + provenance + rootIntent + sessionKnowledge + taskSpecificity;
+      const exactAlias = exactScores.get(entry.record.path) ?? 0;
+      const lifecycle = lifecycleContribution(entry.record);
+      const typeBudget = typeBudgetContribution(entry.record);
+      const recency = recencyContribution(entry.record);
+      const noise = noiseContribution(entry.record);
+      const rerank = phrase + rootIntent + sessionKnowledge + taskSpecificity;
+      const rrfScore = entry.score * 100;
+      const finalScore = rrfScore + exactAlias + rerank + provenance + lifecycle + typeBudget + recency + noise;
       const reasons = unique([
         ...entry.reasons,
         "rank_fusion:rrf",
+        exactAlias >= 42 ? "rerank_exact_alias" : "",
+        exactAlias > 0 && exactAlias < 42 ? "rerank_rare_lexical" : "",
         phrase > 0 ? "rerank_exact_phrase" : "",
         provenance > 0 ? "rerank_provenance_boost" : "",
         provenance < 0 ? "rerank_lifecycle_penalty" : "",
@@ -626,11 +820,33 @@ export function rankRecordsHybridV2(
         rootIntent < 0 ? "rerank_root_intent_penalty" : "",
         sessionKnowledge > 0 ? "rerank_session_knowledge_boost" : "",
         taskSpecificity < 0 ? "rerank_task_memory_specificity_penalty" : "",
+        lifecycle > 0 ? "rerank_lifecycle_boost" : "",
+        lifecycle < 0 ? "rerank_lifecycle_penalty" : "",
+        typeBudget > 0 ? "rerank_type_budget_boost" : "",
+        typeBudget < 0 ? "rerank_type_budget_penalty" : "",
+        recency > 0 ? "rerank_recency_boost" : "",
+        noise < 0 ? "rerank_noise_penalty" : "",
       ]);
+      const scoreBreakdown = {
+        exact_alias: Number(exactAlias.toFixed(6)),
+        sparse_field: Number((sparseScores.get(entry.record.path) ?? 0).toFixed(6)),
+        bm25: Number((bm25Scores.get(entry.record.path) ?? 0).toFixed(6)),
+        dense_cosine: Number((semanticDense ? denseScores.get(entry.record.path) ?? 0 : 0).toFixed(6)),
+        dense_lexical_fallback: Number((semanticDense ? 0 : denseScores.get(entry.record.path) ?? 0).toFixed(6)),
+        rrf: Number(rrfScore.toFixed(6)),
+        rerank: Number(rerank.toFixed(6)),
+        provenance: Number(provenance.toFixed(6)),
+        lifecycle: Number(lifecycle.toFixed(6)),
+        type_budget: Number(typeBudget.toFixed(6)),
+        recency: Number(recency.toFixed(6)),
+        noise: Number(noise.toFixed(6)),
+        final: Number(finalScore.toFixed(6)),
+      };
       return {
         ...entry.record,
         score: Number(finalScore.toFixed(3)),
         reasons,
+        score_breakdown: scoreBreakdown,
       };
     })
     .filter((record) => record.score > 0)

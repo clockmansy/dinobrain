@@ -11,7 +11,8 @@ import {
 } from "./context.js";
 import {
   type RetrievalMode,
-  denseVectorCandidatePaths,
+  DENSE_CANDIDATE_TOP_K_DEFAULT,
+  denseVectorCandidates,
   isHighFrequencyHybridTerm,
   rankRecordsHybridV2,
   retrievalModeFor,
@@ -20,7 +21,7 @@ import {
 } from "./hybrid-retrieval.js";
 import { loadDenseVectorIndexWithLiveQuery } from "./live-semantic-query.js";
 
-export const WIKI_INDEX_VERSION = 3;
+export const WIKI_INDEX_VERSION = 5;
 export const WIKI_INDEX_RELATIVE_PATH = ".dino/index/wiki-index.json";
 
 export type WikiIndexRecord = RankedRecord & {
@@ -131,6 +132,8 @@ function recordTokens(record: RankedRecord, links: string[]): string[] {
       record.title,
       record.summary,
       record.tags.join(" "),
+      record.aliases.join(" "),
+      record.contextual_chunk,
       record.excerpt,
       links.join(" "),
     ].join(" "),
@@ -147,6 +150,15 @@ function toRankedRecord(record: WikiIndexRecord): RankedRecord {
     score: 0,
     reasons: [],
     excerpt: record.excerpt,
+    contextual_chunk: record.contextual_chunk,
+    source_sha256: record.source_sha256,
+    parent_record_path: record.parent_record_path,
+    language: record.language,
+    lifecycle_state: record.lifecycle_state,
+    verification_status: record.verification_status,
+    retrieval_lane: record.retrieval_lane,
+    aliases: record.aliases,
+    modified_at_ms: record.modified_at_ms,
   };
 }
 
@@ -190,6 +202,7 @@ async function indexRecord(dataRoot: string, record: RankedRecord): Promise<Wiki
     id: record.path,
     root: recordRoot(record.path),
     mtime_ms: stat.mtimeMs,
+    modified_at_ms: stat.mtimeMs,
     size_bytes: stat.size,
     tokens: recordTokens(record, links),
     links,
@@ -347,15 +360,14 @@ function mergeDenseVectorCandidates(
   denseVectorIndex: DenseVectorIndex | null,
   limit: number,
 ): RankedRecord[] {
-  const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
-  if (densePaths.size === 0) return selected;
+  const denseCandidates = denseVectorCandidates(denseVectorIndex, query, Math.min(limit, DENSE_CANDIDATE_TOP_K_DEFAULT));
+  if (denseCandidates.length === 0) return selected;
   const selectedPaths = new Set(selected.map((record) => record.path));
-  const denseRecords = index.records
-    .filter(
-      (record) =>
-        densePaths.has(record.path) && !selectedPaths.has(record.path) && !isDefaultRetrievalExcludedPath(record.path),
-    )
-    .slice(0, limit)
+  const recordsByPath = new Map(index.records.map((record) => [record.path, record]));
+  const denseRecords = denseCandidates
+    .map((candidate) => recordsByPath.get(candidate.path))
+    .filter((record): record is WikiIndexRecord => Boolean(record))
+    .filter((record) => !selectedPaths.has(record.path) && !isDefaultRetrievalExcludedPath(record.path))
     .map(toRankedRecord);
   return [...selected, ...denseRecords];
 }

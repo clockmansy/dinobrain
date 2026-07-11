@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -7,8 +8,9 @@ import { isDefaultRetrievalExcludedPath, type RankedRecord } from "./context.js"
 import {
   type RetrievalMode,
   type DenseVectorIndex,
+  DENSE_CANDIDATE_TOP_K_DEFAULT,
   contextualText,
-  denseVectorCandidatePaths,
+  denseVectorCandidates,
   rankRecordsHybridV2,
   retrievalModeFor,
   tokenizeHybrid,
@@ -25,7 +27,7 @@ import {
 import { withOperationsWriteLock } from "./operation-lock.js";
 import { buildWikiIndex, type WikiIndex, type WikiIndexEdge, type WikiIndexNode, type WikiIndexRecord } from "./wiki-index.js";
 
-export const SQLITE_SHARD_VERSION = 3;
+export const SQLITE_SHARD_VERSION = 5;
 export const SQLITE_INDEX_DIR = ".dino/index/sqlite";
 export const SQLITE_MANIFEST_RELATIVE_PATH = `${SQLITE_INDEX_DIR}/manifest.json`;
 const SQLITE_BUSY_TIMEOUT_MS = 5_000;
@@ -274,6 +276,14 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
       tags_json TEXT NOT NULL,
       excerpt TEXT NOT NULL,
       context_text TEXT NOT NULL,
+      contextual_chunk TEXT NOT NULL,
+      source_sha256 TEXT NOT NULL,
+      parent_record_path TEXT,
+      language TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL,
+      verification_status TEXT NOT NULL,
+      retrieval_lane TEXT NOT NULL,
+      aliases_json TEXT NOT NULL,
       root TEXT NOT NULL,
       mtime_ms REAL NOT NULL,
       size_bytes INTEGER NOT NULL,
@@ -313,8 +323,10 @@ async function writeWikiShard(dataRoot: string, wiki: WikiIndex): Promise<string
 
   const insertRecord = db.prepare(`
     INSERT INTO records
-      (id, path, kind, title, summary, tags_json, excerpt, context_text, root, mtime_ms, size_bytes, links_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, path, kind, title, summary, tags_json, excerpt, context_text, contextual_chunk, source_sha256,
+       parent_record_path, language, lifecycle_state, verification_status, retrieval_lane, aliases_json,
+       root, mtime_ms, size_bytes, links_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTerm = db.prepare("INSERT OR IGNORE INTO terms (term, record_id) VALUES (?, ?)");
   const insertNode = db.prepare(`
@@ -352,6 +364,14 @@ function insertWikiRecord(stmt: ReturnType<DatabaseSync["prepare"]>, record: Wik
     JSON.stringify(record.tags),
     record.excerpt,
     contextualText(record),
+    record.contextual_chunk,
+    record.source_sha256,
+    record.parent_record_path,
+    record.language,
+    record.lifecycle_state,
+    record.verification_status,
+    record.retrieval_lane,
+    JSON.stringify(record.aliases),
     record.root,
     record.mtime_ms,
     record.size_bytes,
@@ -633,7 +653,18 @@ function rowToRecord(row: Record<string, unknown>): RankedRecord {
     tags: parseStringArray(row.tags_json),
     score: 0,
     reasons: [],
-    excerpt: String(row.context_text ?? row.excerpt ?? ""),
+    excerpt: String(row.excerpt ?? ""),
+    contextual_chunk: String(row.contextual_chunk ?? row.context_text ?? row.excerpt ?? ""),
+    source_sha256: String(row.source_sha256 ?? ""),
+    parent_record_path: typeof row.parent_record_path === "string" && row.parent_record_path ? row.parent_record_path : null,
+    language: ["ko", "en", "mixed"].includes(String(row.language ?? ""))
+      ? (String(row.language) as RankedRecord["language"])
+      : "unknown",
+    lifecycle_state: String(row.lifecycle_state ?? "active"),
+    verification_status: String(row.verification_status ?? "unverified"),
+    retrieval_lane: String(row.retrieval_lane ?? "other") as RankedRecord["retrieval_lane"],
+    aliases: parseStringArray(row.aliases_json),
+    modified_at_ms: Number(row.mtime_ms ?? 0),
   };
 }
 
@@ -681,11 +712,16 @@ export async function querySqliteWiki(
       options.denseVectorIndex === undefined
         ? await loadDenseVectorIndexWithLiveQuery(dataRoot, query)
         : { index: options.denseVectorIndex };
-    const densePaths = denseVectorCandidatePaths(denseVectorIndex, query);
-    if (densePaths.size > 0) {
+    const denseCandidates = denseVectorCandidates(
+      denseVectorIndex,
+      query,
+      Math.min(candidateLimit, DENSE_CANDIDATE_TOP_K_DEFAULT),
+    );
+    if (denseCandidates.length > 0) {
       const selectedPaths = new Set(records.map((record) => record.path));
       const recordByPath = db.prepare("SELECT * FROM records WHERE path = ?");
-      for (const recordPath of densePaths) {
+      for (const candidate of denseCandidates) {
+        const recordPath = candidate.path;
         if (isDefaultRetrievalExcludedPath(recordPath)) continue;
         if (records.length >= candidateLimit || selectedPaths.has(recordPath)) continue;
         const row = recordByPath.get(recordPath) as Record<string, unknown> | undefined;
@@ -731,7 +767,7 @@ export async function collectRecentTaskRecordsFromSqlite(
     const rows = db
       .prepare(
         `
-        SELECT t.path, t.status, t.request, t.project, t.trace_path, tr.summary AS trace_summary
+        SELECT t.path, t.status, t.request, t.project, t.trace_path, t.updated_at, tr.summary AS trace_summary
         FROM tasks t
         LEFT JOIN traces tr ON tr.path = t.trace_path
         ORDER BY t.updated_at DESC, t.path ASC
@@ -739,23 +775,41 @@ export async function collectRecentTaskRecordsFromSqlite(
       `,
       )
       .all(limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      path: String(row.path ?? ""),
-      kind: "recent_task",
-      title: `Task: ${String(row.request ?? "").slice(0, 96)}`,
-      summary: [
+    return rows.map((row) => {
+      const request = String(row.request ?? "");
+      const title = `Task: ${request.slice(0, 96)}`;
+      const summary = [
         `status=${String(row.status ?? "unknown")}`,
         row.project ? `project=${String(row.project)}` : "",
         row.trace_summary ? String(row.trace_summary) : "",
       ]
         .filter(Boolean)
         .join(" | ")
-        .slice(0, 420),
-      tags: ["recent-task", String(row.status ?? "unknown")],
-      score: 0,
-      reasons: [],
-      excerpt: String(row.request ?? ""),
-    }));
+        .slice(0, 420);
+      const hasKorean = /[\uac00-\ud7a3]/.test(request);
+      const hasLatin = /[A-Za-z]/.test(request);
+      return {
+        path: String(row.path ?? ""),
+        kind: "recent_task" as const,
+        title,
+        summary,
+        tags: ["recent-task", String(row.status ?? "unknown")],
+        score: 0,
+        reasons: [],
+        excerpt: request,
+        contextual_chunk: [`title: ${title}`, `summary: ${summary}`, `content: ${request}`].join("\n").slice(0, 1_600),
+        source_sha256: createHash("sha256").update(JSON.stringify(row), "utf8").digest("hex"),
+        parent_record_path: typeof row.trace_path === "string" && row.trace_path ? row.trace_path : null,
+        language: hasKorean && hasLatin ? "mixed" as const : hasKorean ? "ko" as const : hasLatin ? "en" as const : "unknown" as const,
+        lifecycle_state: String(row.status ?? "unknown"),
+        verification_status: row.trace_summary ? "trace_recorded" : "unverified",
+        retrieval_lane: "recent_task" as const,
+        aliases: [],
+        modified_at_ms: Number.isFinite(Date.parse(String(row.updated_at ?? "")))
+          ? Date.parse(String(row.updated_at ?? ""))
+          : 0,
+      };
+    });
   } finally {
     db.close();
   }

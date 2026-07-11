@@ -93,11 +93,16 @@ assert(index.record_count === 1502, `unexpected index record count: ${index.reco
 assert(index.stats.node_count > index.record_count, "graph nodes were not built");
 assert(index.stats.edge_count > index.record_count, "graph edges were not built");
 assert(index.inverted_index["durable-index-target"]?.includes("20_Wiki/Graph-Speed-Target.md"), "target term missing from inverted index");
+const targetRow = index.records.find((record) => record.path === "20_Wiki/Graph-Speed-Target.md");
+assert(targetRow?.contextual_chunk?.length > 0, "wiki row contextual chunk missing");
+assert(/^[a-f0-9]{64}$/.test(targetRow?.source_sha256 ?? ""), "wiki row source hash missing");
+assert(targetRow?.retrieval_lane === "wiki", "wiki row retrieval lane missing");
 
 const searchStarted = Date.now();
 const search = await queryIndexedWiki(dataRoot, "durable-index-target graph speed", 5);
 const searchElapsedMs = Date.now() - searchStarted;
 assert(search.ranked.some((record) => record.path === "20_Wiki/Graph-Speed-Target.md"), "indexed wiki_search missed target record");
+assert(search.ranked.every((record) => record.score_breakdown), "indexed search score contribution breakdown missing");
 assert(
   search.stats.candidate_record_count < index.record_count,
   `indexed search did not narrow candidates: ${search.stats.candidate_record_count}/${index.record_count}`,

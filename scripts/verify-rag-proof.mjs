@@ -24,6 +24,37 @@ function text(filePath, value) {
   writeFileSync(filePath, value, "utf8");
 }
 
+function acceptedLifecycle(record, id, at, evidencePath, candidatePath, reviewPath) {
+  const transitionId = `node-transition-${id}`;
+  return {
+    ...record,
+    node_id: id,
+    lifecycle_version: "node_lifecycle_v3",
+    lifecycle_state: "accepted",
+    lifecycle_state_entered_at: at,
+    lifecycle_last_transition_id: transitionId,
+    lifecycle_history: [{
+      transition_id: transitionId,
+      idempotency_key: `verify-rag-proof|${id}|accepted`,
+      from_state: null,
+      to_state: "accepted",
+      reason_code: "verified_fixture",
+      reason: "Seed a reviewed accepted memory for RAG proof verification.",
+      actor: "verify-rag-proof",
+      evidence_paths: [evidencePath],
+      predecessor_paths: [],
+      successor_paths: [],
+      at,
+    }],
+    predecessor_paths: [],
+    successor_paths: [],
+    source_candidate_path: candidatePath,
+    source_review_path: reviewPath,
+    status: "accepted",
+    updated_at: at,
+  };
+}
+
 async function seedVault(dataRoot) {
   const query = "How should DinoBrain prove RAG quality?";
   text(
@@ -44,7 +75,16 @@ tags: [wiki]
     chunk_text: "RAG quality should separate verified chunks from anchor-only source records.",
     last_verified: "2026-07-07",
   });
-  json(path.join(dataRoot, "50_Instances", "accepted", "rag-quality.json"), {
+  const acceptedPath = "50_Instances/accepted/rag-quality.json";
+  const candidatePath = "50_Instances/candidates/rag-quality.json";
+  const reviewPath = "50_Instances/reviews/rag-quality.json";
+  json(path.join(dataRoot, ...candidatePath.split("/")), { candidate_id: "rag-quality", status: "reviewed" });
+  json(path.join(dataRoot, ...reviewPath.split("/")), {
+    status: "approved",
+    candidate_path: candidatePath,
+    accepted_path: acceptedPath,
+  });
+  json(path.join(dataRoot, ...acceptedPath.split("/")), acceptedLifecycle({
     candidate_id: "rag-quality",
     title: "RAG quality proof requires grounded evaluation",
     claim:
@@ -62,7 +102,7 @@ tags: [wiki]
     reviewed_at: "2026-07-07T00:00:00.000Z",
     review_status: "accepted_by_agent_review",
     last_verified: "2026-07-07",
-  });
+  }, "rag-quality", "2026-07-07T00:00:00.000Z", "30_Sources/chunks/rag-method.json", candidatePath, reviewPath));
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
     version: 1,
     description: "RAG proof fixture behavior golden.",
@@ -102,10 +142,14 @@ async function main() {
     assert(existsSync(path.join(dataRoot, RAG_PROOF_STATUS_RELATIVE_PATH)), "rag proof status missing");
 
     const dense = JSON.parse(readFileSync(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), "utf8"));
+    assert(dense.version === 2, "contextual dense index schema version missing");
     assert(dense.provider === "huggingface_transformers_feature_extraction_v1", "semantic vector provider metadata missing");
     assert(dense.model === "Xenova/all-MiniLM-L6-v2", "semantic model metadata missing");
     assert(dense.semantic_embedding_provider === true, "proof did not use a real semantic embedding provider");
     assert(dense.dimensions === 384, "semantic embedding dimensions missing");
+    assert(dense.source_index_sha256?.length === 64, "dense source index hash missing");
+    assert(Object.keys(dense.record_metadata ?? {}).length === proof.report.counts.record_vectors, "dense row metadata mismatch");
+    assert(proof.report.counts.record_metadata === proof.report.counts.record_vectors, "proof row metadata count mismatch");
 
     const evalResult = await buildAndWriteRagEvalReport(dataRoot, {
       now: new Date("2026-07-07T00:01:00.000Z"),

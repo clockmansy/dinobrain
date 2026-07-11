@@ -3,7 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { atomicWriteJson } from "./concurrency.js";
-import { DENSE_VECTOR_INDEX_RELATIVE_PATH } from "./hybrid-retrieval.js";
+import {
+  contextualText,
+  DENSE_VECTOR_INDEX_RELATIVE_PATH,
+  type DenseVectorIndex,
+  type DenseVectorRecordMetadata,
+} from "./hybrid-retrieval.js";
 import {
   HUGGINGFACE_TRANSFORMERS_PROVIDER,
   LOCAL_TEXT_HASHING_PROVIDER,
@@ -11,10 +16,11 @@ import {
 } from "./semantic-embeddings.js";
 import type { WikiIndex } from "./wiki-index.js";
 import { buildAndWriteWikiIndex, WIKI_INDEX_RELATIVE_PATH } from "./wiki-index.js";
+import { writeDenseVectorIndexControlled } from "./vector-index-migration.js";
 
 export const RAG_GOLDEN_RELATIVE_PATH = ".dino/evaluations/rag-golden.json";
 export const RAG_PROOF_STATUS_RELATIVE_PATH = ".dino/state/rag_proof_status.json";
-export const RAG_PROOF_VERSION = "rag_proof_v1";
+export const RAG_PROOF_VERSION = "rag_proof_v2";
 
 type BehaviorGolden = {
   version: number;
@@ -63,6 +69,7 @@ export type RagProofReport = {
     golden_cases: number;
     record_vectors: number;
     query_vectors: number;
+    record_metadata: number;
     missing_expected_paths: number;
   };
   dense_vector: {
@@ -71,6 +78,12 @@ export type RagProofReport = {
     dimensions: number;
     semantic_embedding_provider: boolean;
     cache_dir?: string | null;
+    index_schema_version: number;
+  };
+  vector_migration: {
+    status: string;
+    migration_id: string | null;
+    manifest_path: string | null;
   };
   warnings: string[];
   visible_status: string;
@@ -136,7 +149,7 @@ function embedText(value: string, dimensions: number): number[] {
 }
 
 function recordText(record: WikiIndex["records"][number]): string {
-  return [record.path, record.title, record.summary, record.tags.join(" "), record.excerpt].join("\n");
+  return contextualText(record);
 }
 
 function convertBehaviorGolden(behavior: BehaviorGolden): RagGolden {
@@ -191,9 +204,19 @@ export async function buildAndWriteRagProof(
   const statusPath = getRagProofStatusPath(dataRoot);
   const records: Record<string, number[]> = {};
   const queries: Record<string, number[]> = {};
+  const recordMetadata: Record<string, DenseVectorRecordMetadata> = {};
 
   for (const record of wiki.records) {
     records[record.path] = [];
+    recordMetadata[record.path] = {
+      contextual_chunk: record.contextual_chunk,
+      source_sha256: record.source_sha256,
+      parent_record_path: record.parent_record_path,
+      language: record.language,
+      lifecycle_state: record.lifecycle_state,
+      verification_status: record.verification_status,
+      retrieval_lane: record.retrieval_lane,
+    };
   }
   for (const item of ragGolden?.cases ?? []) {
     queries[item.query.toLowerCase().replace(/\s+/g, " ").trim()] = [];
@@ -245,8 +268,11 @@ export async function buildAndWriteRagProof(
   const expectedPaths = new Set((ragGolden?.cases ?? []).flatMap((item) => item.expected_paths));
   const missingExpected = Array.from(expectedPaths).filter((expectedPath) => !records[expectedPath]);
   if (ragGolden) await writeJson(ragGoldenPath, ragGolden);
-  await writeJson(denseVectorPath, {
-    version: 1,
+  const sourceIndexSha256 = createHash("sha256")
+    .update(JSON.stringify(wiki.records.map((record) => [record.path, record.source_sha256])), "utf8")
+    .digest("hex");
+  const nextDenseIndex: DenseVectorIndex = {
+    version: 2,
     provider: vectorProvider,
     model: vectorModel,
     dimensions: vectorDimensions,
@@ -254,9 +280,12 @@ export async function buildAndWriteRagProof(
     cache_dir: cacheDir,
     generated_at: generatedAt,
     source_index_path: WIKI_INDEX_RELATIVE_PATH,
+    source_index_sha256: sourceIndexSha256,
+    record_metadata: recordMetadata,
     records,
     queries,
-  });
+  };
+  const vectorMigration = await writeDenseVectorIndexControlled(dataRoot, nextDenseIndex, { now: options.now });
 
   const hasGolden = Boolean(ragGolden && ragGolden.cases.length > 0 && missingExpected.length === 0);
   const status = !hasGolden ? "degraded" : semanticProvider ? "healthy" : "needs_attention";
@@ -272,6 +301,7 @@ export async function buildAndWriteRagProof(
       golden_cases: ragGolden?.cases.length ?? 0,
       record_vectors: Object.keys(records).length,
       query_vectors: Object.keys(queries).length,
+      record_metadata: Object.keys(recordMetadata).length,
       missing_expected_paths: missingExpected.length,
     },
     dense_vector: {
@@ -280,6 +310,12 @@ export async function buildAndWriteRagProof(
       dimensions: vectorDimensions,
       semantic_embedding_provider: semanticProvider,
       cache_dir: cacheDir,
+      index_schema_version: 2,
+    },
+    vector_migration: {
+      status: vectorMigration.status,
+      migration_id: vectorMigration.migration_id ?? vectorMigration.latest_migration?.migration_id ?? null,
+      manifest_path: vectorMigration.manifest_path ?? vectorMigration.latest_migration?.manifest_path ?? null,
     },
     warnings: [
       !ragGolden ? "behavior_golden_missing" : "",

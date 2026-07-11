@@ -111,6 +111,8 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("status:live-semantic-query", ["HG-04"]),
   command("status:answer-quality", ["HG-04", "HG-07"]),
   command("rag:proof:verify", ["HG-04"]),
+  command("rag:retrieval:verify", ["HG-04", "HG-05"]),
+  command("rag:vector:migration:verify", ["HG-04", "HG-10"]),
   command("eval:rag:verify", ["HG-04"]),
   command("verify:live-semantic-query", ["HG-04"]),
   command("verify:answer-quality", ["HG-04", "HG-07"]),
@@ -209,6 +211,13 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     kind: "json",
     gates: ["HG-04"],
     accepted_statuses: ["healthy"],
+  },
+  {
+    id: "vector_index_migration",
+    relative_path: ".dino/state/vector_index_migration.json",
+    kind: "json",
+    gates: ["HG-04", "HG-10"],
+    accepted_statuses: ["initialized", "same_identity_updated", "applied"],
   },
   {
     id: "live_semantic_query",

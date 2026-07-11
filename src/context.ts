@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -13,6 +14,33 @@ import { collectRecentTaskRecordsFromIndex } from "./operations-index.js";
 
 type RecordValue = string | number | boolean | null | Record<string, unknown> | unknown[];
 
+export type RecordLanguage = "ko" | "en" | "mixed" | "unknown";
+export type RetrievalLane =
+  | "wiki"
+  | "source"
+  | "project"
+  | "accepted_behavior"
+  | "operations"
+  | "error_book"
+  | "recent_task"
+  | "other";
+
+export type RetrievalScoreBreakdown = {
+  exact_alias: number;
+  sparse_field: number;
+  bm25: number;
+  dense_cosine: number;
+  dense_lexical_fallback: number;
+  rrf: number;
+  rerank: number;
+  provenance: number;
+  lifecycle: number;
+  type_budget: number;
+  recency: number;
+  noise: number;
+  final: number;
+};
+
 export type RankedRecord = {
   path: string;
   kind: "curated_record" | "recent_task";
@@ -22,6 +50,16 @@ export type RankedRecord = {
   score: number;
   reasons: string[];
   excerpt: string;
+  contextual_chunk: string;
+  source_sha256: string;
+  parent_record_path: string | null;
+  language: RecordLanguage;
+  lifecycle_state: string;
+  verification_status: string;
+  retrieval_lane: RetrievalLane;
+  aliases: string[];
+  modified_at_ms: number;
+  score_breakdown?: RetrievalScoreBreakdown;
 };
 
 type QuarantineRecord = {
@@ -170,6 +208,54 @@ function firstString(...values: unknown[]): string {
   return "";
 }
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function detectLanguage(value: string): RecordLanguage {
+  const korean = (value.match(/[\uac00-\ud7a3]/g) ?? []).length;
+  const latin = (value.match(/[A-Za-z]/g) ?? []).length;
+  if (korean > 0 && latin > 0) return "mixed";
+  if (korean > 0) return "ko";
+  if (latin > 0) return "en";
+  return "unknown";
+}
+
+export function retrievalLaneForPath(relativePath: string, kind: RankedRecord["kind"] = "curated_record"): RetrievalLane {
+  if (kind === "recent_task" || relativePath.startsWith(".dino/tasks/")) return "recent_task";
+  if (relativePath.startsWith("20_Wiki/")) return "wiki";
+  if (relativePath.startsWith("30_Sources/")) return "source";
+  if (relativePath.startsWith("40_Projects/")) return "project";
+  if (relativePath.startsWith("50_Instances/accepted/")) return "accepted_behavior";
+  if (relativePath.startsWith("60_Operations/")) return "operations";
+  if (relativePath.startsWith("70_Error_Book/")) return "error_book";
+  return "other";
+}
+
+function normalizedAliases(...values: unknown[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) =>
+          Array.isArray(value)
+            ? value.map(String)
+            : typeof value === "string"
+              ? value.split(/[,\n]+/)
+              : [],
+        )
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function boundedContextChunk(title: string, summary: string, excerpt: string): string {
+  return [`title: ${title}`, `summary: ${summary}`, `content: ${excerpt}`]
+    .filter((value) => value.replace(/^[^:]+:\s*/, "").trim().length > 0)
+    .join("\n")
+    .slice(0, 1_600);
+}
+
 function evidenceSnippet(value: Record<string, unknown>): string {
   const evidence = value.evidence;
   if (typeof evidence === "object" && evidence !== null) {
@@ -193,6 +279,7 @@ function isQuarantinedRecord(value: Record<string, unknown>, relativePath: strin
 export function isDefaultRetrievalExcludedPath(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/");
   return (
+    normalized.startsWith("30_Sources/private/") ||
     normalized.startsWith("60_Operations/task-summaries/") ||
     normalized.startsWith(".dino/context-packs/") ||
     normalized.startsWith(".dino/events/") ||
@@ -259,6 +346,16 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       const reusableRule = firstString(jsonRecord.reusable_rule, jsonRecord.rule, jsonRecord.decision);
       const evidence = evidenceSnippet(jsonRecord);
       const summary = firstString(jsonRecord.summary, claim, evidence);
+      const title = firstString(jsonRecord.title, claim, path.basename(file, extension));
+      const excerpt = raw.replace(/\s+/g, " ").trim().slice(0, 900);
+      const aliases = normalizedAliases(jsonRecord.aliases, jsonRecord.alias, jsonRecord.aka, jsonRecord.exact_aliases);
+      const lifecycleState = firstString(jsonRecord.lifecycle_state, jsonRecord.lifecycle, jsonRecord.status, "active");
+      const verificationStatus = firstString(
+        jsonRecord.verification_status,
+        jsonRecord.review_status,
+        jsonRecord.source_status,
+        relativePath.startsWith("50_Instances/accepted/") ? "accepted" : "unverified",
+      );
       const reviewLineage = [
         typeof jsonRecord.source_candidate_path === "string" ? `source_candidate_path=${jsonRecord.source_candidate_path}` : "",
         typeof jsonRecord.reviewed_by === "string" ? `reviewed_by=${jsonRecord.reviewed_by}` : "",
@@ -272,7 +369,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       records.push({
         path: relativePath,
         kind: "curated_record",
-        title: firstString(jsonRecord.title, claim, path.basename(file, extension)),
+        title,
         summary: [
           summary,
           reusableRule && reusableRule !== summary ? `Rule: ${reusableRule}` : "",
@@ -285,7 +382,22 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
         tags: stringArray(jsonRecord.tags),
         score: 0,
         reasons: [],
-        excerpt: raw.replace(/\s+/g, " ").trim().slice(0, 900),
+        excerpt,
+        contextual_chunk: boundedContextChunk(title, summary, excerpt),
+        source_sha256: sha256(raw),
+        parent_record_path:
+          firstString(
+            jsonRecord.parent_record_path,
+            jsonRecord.parent_path,
+            jsonRecord.source_path,
+            jsonRecord.source_candidate_path,
+          ) || null,
+        language: detectLanguage([title, summary, excerpt].join(" ")),
+        lifecycle_state: lifecycleState,
+        verification_status: verificationStatus,
+        retrieval_lane: retrievalLaneForPath(relativePath),
+        aliases,
+        modified_at_ms: stat.mtimeMs,
       });
       continue;
     }
@@ -296,6 +408,7 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
     const title = String(metadata.title ?? firstHeading(body) ?? path.basename(file, ".md"));
     const summary = String(metadata.summary ?? firstParagraph(body));
     const tags = stringArray(metadata.tags);
+    const excerpt = body.replace(/\s+/g, " ").trim().slice(0, 600);
     records.push({
       path: relativePath,
       kind: "curated_record",
@@ -304,7 +417,17 @@ export async function collectCuratedRecords(dataRoot: string): Promise<RankedRec
       tags,
       score: 0,
       reasons: [],
-      excerpt: body.replace(/\s+/g, " ").trim().slice(0, 600),
+      excerpt,
+      contextual_chunk: boundedContextChunk(title, summary, excerpt),
+      source_sha256: sha256(raw),
+      parent_record_path:
+        firstString(metadata.parent_record_path, metadata.parent_path, metadata.source_path) || null,
+      language: detectLanguage([title, summary, excerpt].join(" ")),
+      lifecycle_state: firstString(metadata.lifecycle_state, metadata.lifecycle, metadata.status, "active"),
+      verification_status: firstString(metadata.verification_status, metadata.review_status, metadata.source_status, "unverified"),
+      retrieval_lane: retrievalLaneForPath(relativePath),
+      aliases: normalizedAliases(metadata.aliases, metadata.alias, metadata.aka, metadata.exact_aliases),
+      modified_at_ms: stat.mtimeMs,
     });
   }
 
@@ -342,22 +465,36 @@ export async function collectRecentTaskRecords(dataRoot: string, limit = 10): Pr
     const tracePathValue = typeof task.trace_path === "string" ? task.trace_path : null;
     const trace = tracePathValue ? await readJson<Record<string, unknown>>(dataPath(dataRoot, tracePathValue)) : null;
     const traceSummary = trace && typeof trace.summary === "string" ? trace.summary : "";
+    const relativePath = relDataPath(dataRoot, taskPath);
+    const title = `Task: ${request.slice(0, 96)}`;
+    const summary = [
+      `status=${String(task.status ?? "unknown")}`,
+      task.project ? `project=${String(task.project)}` : "",
+      traceSummary,
+    ]
+      .filter(Boolean)
+      .join(" | ")
+      .slice(0, 420);
     records.push({
-      path: relDataPath(dataRoot, taskPath),
+      path: relativePath,
       kind: "recent_task",
-      title: `Task: ${request.slice(0, 96)}`,
-      summary: [
-        `status=${String(task.status ?? "unknown")}`,
-        task.project ? `project=${String(task.project)}` : "",
-        traceSummary,
-      ]
-        .filter(Boolean)
-        .join(" | ")
-        .slice(0, 420),
+      title,
+      summary,
       tags: ["recent-task", String(task.status ?? "unknown")],
       score: 0,
       reasons: [],
       excerpt: request,
+      contextual_chunk: boundedContextChunk(title, summary, request),
+      source_sha256: sha256(JSON.stringify(task)),
+      parent_record_path: tracePathValue,
+      language: detectLanguage(request),
+      lifecycle_state: String(task.status ?? "active"),
+      verification_status: trace ? "trace_recorded" : "unverified",
+      retrieval_lane: "recent_task",
+      aliases: [],
+      modified_at_ms: Number.isFinite(Date.parse(String(task.updated_at ?? task.created_at ?? "")))
+        ? Date.parse(String(task.updated_at ?? task.created_at ?? ""))
+        : 0,
     });
   }
 
