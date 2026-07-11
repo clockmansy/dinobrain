@@ -495,8 +495,8 @@ export async function beginTaskLifecycleSoak(options: {
     loadOrCreateAttestationKey(localStateRoot),
   ]);
   if (!appClean) throw new Error("Lifecycle soak requires a clean app worktree at start");
-  if (baseline.status !== "healthy" || baseline.counts.blockers !== 0) {
-    throw new Error("Lifecycle soak requires a blocker-free baseline");
+  if (baseline.status !== "healthy" || baseline.counts.blockers !== 0 || baseline.counts.active !== 0) {
+    throw new Error("Lifecycle soak requires a blocker-free baseline with zero active tasks");
   }
   const baselineTaskIds = baseline.sessions.filter((session) => session.task_path).map((session) => session.task_id).sort();
   const runId = `lifecycle-soak-${randomUUID()}`;
@@ -586,7 +586,9 @@ export async function finalizeTaskLifecycleSoak(
     descriptor.app_commit !== appCommit ? "app_commit_changed_during_soak" : "",
     descriptor.data_commit !== dataCommit ? "data_commit_changed_during_soak" : "",
     !appClean ? "app_worktree_dirty_at_finish" : "",
-    descriptor.baseline.status !== "healthy" || descriptor.baseline.counts.blockers !== 0 ? "baseline_not_healthy" : "",
+    descriptor.baseline.status !== "healthy" || descriptor.baseline.counts.blockers !== 0 || descriptor.baseline.counts.active !== 0
+      ? "baseline_not_healthy_or_not_drained"
+      : "",
     finalReport.status !== "healthy" || finalReport.counts.blockers !== 0 ? "final_lifecycle_not_healthy" : "",
     proofReports.length !== 2 ? "fresh_codex_and_claude_proofs_required_inside_soak_window" : "",
     tasks.filter((task) => task.durable_task_eligible).length < 2 ? "insufficient_durable_tasks_in_soak_window" : "",
@@ -736,6 +738,7 @@ export async function validateTaskLifecycleSoakEvidence(
     if (snapshot?.status !== "healthy" || snapshot.counts?.blockers !== 0) errors.push(`${name}_lifecycle_not_healthy`);
     if (!isSha256(snapshot?.report_sha256) || !isSha256(snapshot?.task_ids_sha256)) errors.push(`${name}_snapshot_hash_invalid`);
   }
+  if (evidence.baseline?.counts?.active !== 0) errors.push("baseline_active_tasks_not_drained");
   if (!Array.isArray(evidence.window?.tasks)) errors.push("window_tasks_invalid");
   if (!(evidence.window?.counts?.durable_tasks >= 2)) errors.push("insufficient_durable_tasks_in_window");
   if (!(evidence.window?.counts?.terminal_tasks >= 2)) errors.push("insufficient_terminal_tasks_in_window");

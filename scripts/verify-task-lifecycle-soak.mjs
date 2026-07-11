@@ -93,9 +93,25 @@ async function main() {
     initRepo(appRoot, "app");
     initRepo(dataRoot, "data");
     const startedAt = new Date("2026-07-01T00:00:00.000Z");
+    const activeTaskPath = path.join(dataRoot, ".dino", "tasks", "task-active-before-soak.json");
+    writeJson(activeTaskPath, {
+      task_id: "task-active-before-soak",
+      status: "started",
+      request: "Active task must be drained before release soak",
+      launch_kind: "user_prompt",
+      created_at: startedAt.toISOString(),
+      updated_at: startedAt.toISOString(),
+    });
+    await expectReject(
+      () => soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt }),
+      /zero active tasks/i,
+      "active baseline task was not blocked",
+    );
+    rmSync(activeTaskPath, { force: true });
     const begun = await soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt });
     assert(begun.descriptor.status === "running", "soak did not start");
     assert(begun.descriptor.baseline.counts.blockers === 0, "fixture baseline was not healthy");
+    assert(begun.descriptor.baseline.counts.active === 0, "fixture baseline was not fully drained");
     if (process.platform === "win32") {
       const keyAcl = execFileSync("icacls", [path.join(localStateRoot, "attestation-ed25519-private.pem")], {
         encoding: "utf8",
@@ -254,6 +270,7 @@ async function main() {
         "private_key_acl_hardened",
         "clean_app_and_immutable_refs_bound",
         "blocker_free_baseline_and_final_bound",
+        "zero_active_task_baseline_required",
         "fresh_codex_and_claude_proofs_required",
         "proof_tasks_created_inside_window",
         "ed25519_attestation_verified",
