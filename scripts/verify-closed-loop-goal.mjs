@@ -248,7 +248,8 @@ function hasReleaseManifestEvidence(check) {
       parsed?.app_head &&
       parsed?.data_head &&
       parsed?.tag_target &&
-      parsed?.zip_sha256,
+      parsed?.zip_sha256 &&
+      parsed?.github_release_verified === true,
   );
 }
 

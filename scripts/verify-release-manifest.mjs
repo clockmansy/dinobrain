@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -43,8 +43,30 @@ function seedArtifacts(appRoot, content = "release zip fixture") {
   writeFileSync(path.join(artifacts, "DinoBrainSetup.zip.sha256"), `${sha256(content)}  DinoBrainSetup.zip\n`, "utf8");
 }
 
-async function build(appRoot, dataRoot) {
-  return (await buildAndWriteReleaseManifestReport(dataRoot, { appRoot, now: new Date("2026-07-07T00:00:00.000Z") })).report;
+function githubReleaseFixture(appRoot, overrides = {}) {
+  const version = JSON.parse(readFileSync(path.join(appRoot, "version.json"), "utf8")).version;
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: appRoot, encoding: "utf8" }).trim();
+  const zip = readFileSync(path.join(appRoot, "artifacts", "DinoBrainSetup.zip"));
+  const sha = readFileSync(path.join(appRoot, "artifacts", "DinoBrainSetup.zip.sha256"));
+  const release = {
+    tag_name: `v${version}`,
+    target_commitish: head,
+    html_url: `https://github.example.invalid/fixture/releases/tag/v${version}`,
+    assets: [
+      { name: "DinoBrainSetup.zip", size: zip.length, digest: `sha256:${sha256(zip)}` },
+      { name: "DinoBrainSetup.zip.sha256", size: sha.length, digest: `sha256:${sha256(sha)}` },
+    ],
+  };
+  return { ...release, ...overrides };
+}
+
+async function build(appRoot, dataRoot, githubRelease = githubReleaseFixture(appRoot)) {
+  return (await buildAndWriteReleaseManifestReport(dataRoot, {
+    appRoot,
+    now: new Date("2026-07-07T00:00:00.000Z"),
+    githubRepository: "fixture/dinobrain",
+    githubRelease,
+  })).report;
 }
 
 async function main() {
@@ -80,6 +102,20 @@ async function main() {
     assert(healthy.tag.matches_app_head === true, "healthy fixture tag did not match app head");
     assert(healthy.assets.sha256_matches === true, "healthy fixture SHA did not match");
     assert(healthy.assets.artifact_newer_than_app_head === true, "healthy fixture artifact was not fresh enough");
+    assert(healthy.github_release.verified === true, "healthy fixture GitHub release was not verified");
+
+    const digestMismatchFixture = githubReleaseFixture(appRoot);
+    digestMismatchFixture.assets[0].digest = `sha256:${"0".repeat(64)}`;
+    const digestMismatch = await build(appRoot, dataRoot, digestMismatchFixture);
+    assert(digestMismatch.status === "needs_attention", "remote ZIP digest mismatch produced a false-green report");
+    assert(
+      digestMismatch.blockers.includes("github_release_zip_digest_mismatch"),
+      "remote ZIP digest mismatch blocker was not reported",
+    );
+
+    const missingRemote = await build(appRoot, dataRoot, null);
+    assert(missingRemote.status === "needs_attention", "missing GitHub release produced a false-green report");
+    assert(missingRemote.blockers.includes("github_release_missing"), "missing GitHub release blocker was not reported");
 
     writeFileSync(path.join(appRoot, "package.json"), `${JSON.stringify({ version: "9.9.10" }, null, 2)}\n`, "utf8");
     writeFileSync(

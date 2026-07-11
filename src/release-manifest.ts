@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import { atomicWriteJson } from "./concurrency.js";
 
-export const RELEASE_MANIFEST_VERSION = "release_manifest_v1";
+export const RELEASE_MANIFEST_VERSION = "release_manifest_v2";
 export const RELEASE_MANIFEST_STATUS_RELATIVE_PATH = ".dino/state/release_manifest_status.json";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +30,8 @@ export type ReleaseAssetSnapshot = {
   zip_mtime: string | null;
   sha_path: string;
   sha_exists: boolean;
+  sha_size_bytes: number;
+  sha_file_sha256_actual: string | null;
   sha256_actual: string | null;
   sha256_recorded: string | null;
   sha256_matches: boolean | null;
@@ -38,6 +40,33 @@ export type ReleaseAssetSnapshot = {
   exe_size_bytes: number;
   exe_mtime: string | null;
   artifact_newer_than_app_head: boolean | null;
+};
+
+export type GitHubReleaseAssetSnapshot = {
+  name: string;
+  count: number;
+  exists: boolean;
+  size_bytes: number | null;
+  size_matches_local: boolean | null;
+  digest: string | null;
+  digest_sha256: string | null;
+  digest_matches_local: boolean | null;
+  download_url: string | null;
+  verified: boolean;
+};
+
+export type GitHubReleaseSnapshot = {
+  status: "verified" | "needs_attention" | "missing" | "unavailable";
+  repository: string | null;
+  tag: string | null;
+  url: string | null;
+  target_commitish: string | null;
+  target_matches_app_head: boolean | null;
+  zip_asset: GitHubReleaseAssetSnapshot;
+  sha_asset: GitHubReleaseAssetSnapshot;
+  verified: boolean;
+  authenticated: boolean;
+  reason: string | null;
 };
 
 export type ReleaseManifestReport = {
@@ -58,10 +87,7 @@ export type ReleaseManifestReport = {
     matches_app_head: boolean | null;
   };
   assets: ReleaseAssetSnapshot;
-  github_release: {
-    status: "not_checked";
-    reason: string;
-  };
+  github_release: GitHubReleaseSnapshot;
   blockers: string[];
   warnings: string[];
   visible_status: string;
@@ -70,6 +96,9 @@ export type ReleaseManifestReport = {
 type BuildOptions = {
   appRoot?: string;
   now?: Date;
+  githubRepository?: string | null;
+  githubToken?: string | null;
+  githubRelease?: GitHubReleaseApi | null;
 };
 
 type PackageJson = {
@@ -78,6 +107,20 @@ type PackageJson = {
 
 type VersionManifestJson = {
   version?: unknown;
+};
+
+type GitHubReleaseApiAsset = {
+  name?: unknown;
+  size?: unknown;
+  digest?: unknown;
+  browser_download_url?: unknown;
+};
+
+type GitHubReleaseApi = {
+  tag_name?: unknown;
+  target_commitish?: unknown;
+  html_url?: unknown;
+  assets?: unknown;
 };
 
 function dataPath(dataRoot: string, relativePath: string): string {
@@ -185,12 +228,13 @@ async function releaseAssets(appRoot: string, appCommitDate: string | null): Pro
   const zipPath = path.join(appRoot, "artifacts", "DinoBrainSetup.zip");
   const shaPath = path.join(appRoot, "artifacts", "DinoBrainSetup.zip.sha256");
   const exePath = path.join(appRoot, "artifacts", "DinoBrainSetup.exe");
-  const [zip, sha, exe, actualSha, recordedSha] = await Promise.all([
+  const [zip, sha, exe, actualSha, recordedSha, shaFileSha] = await Promise.all([
     fileSnapshot(zipPath),
     fileSnapshot(shaPath),
     fileSnapshot(exePath),
     sha256IfExists(zipPath),
     recordedShaIfExists(shaPath),
+    sha256IfExists(shaPath),
   ]);
   return {
     zip_path: zipPath,
@@ -199,6 +243,8 @@ async function releaseAssets(appRoot: string, appCommitDate: string | null): Pro
     zip_mtime: zip.mtime,
     sha_path: shaPath,
     sha_exists: sha.exists,
+    sha_size_bytes: sha.size,
+    sha_file_sha256_actual: shaFileSha,
     sha256_actual: actualSha,
     sha256_recorded: recordedSha,
     sha256_matches: actualSha && recordedSha ? actualSha === recordedSha : null,
@@ -208,6 +254,178 @@ async function releaseAssets(appRoot: string, appCommitDate: string | null): Pro
     exe_mtime: exe.mtime,
     artifact_newer_than_app_head: newerThan(zip.mtime, appCommitDate),
   };
+}
+
+function parseGitHubRepository(remote: string | null): string | null {
+  if (!remote) return null;
+  const normalized = remote.trim().replace(/\\/g, "/").replace(/\.git$/i, "").replace(/\/+$/, "");
+  const match = normalized.match(/github\.com[:/]([^/]+)\/([^/]+)$/i);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function digestSha256(value: string | null): string | null {
+  const match = value?.match(/^sha256:([a-f0-9]{64})$/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function emptyGitHubAsset(name: string): GitHubReleaseAssetSnapshot {
+  return {
+    name,
+    count: 0,
+    exists: false,
+    size_bytes: null,
+    size_matches_local: null,
+    digest: null,
+    digest_sha256: null,
+    digest_matches_local: null,
+    download_url: null,
+    verified: false,
+  };
+}
+
+function githubAssetSnapshot(
+  release: GitHubReleaseApi,
+  name: string,
+  expectedSize: number,
+  expectedSha256: string | null,
+): GitHubReleaseAssetSnapshot {
+  const assets = Array.isArray(release.assets) ? release.assets.filter((value): value is GitHubReleaseApiAsset => Boolean(value && typeof value === "object")) : [];
+  const matches = assets.filter((asset) => stringValue(asset.name) === name);
+  const asset = matches[0];
+  if (!asset) return emptyGitHubAsset(name);
+  const size = numberValue(asset.size);
+  const digest = stringValue(asset.digest);
+  const parsedDigest = digestSha256(digest);
+  const sizeMatches = size === expectedSize;
+  const digestMatches = Boolean(expectedSha256 && parsedDigest && expectedSha256 === parsedDigest);
+  return {
+    name,
+    count: matches.length,
+    exists: true,
+    size_bytes: size,
+    size_matches_local: sizeMatches,
+    digest,
+    digest_sha256: parsedDigest,
+    digest_matches_local: digestMatches,
+    download_url: stringValue(asset.browser_download_url),
+    verified: matches.length === 1 && sizeMatches && digestMatches,
+  };
+}
+
+async function fetchGitHubRelease(
+  repository: string,
+  tag: string,
+  token: string | null,
+): Promise<{ status: "found" | "missing" | "unavailable"; release: GitHubReleaseApi | null; reason: string | null }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "DinoBrainReleaseManifest",
+      "X-GitHub-Api-Version": "2022-11-28",
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers,
+      signal: controller.signal,
+    });
+    if (response.status === 404) return { status: "missing", release: null, reason: "github_release_not_found" };
+    if (!response.ok) return { status: "unavailable", release: null, reason: `github_api_http_${response.status}` };
+    const release = (await response.json()) as GitHubReleaseApi;
+    return { status: "found", release, reason: null };
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "AbortError" ? "github_api_timeout" : "github_api_request_failed";
+    return { status: "unavailable", release: null, reason };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function githubReleaseSnapshot(
+  appRoot: string,
+  expectedTag: string | null,
+  appHead: string | null,
+  assets: ReleaseAssetSnapshot,
+  options: BuildOptions,
+): Promise<GitHubReleaseSnapshot> {
+  const remote = await gitRequired(appRoot, ["config", "--get", "remote.origin.url"]);
+  const repository = options.githubRepository === undefined ? parseGitHubRepository(remote) : options.githubRepository;
+  const token = options.githubToken === undefined
+    ? stringValue(process.env.GITHUB_TOKEN) ?? stringValue(process.env.GH_TOKEN)
+    : options.githubToken;
+  const blank = {
+    repository,
+    tag: expectedTag,
+    url: null,
+    target_commitish: null,
+    target_matches_app_head: null,
+    zip_asset: emptyGitHubAsset("DinoBrainSetup.zip"),
+    sha_asset: emptyGitHubAsset("DinoBrainSetup.zip.sha256"),
+    verified: false,
+    authenticated: Boolean(token),
+  };
+  if (!repository || !expectedTag) {
+    return { ...blank, status: "unavailable", reason: !repository ? "github_repository_unresolved" : "release_tag_missing" };
+  }
+  const lookup = options.githubRelease === undefined
+    ? await fetchGitHubRelease(repository, expectedTag, token)
+    : options.githubRelease === null
+      ? { status: "missing" as const, release: null, reason: "github_release_not_found" }
+      : { status: "found" as const, release: options.githubRelease, reason: null };
+  if (!lookup.release) {
+    return { ...blank, status: lookup.status === "missing" ? "missing" : "unavailable", reason: lookup.reason };
+  }
+  const release = lookup.release;
+  const tag = stringValue(release.tag_name);
+  const target = stringValue(release.target_commitish);
+  const targetMatches = Boolean(appHead && target && appHead === target);
+  const zipAsset = githubAssetSnapshot(release, "DinoBrainSetup.zip", assets.zip_size_bytes, assets.sha256_actual);
+  const shaAsset = githubAssetSnapshot(release, "DinoBrainSetup.zip.sha256", assets.sha_size_bytes, assets.sha_file_sha256_actual);
+  const verified = tag === expectedTag && targetMatches && zipAsset.verified && shaAsset.verified;
+  return {
+    status: verified ? "verified" : "needs_attention",
+    repository,
+    tag,
+    url: stringValue(release.html_url),
+    target_commitish: target,
+    target_matches_app_head: targetMatches,
+    zip_asset: zipAsset,
+    sha_asset: shaAsset,
+    verified,
+    authenticated: Boolean(token),
+    reason: verified ? null : "github_release_parity_mismatch",
+  };
+}
+
+function appendGitHubReleaseBlockers(snapshot: GitHubReleaseSnapshot, blockers: string[]): void {
+  if (snapshot.status === "unavailable") blockers.push(snapshot.reason ?? "github_release_unavailable");
+  if (snapshot.status === "missing") blockers.push("github_release_missing");
+  if (snapshot.status === "needs_attention") {
+    if (snapshot.target_matches_app_head !== true) blockers.push("github_release_target_mismatch");
+    if (!snapshot.zip_asset.exists) blockers.push("github_release_zip_missing");
+    else {
+      if (snapshot.zip_asset.count !== 1) blockers.push("github_release_zip_duplicate");
+      if (!snapshot.zip_asset.digest_sha256) blockers.push("github_release_zip_digest_missing");
+      else if (snapshot.zip_asset.digest_matches_local !== true) blockers.push("github_release_zip_digest_mismatch");
+      if (snapshot.zip_asset.size_matches_local !== true) blockers.push("github_release_zip_size_mismatch");
+    }
+    if (!snapshot.sha_asset.exists) blockers.push("github_release_sha_missing");
+    else {
+      if (snapshot.sha_asset.count !== 1) blockers.push("github_release_sha_duplicate");
+      if (!snapshot.sha_asset.digest_sha256) blockers.push("github_release_sha_digest_missing");
+      else if (snapshot.sha_asset.digest_matches_local !== true) blockers.push("github_release_sha_digest_mismatch");
+      if (snapshot.sha_asset.size_matches_local !== true) blockers.push("github_release_sha_size_mismatch");
+    }
+  }
 }
 
 function visibleStatus(status: ReleaseManifestReport["status"]): string {
@@ -235,6 +453,7 @@ export async function buildReleaseManifestReport(
   const [appGit, dataGit] = await Promise.all([gitSnapshot(appRoot), gitSnapshot(dataRoot)]);
   const tagTarget = expectedTag ? await gitRequired(appRoot, ["rev-parse", expectedTag]) : null;
   const assets = await releaseAssets(appRoot, appGit.commit_date);
+  const githubRelease = await githubReleaseSnapshot(appRoot, expectedTag, appGit.head, assets, options);
   const blockers: string[] = [];
   const warnings: string[] = [];
 
@@ -257,7 +476,7 @@ export async function buildReleaseManifestReport(
   if (assets.artifact_newer_than_app_head === false) blockers.push("release_zip_older_than_app_head");
   if (dataGit.untracked_count > 0) warnings.push("data_untracked_backlog_present");
   if (appGit.untracked_count > 0) warnings.push("app_untracked_files_present");
-  warnings.push("github_release_asset_not_checked_without_token");
+  appendGitHubReleaseBlockers(githubRelease, blockers);
 
   const status: ReleaseManifestReport["status"] = blockers.length === 0 ? "healthy" : packageVersion ? "needs_attention" : "degraded";
   return {
@@ -278,10 +497,7 @@ export async function buildReleaseManifestReport(
       matches_app_head: tagTarget && appGit.head ? tagTarget === appGit.head : null,
     },
     assets,
-    github_release: {
-      status: "not_checked",
-      reason: "GitHub release asset verification requires an authenticated release upload/check path; local ZIP/SHA/tag parity is verified here.",
-    },
+    github_release: githubRelease,
     blockers,
     warnings,
     visible_status: visibleStatus(status),

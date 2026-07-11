@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.10` for this release) and
+  drift from the current authoritative version (`2.2.11` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -1016,6 +1016,14 @@ with both real clients and its scoped evidence is imported.
 
 **Acceptance:** no tag, asset, version, commit, or checksum drift; data HEAD is
 pushed; dirty state is empty or explicitly excluded from the claim.
+
+**Implementation update (2026-07-12):** `release_manifest_v2` now resolves the
+GitHub repository from `origin`, queries the exact release tag through the
+GitHub API, and independently verifies the release target commit plus unique
+ZIP/SHA asset names, sizes, and GitHub-provided SHA-256 digests against the local
+package. Missing, unreachable, duplicate, stale, or mismatched remote evidence
+is blocking, and `verify:goal` requires `github_release_verified=true` rather
+than accepting local tag/ZIP evidence alone.
 
 ### Phase 7 - Final Certification (P0 release gate, 2-4 engineer-days)
 

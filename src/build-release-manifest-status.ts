@@ -26,6 +26,8 @@ async function main(): Promise<void> {
         tag_target: result.report.tag.target,
         zip_path: result.report.assets.zip_path,
         zip_sha256: result.report.assets.sha256_actual,
+        github_release_verified: result.report.github_release.verified,
+        github_release: result.report.github_release,
         blockers: result.report.blockers,
         warnings: result.report.warnings,
       },
