@@ -123,9 +123,11 @@ function classifyGitBlob(repo, spec, relativePath) {
 }
 
 export function classifyStagedGitFiles(repo) {
-  const paths = splitZ(textGit(repo, ["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"])).map(normalizePath);
-  const results = paths.map((relativePath) => classifyGitBlob(repo, `:${relativePath}`, relativePath));
-  return summarize("git_hook_pre_commit", results, { staged_paths: paths.length });
+  const entries = rawDiffEntries(
+    textGit(repo, ["diff", "--cached", "--raw", "--full-index", "--abbrev=40", "-z", "--no-renames", "--diff-filter=ACM"]),
+  );
+  const results = classifyBlobEntries(repo, entries);
+  return summarize("git_hook_pre_commit", results, { staged_paths: entries.length });
 }
 
 function revListForPush(repo, localSha, remoteSha) {
@@ -152,14 +154,77 @@ export function parsePrePushLines(stdinText) {
     .filter((entry) => entry.local_sha && entry.remote_sha);
 }
 
-function changedPathsAtCommit(repo, commit) {
-  return Array.from(
-    new Set(
-      splitZ(
-        textGit(repo, ["diff-tree", "-m", "--root", "--no-commit-id", "--name-only", "-r", "-z", "--diff-filter=ACMR", commit]),
-      ).map(normalizePath),
-    ),
-  );
+function rawDiffEntries(value) {
+  const tokens = splitZ(value);
+  const entries = [];
+  for (let index = 0; index < tokens.length; index += 2) {
+    const header = tokens[index];
+    const relativePath = tokens[index + 1];
+    const match = header?.match(/^:(\d{6})\s+(\d{6})\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([A-Z])$/i);
+    if (!match || !relativePath) throw new Error(`Unexpected raw diff entry: ${header ?? "missing"}`);
+    entries.push({
+      hash: match[4],
+      relativePath: normalizePath(relativePath),
+      fileKind: modeToFileKind(match[2]),
+    });
+  }
+  return entries;
+}
+
+function classifyBlobEntries(repo, entries) {
+  const results = [];
+  const regular = entries.filter((entry) => entry.fileKind === "file" && !ZERO_SHA.test(entry.hash));
+  for (const entry of entries) {
+    if (entry.fileKind !== "file") {
+      results.push(classifyDataFile({ relativePath: entry.relativePath, content: null, sizeBytes: 0, fileKind: entry.fileKind }));
+    } else if (ZERO_SHA.test(entry.hash)) {
+      results.push(blockedResult(entry.relativePath, "git_blob_hash_unavailable"));
+    }
+  }
+
+  const hashes = Array.from(new Set(regular.map((entry) => entry.hash)));
+  const objectInfo = batchCheckObjects(repo, hashes);
+  const readable = [];
+  for (const hash of hashes) {
+    const info = objectInfo.get(hash);
+    if (!info || info.type !== "blob" || !Number.isFinite(info.size) || info.size < 0) continue;
+    if (info.size <= PUBLIC_DATA_MAX_SCAN_BYTES) readable.push({ hash, size: info.size });
+  }
+
+  const contents = new Map();
+  let batch = [];
+  let batchBytes = 0;
+  const flush = () => {
+    if (batch.length === 0) return;
+    for (const [hash, content] of batchReadBlobs(repo, batch.map((entry) => entry.hash), batchBytes)) contents.set(hash, content);
+    batch = [];
+    batchBytes = 0;
+  };
+  for (const entry of readable) {
+    if (batch.length >= 128 || batchBytes + entry.size > 16 * 1024 * 1024) flush();
+    batch.push(entry);
+    batchBytes += entry.size;
+  }
+  flush();
+
+  for (const entry of regular) {
+    const info = objectInfo.get(entry.hash);
+    if (!info || info.type !== "blob" || !Number.isFinite(info.size) || info.size < 0) {
+      results.push(blockedResult(entry.relativePath, "git_blob_metadata_unavailable"));
+      continue;
+    }
+    const content = contents.get(entry.hash) ?? null;
+    results.push(
+      classifyDataFile({
+        relativePath: entry.relativePath,
+        content,
+        sizeBytes: info.size,
+        maxScanBytes: PUBLIC_DATA_MAX_SCAN_BYTES,
+        fileKind: "file",
+      }),
+    );
+  }
+  return results;
 }
 
 export function classifyPrePushGitHistory(repo, stdinText) {
@@ -178,12 +243,28 @@ export function classifyPrePushGitHistory(repo, stdinText) {
   const commits = [];
   for (const update of effectiveUpdates) commits.push(...revListForPush(repo, update.local_sha, update.remote_sha));
   const uniqueCommits = Array.from(new Set(commits));
-  const results = [];
+  const entries = [];
   for (const commit of uniqueCommits) {
-    for (const relativePath of changedPathsAtCommit(repo, commit)) {
-      results.push(classifyGitBlob(repo, `${commit}:${relativePath}`, relativePath));
-    }
+    entries.push(
+      ...rawDiffEntries(
+        textGit(repo, [
+          "diff-tree",
+          "-m",
+          "--root",
+          "--no-commit-id",
+          "--raw",
+          "--full-index",
+          "--abbrev=40",
+          "-r",
+          "-z",
+          "--no-renames",
+          "--diff-filter=ACM",
+          commit,
+        ]),
+      ),
+    );
   }
+  const results = classifyBlobEntries(repo, entries);
   return summarize("git_hook_pre_push", results, {
     update_count: effectiveUpdates.length,
     commit_count: uniqueCommits.length,

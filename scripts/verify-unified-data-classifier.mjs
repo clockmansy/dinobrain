@@ -131,6 +131,23 @@ const reviewed = classify(
 );
 assert.equal(reviewed.classification, "syncable");
 
+const gitAttributes = classify(".gitattributes", "*.json text eol=lf\n");
+assert.equal(gitAttributes.classification, "syncable");
+assert.equal(gitAttributes.scan.complete, true);
+
+const evaluationCanary = classify(
+  ".dino/evaluations/rag-golden.json",
+  JSON.stringify({ forbidden_terms: ["message_content_stored: true"], expected: "block this output" }),
+);
+assert.equal(evaluationCanary.classification, "conditional");
+assert.equal(hasFinding(evaluationCanary, "message_content_true"), false);
+const sameTextOutsideEvaluation = classify(
+  "20_Wiki/not-a-canary.json",
+  JSON.stringify({ forbidden_terms: ["message_content_stored: true"] }),
+);
+assert.equal(sameTextOutsideEvaluation.classification, "blocked");
+assert(hasFinding(sameTextOutsideEvaluation, "message_content_true"));
+
 const repo = mkdtempSync(path.join(tmpdir(), "dinobrain-unified-classifier-"));
 try {
   git(repo, ["init"]);
@@ -191,6 +208,8 @@ console.log(
         "strict_utf8_fail_closed",
         "structured_parse_fail_closed",
         "review_lineage",
+        "git_metadata_text_support",
+        "evaluation_canary_context",
         "staged_surface_parity",
         "history_injected_secret_after_removal",
         "complete_history_scan",

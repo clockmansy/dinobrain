@@ -47,6 +47,10 @@ type PathRule = {
   pattern: RegExp;
 };
 
+const EVALUATION_CANARY_PATH =
+  /^\.dino\/(?:evaluations\/(?:answer-quality-golden|rag-golden)|state\/(?:answer_quality_status|rag_eval_status))\.json$/;
+const EVALUATION_CANARY_FIELDS = new Set(["forbidden_terms", "forbidden_answer_terms"]);
+
 const BLOCKED_PATH_RULES: PathRule[] = [
   { id: "raw_conversation_path", pattern: /^10_Conversations\/raw\// },
   { id: "raw_instance_path", pattern: /^50_Instances\/raw\// },
@@ -227,18 +231,33 @@ function hasReviewLineage(record: Record<string, unknown>): boolean {
 function structuredContentFindings(relativePath: string, text: string): {
   findings: DataClassificationFinding[];
   parseStatus: DataFileClassification["scan"]["parse_status"];
+  contentScanText: string;
 } {
   const findings: DataClassificationFinding[] = [];
   const normalized = normalizePath(relativePath);
   const extension = path.posix.extname(normalized).toLowerCase();
   let parseStatus: DataFileClassification["scan"]["parse_status"] = "not_applicable";
   let parsed: Record<string, unknown> | null = null;
+  let contentScanText = text;
 
   if (extension === ".json") {
     try {
       const value = JSON.parse(text) as unknown;
       parsed = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
       parseStatus = "ok";
+      if (parsed && EVALUATION_CANARY_PATH.test(normalized)) {
+        const maskCanaries = (entry: unknown): unknown => {
+          if (Array.isArray(entry)) return entry.map(maskCanaries);
+          if (!entry || typeof entry !== "object") return entry;
+          return Object.fromEntries(
+            Object.entries(entry as Record<string, unknown>).map(([key, child]) => [
+              key,
+              EVALUATION_CANARY_FIELDS.has(key) ? "[evaluation canary omitted from safety scan]" : maskCanaries(child),
+            ]),
+          );
+        };
+        contentScanText = JSON.stringify(maskCanaries(parsed));
+      }
     } catch {
       parseStatus = "invalid";
       findings.push({ id: "invalid_json", category: "parse", severity: "blocker" });
@@ -280,14 +299,16 @@ function structuredContentFindings(relativePath: string, text: string): {
     }
   }
 
-  return { findings, parseStatus };
+  return { findings, parseStatus, contentScanText };
 }
 
 function fileType(relativePath: string): { supported: boolean; value: string } {
   const normalized = normalizePath(relativePath);
   const base = path.posix.basename(normalized);
   const extension = path.posix.extname(normalized).toLowerCase();
-  if (base === ".gitignore" || base === "pre-commit" || base === "pre-push") return { supported: true, value: "text" };
+  if (base === ".gitignore" || base === ".gitattributes" || base === "pre-commit" || base === "pre-push") {
+    return { supported: true, value: "text" };
+  }
   return { supported: TEXT_EXTENSIONS.has(extension), value: extension || "unknown" };
 }
 
@@ -340,7 +361,7 @@ export function classifyDataFile(input: {
       decodeStatus = "utf8";
       const structured = structuredContentFindings(normalized, text);
       parseStatus = structured.parseStatus;
-      findings.push(...scanDataText(text), ...structured.findings);
+      findings.push(...scanDataText(structured.contentScanText), ...structured.findings);
       complete = true;
     } catch {
       decodeStatus = "undecodable";

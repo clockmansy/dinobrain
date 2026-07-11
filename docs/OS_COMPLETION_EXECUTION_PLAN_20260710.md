@@ -756,6 +756,18 @@ private-key shape was found in the historical finding counts. SAFE-02/SAFE-03
 and an explicit legacy cleanup/baseline decision are still required; these
 findings must not be hidden by the passing SAFE-01 regression.
 
+**Prepared remediation evidence (2026-07-12):** the reversible public-history
+migration now uses an isolated committed snapshot, verified mirror bundle,
+per-file before/after hashes, Windows long-path checkout, unified current/staged/
+history/pre-push scans, exact SHA confirmations, `force-with-lease`, and tested
+remote rollback. The real `origin/main` baseline contained 1,907 risky historical
+file versions. Preparation changed 719 files and produced sanitized commit
+`54a72e5e7797bba021ccbe2b3670f6baccb7e7dd`; an independent scan of its 5,057
+tracked files found zero current or historical blockers. The public remote has
+not been rewritten, so HG-09 remains `NOT_COMPLETE` until that destructive
+publication is explicitly approved and existing clones are migrated. See
+`docs/PUBLIC_DATA_HISTORY_MIGRATION.md`.
+
 #### SAFE-02: Task-scoped automatic sync
 
 **Hard gates:** HG-07, HG-09, HG-12
