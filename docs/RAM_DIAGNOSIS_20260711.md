@@ -114,3 +114,13 @@ including prior task/subagent generations. Rebuilding makes every older child
 stale, and `DinoBrain Codex Hook Approval.cmd` already reaps those stale MCP
 processes during the safe Codex restart flow. They must not be terminated in the
 middle of an active task because that breaks its MCP transport.
+
+During the later 10-agent answer-quality review, the retained MCP count briefly
+reached 24 children plus Observatory. After delayed subagent closure it fell to
+18 MCP children, but those 18 still held about 1,110 MiB RSS while Observatory
+held about 111 MiB. The refreshed 50k worker peaked at 1,726.1 MiB and exited,
+so it was not the sustained pressure source. This confirms the dominant live
+RAM multiplier is Codex retaining one open stdio MCP process per main/subagent
+generation. A safe immediate reclamation remains a Codex/MCP restart after the
+active task finishes; the durable architecture fix is the shared sidecar or
+supervisor handoff described above.

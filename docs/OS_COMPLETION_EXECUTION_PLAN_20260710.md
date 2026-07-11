@@ -645,6 +645,26 @@ evaluation latency 379 ms. `rag:proof:verify`, `eval:rag:verify`, and
 `verify:answer-quality` include fallback, task-leakage, held-memory, 1,000-noise,
 golden nonce, and tamper regressions.
 
+**Maintenance evidence (2026-07-11):** the improved two-guidance answer
+generator changed five sampled answer hashes, so the old three-judge artifact
+correctly became stale instead of remaining green. A new reusable calibration
+CLI now emits a label-free, deterministically randomized A/B packet and accepts
+only packet-hash-bound, complete responses from at least three unique judges.
+Ten independent agents reviewed all seven sampled pairs without source, golden,
+or arm-label access. The resulting 70-vote artifact has zero unsafe votes, zero
+unresolved cases, and zero local/independent disagreements. Current evidence is
+14/14 behavior cases, average memory lift 53.259, p95 314 ms, and a healthy
+calibration bound to the current evaluator plus the exact judge-visible request,
+candidate-answer, safety, and protocol hashes. The dense-index identity remains
+visible as audit metadata, but index drift no longer invalidates an independent
+judgment when all sampled candidate hashes remain byte-identical. A fresh RAG
+rebuild changed the audit index hash while preserving the seven candidate pairs
+and decision hash exactly; calibration stayed healthy and exposed both index
+match flags as false. A subsequent identical rebuild changed zero of 52 eligible
+record vectors or metadata fields. Isolated regression proves label withholding,
+atomic review/calibration publication, metadata-drift transparency, and tampered
+packet or candidate-hash rejection.
+
 #### RAG-04: 50k scale and latency proof
 
 **Hard gates:** HG-04, HG-08, HG-10
@@ -681,6 +701,14 @@ budget, and generation-verification reuse. Plan-only completion audit
 imported the report as `scale_50k` with `status=PASS`, zero warnings, and gates
 HG-04/HG-08/HG-10; the overall audit correctly remains `NOT_COMPLETE` because
 other work packages and mandatory commands were not executed in that run.
+
+**Maintenance evidence (2026-07-11):** the report was regenerated after later
+runtime changes so stale code/generator hashes cannot satisfy the gate. The new
+qualifying run again covers 50,000 records and 1,000 sessions: cold build
+22.109 s, Context Pack p95 480.815 ms, Wiki search p95 125.298 ms, graph refresh
+p95 162.800 ms, and process RSS peak 1,726.1 MiB. All assertions and current
+binding checks pass with zero verification issues; the scale worker exited and
+did not remain as an additional resident process.
 
 ### Phase 4 - Privacy, Scoped Sync, Backup, And Recovery (P1, 4-7 engineer-days)
 

@@ -526,7 +526,7 @@ export async function getIndexedPackItems(
   dataRoot: string,
   question: string,
   limit: number,
-  options: { includeRecentTasks?: boolean } = {},
+  options: { includeRecentTasks?: boolean; excludedPathPrefixes?: string[] } = {},
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: IndexedRetrievalStats }> {
   const index = await ensureWikiIndex(dataRoot);
   const candidateLimit = Math.min(index.record_count, Math.max(limit * 80, 400));
@@ -534,7 +534,10 @@ export async function getIndexedPackItems(
   const recentTasks = options.includeRecentTasks === false ? [] : await collectRecentTaskRecords(dataRoot, 10);
   const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
   const selectedRecords = mergeDenseVectorCandidates(index, candidates.records, question, denseVectorIndex, candidateLimit);
-  const records = [...selectedRecords, ...recentTasks];
+  const excludedPrefixes = (options.excludedPathPrefixes ?? []).map((prefix) => prefix.replace(/\\/g, "/")).filter(Boolean);
+  const records = [...selectedRecords, ...recentTasks].filter(
+    (record) => !excludedPrefixes.some((prefix) => record.path.replace(/\\/g, "/").startsWith(prefix)),
+  );
   const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
   return {
     records,

@@ -299,7 +299,8 @@ function classifyDrift(vaultPath: string, lifecyclePaths: Set<string>): DriftCla
   if (lifecyclePaths.has(normalized)) return "live_os_write";
   if (
     normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) ||
-    normalized.startsWith("60_Operations/public-data-safety/")
+    normalized.startsWith("60_Operations/public-data-safety/") ||
+    normalized.startsWith("60_Operations/rag-evaluation/")
   ) {
     return "audit_artifact";
   }

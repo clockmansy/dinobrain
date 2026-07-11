@@ -8,10 +8,12 @@ import { getContextPackItems } from "./retrieval.js";
 
 export const ANSWER_QUALITY_VERSION = "answer_quality_v2";
 export const ANSWER_QUALITY_GOLDEN_VERSION = 2;
-export const ANSWER_QUALITY_CALIBRATION_VERSION = "answer_quality_calibration_v1";
+export const ANSWER_QUALITY_CALIBRATION_VERSION = "answer_quality_calibration_v2";
 export const ANSWER_QUALITY_STATUS_RELATIVE_PATH = ".dino/state/answer_quality_status.json";
 export const ANSWER_QUALITY_GOLDEN_RELATIVE_PATH = ".dino/evaluations/answer-quality-golden.json";
 export const ANSWER_QUALITY_CALIBRATION_RELATIVE_PATH = ".dino/evaluations/answer-quality-calibration.json";
+export const ANSWER_QUALITY_RETRIEVAL_IDENTITY_VERSION = "answer_quality_retrieval_identity_v1";
+export const ANSWER_QUALITY_RETRIEVAL_EXCLUDED_PREFIXES = [".dino/", "60_Operations/"] as const;
 
 export const REQUIRED_ANSWER_QUALITY_CATEGORIES = [
   "exact",
@@ -90,6 +92,7 @@ type AnswerQualityCalibration = {
   golden_sha256: string;
   evaluator_sha256: string;
   retrieval_index_sha256: string;
+  packet_sha256: string;
   judge_kind: "independent_llm" | "ragas";
   judge_ids: string[];
   judge_model: string;
@@ -110,6 +113,9 @@ type AnswerQualityEvidenceIdentity = {
   runtime_components: Record<string, string>;
   retrieval_index_path: string;
   retrieval_index_sha256: string | null;
+  retrieval_index_scope: typeof ANSWER_QUALITY_RETRIEVAL_IDENTITY_VERSION;
+  retrieval_index_record_count: number;
+  retrieval_index_excluded_prefixes: string[];
 };
 
 export type GeneratedBehavior = {
@@ -236,6 +242,8 @@ export type AnswerQualityReport = {
     disagreement_rate: number;
     missing_required_categories: string[];
     stale_judgments: string[];
+    retrieval_index_match: boolean | null;
+    review_retrieval_index_match: boolean | null;
     results: CalibrationCaseResult[];
   };
   resource_usage: {
@@ -368,6 +376,39 @@ async function fileSha256(filePath: string): Promise<string | null> {
   }
 }
 
+async function evaluationRetrievalIndexIdentity(filePath: string): Promise<{ sha256: string | null; recordCount: number }> {
+  try {
+    const index = jsonObject(JSON.parse(await fs.readFile(filePath, "utf8")));
+    const records = jsonObject(index?.records);
+    const metadata = jsonObject(index?.record_metadata) ?? {};
+    if (!index || !records) return { sha256: null, recordCount: 0 };
+    const paths = Object.keys(records)
+      .filter(
+        (recordPath) =>
+          !ANSWER_QUALITY_RETRIEVAL_EXCLUDED_PREFIXES.some((prefix) => recordPath.replace(/\\/g, "/").startsWith(prefix)),
+      )
+      .sort();
+    const identity = {
+      version: ANSWER_QUALITY_RETRIEVAL_IDENTITY_VERSION,
+      provider: index.provider ?? null,
+      model: index.model ?? null,
+      dimensions: index.dimensions ?? null,
+      semantic_embedding_provider: index.semantic_embedding_provider === true,
+      records: paths.map((recordPath) => ({
+        path: recordPath,
+        vector: records[recordPath] ?? null,
+        metadata: metadata[recordPath] ?? null,
+      })),
+    };
+    return { sha256: sha256(JSON.stringify(identity)), recordCount: paths.length };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+      return { sha256: null, recordCount: 0 };
+    }
+    throw error;
+  }
+}
+
 async function buildEvidenceIdentity(dataRoot: string): Promise<AnswerQualityEvidenceIdentity> {
   const retrievalIndexPath = ".dino/index/dense-vectors.json";
   const runtimeUrls: Record<string, URL> = {
@@ -378,11 +419,15 @@ async function buildEvidenceIdentity(dataRoot: string): Promise<AnswerQualityEvi
   };
   const runtimeComponents: Record<string, string> = {};
   for (const [name, url] of Object.entries(runtimeUrls)) runtimeComponents[name] = sha256(await fs.readFile(url));
+  const retrievalIdentity = await evaluationRetrievalIndexIdentity(dataPath(dataRoot, retrievalIndexPath));
   return {
     evaluator_sha256: sha256(JSON.stringify(runtimeComponents)),
     runtime_components: runtimeComponents,
     retrieval_index_path: retrievalIndexPath,
-    retrieval_index_sha256: await fileSha256(dataPath(dataRoot, retrievalIndexPath)),
+    retrieval_index_sha256: retrievalIdentity.sha256,
+    retrieval_index_scope: ANSWER_QUALITY_RETRIEVAL_IDENTITY_VERSION,
+    retrieval_index_record_count: retrievalIdentity.recordCount,
+    retrieval_index_excluded_prefixes: [...ANSWER_QUALITY_RETRIEVAL_EXCLUDED_PREFIXES],
   };
 }
 
@@ -632,7 +677,10 @@ async function evaluateCase(
   thresholds: AnswerQualityReport["thresholds"],
 ): Promise<AnswerQualityCaseResult> {
   const startedAt = Date.now();
-  const pack = await getContextPackItems(dataRoot, answerCase.request, packLimit, { includeRecentTasks: false });
+  const pack = await getContextPackItems(dataRoot, answerCase.request, packLimit, {
+    includeRecentTasks: false,
+    excludedPathPrefixes: [...ANSWER_QUALITY_RETRIEVAL_EXCLUDED_PREFIXES],
+  });
   const ranked = pack.ranked;
   const returnedPaths = unique(ranked.map((record) => record.path));
   const expectedPaths = unique(answerCase.expected_memory_paths ?? []);
@@ -756,6 +804,8 @@ async function evaluateCalibration(
         disagreement_rate: 1,
         missing_required_categories: unique(golden.calibration_required_categories ?? []),
         stale_judgments: [],
+        retrieval_index_match: null,
+        review_retrieval_index_match: null,
         results: [],
       };
     }
@@ -779,6 +829,8 @@ async function evaluateCalibration(
       disagreement_rate: 1,
       missing_required_categories: unique(golden.calibration_required_categories ?? []),
       stale_judgments: ["calibration_invalid_json"],
+      retrieval_index_match: null,
+      review_retrieval_index_match: null,
       results: [],
     };
   }
@@ -814,9 +866,10 @@ async function evaluateCalibration(
   if (calibration.golden_sha256 !== goldenSha256) staleJudgments.push("calibration_golden_hash_mismatch");
   if (calibration.evaluator_sha256 !== evidenceIdentity.evaluator_sha256) staleJudgments.push("calibration_evaluator_hash_mismatch");
   if (!evidenceIdentity.retrieval_index_sha256) staleJudgments.push("calibration_retrieval_index_missing");
-  if (calibration.retrieval_index_sha256 !== evidenceIdentity.retrieval_index_sha256) {
-    staleJudgments.push("calibration_retrieval_index_hash_mismatch");
-  }
+  const retrievalIndexMatch = Boolean(
+    evidenceIdentity.retrieval_index_sha256 && calibration.retrieval_index_sha256 === evidenceIdentity.retrieval_index_sha256,
+  );
+  if (!/^[a-f0-9]{64}$/i.test(calibration.packet_sha256 ?? "")) staleJudgments.push("calibration_packet_hash_invalid");
   if (!(["independent_llm", "ragas"] as string[]).includes(calibration.judge_kind)) staleJudgments.push("calibration_judge_kind_invalid");
   if (unique(calibration.judge_ids ?? []).length < 3) staleJudgments.push("calibration_independent_judges_insufficient");
   if (!calibration.judge_model?.trim()) staleJudgments.push("calibration_judge_model_missing");
@@ -825,6 +878,7 @@ async function evaluateCalibration(
   if (calibration.judge_parameters?.arms_randomized !== true) staleJudgments.push("calibration_arms_not_randomized");
   const reviewArtifactPath = resolveDataArtifact(dataRoot, calibration.review_artifact_path);
   const reviewArtifactSha256 = reviewArtifactPath ? await fileSha256(reviewArtifactPath) : null;
+  let reviewRetrievalIndexMatch: boolean | null = null;
   if (!reviewArtifactPath) staleJudgments.push("calibration_review_artifact_path_invalid");
   else if (!reviewArtifactSha256) staleJudgments.push("calibration_review_artifact_missing");
   else if (reviewArtifactSha256 !== calibration.review_artifact_sha256) staleJudgments.push("calibration_review_artifact_hash_mismatch");
@@ -836,12 +890,13 @@ async function evaluateCalibration(
       const reviewedCaseById = new Map(reviewedCases.map((item) => [String(item.case_id ?? ""), item]));
       const reviewJudgeIds = unique(stringArray(review?.judge_ids)).sort();
       const calibrationJudgeIds = unique(calibration.judge_ids ?? []).sort();
-      if (review?.version !== "answer_quality_independent_review_v1") staleJudgments.push("calibration_review_version_invalid");
+      if (review?.version !== "answer_quality_independent_review_v2") staleJudgments.push("calibration_review_version_invalid");
       if (review?.golden_sha256 !== goldenSha256) staleJudgments.push("calibration_review_golden_hash_mismatch");
       if (review?.evaluator_sha256 !== evidenceIdentity.evaluator_sha256) staleJudgments.push("calibration_review_evaluator_hash_mismatch");
-      if (review?.retrieval_index_sha256 !== evidenceIdentity.retrieval_index_sha256) {
-        staleJudgments.push("calibration_review_index_hash_mismatch");
-      }
+      reviewRetrievalIndexMatch = Boolean(
+        evidenceIdentity.retrieval_index_sha256 && review?.retrieval_index_sha256 === evidenceIdentity.retrieval_index_sha256,
+      );
+      if (review?.packet_sha256 !== calibration.packet_sha256) staleJudgments.push("calibration_review_packet_hash_mismatch");
       if (protocol?.blinded !== true || protocol?.arms_randomized !== true) staleJudgments.push("calibration_review_protocol_invalid");
       if (protocol?.prompt_sha256 !== calibration.judge_prompt_sha256) staleJudgments.push("calibration_review_prompt_hash_mismatch");
       if (JSON.stringify(reviewJudgeIds) !== JSON.stringify(calibrationJudgeIds)) staleJudgments.push("calibration_review_judge_ids_mismatch");
@@ -853,6 +908,18 @@ async function evaluateCalibration(
         }
         if (reviewed.consensus_preferred !== judgment.preferred || reviewed.forbidden_safe !== judgment.forbidden_safe) {
           staleJudgments.push(`calibration_review_consensus_mismatch:${judgment.case_id}`);
+        }
+        if (
+          reviewed.memory_on_answer_sha256 !== judgment.memory_on_answer_sha256 ||
+          reviewed.memory_off_answer_sha256 !== judgment.memory_off_answer_sha256
+        ) {
+          staleJudgments.push(`calibration_review_answer_hash_mismatch:${judgment.case_id}`);
+        }
+        const armMapping = jsonObject(reviewed.arm_mapping);
+        const expectedA = armMapping?.A === "memory_on" ? judgment.memory_on_answer_sha256 : judgment.memory_off_answer_sha256;
+        const expectedB = armMapping?.B === "memory_on" ? judgment.memory_on_answer_sha256 : judgment.memory_off_answer_sha256;
+        if (reviewed.candidate_a_sha256 !== expectedA || reviewed.candidate_b_sha256 !== expectedB) {
+          staleJudgments.push(`calibration_review_blinded_hash_mismatch:${judgment.case_id}`);
         }
         const votes = Array.isArray(reviewed.votes) ? reviewed.votes.map(jsonObject).filter((item): item is JsonObject => Boolean(item)) : [];
         if (votes.length < 3 || unique(votes.map((vote) => String(vote.judge_id ?? ""))).length < 3) {
@@ -887,6 +954,8 @@ async function evaluateCalibration(
     disagreement_rate: Number(disagreementRate.toFixed(3)),
     missing_required_categories: missingRequiredCategories,
     stale_judgments: unique(staleJudgments),
+    retrieval_index_match: retrievalIndexMatch,
+    review_retrieval_index_match: reviewRetrievalIndexMatch,
     results: caseResults,
   };
 }
@@ -956,6 +1025,8 @@ export async function buildAnswerQualityReport(
       disagreement_rate: 1,
       missing_required_categories: [],
       stale_judgments: [],
+      retrieval_index_match: null,
+      review_retrieval_index_match: null,
       results: [],
     };
     return {
@@ -1122,7 +1193,8 @@ export async function buildAnswerQualityReport(
       "The default generator is deterministic and does not receive golden expected actions; it compiles behavior only from the current request and retrieved reviewed guidance.",
       "Completion requires a hash-bound independent LLM or Ragas calibration artifact over a declared sample.",
       "Behavior-golden fallback is intentionally disabled so a self-derived retrieval fixture cannot satisfy answer-quality completion.",
-      "Recent task and judge-operation records are excluded from evaluation retrieval to prevent golden-query leakage.",
+      "All .dino and 60_Operations records are excluded from evaluation retrieval and its index identity to prevent golden-query leakage and operational self-invalidation.",
+      "Retrieval-index drift is audit metadata, not an automatic calibration failure: independent judgments remain valid only while every sampled candidate answer hash and its review evidence match exactly.",
     ],
     warnings: status === "healthy" ? [] : unique(failingCases),
     visible_status: visibleStatus(status),

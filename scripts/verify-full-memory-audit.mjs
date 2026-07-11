@@ -119,6 +119,22 @@ summary: Stable memory record
     );
     assert(result.report.counts.unclassified_drift === 0, "public-data safety reports created content drift");
 
+    json(path.join(dataRoot, "60_Operations", "rag-evaluation", "answer-quality-independent-review.json"), {
+      version: "answer_quality_independent_review_v2",
+      status: "accepted",
+      judge_ids: ["judge-a", "judge-b", "judge-c"],
+    });
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(
+      result.report.drift.added.some(
+        (entry) =>
+          entry.path === "60_Operations/rag-evaluation/answer-quality-independent-review.json" &&
+          entry.drift_class === "audit_artifact",
+      ),
+      "RAG evaluation review was not classified as an audit artifact",
+    );
+    assert(result.report.counts.unclassified_drift === 0, "RAG evaluation review created content drift");
+
     text(path.join(dataRoot, "20_Wiki", "New-Decision.md"), "# New Decision\n\nThis is unclassified content drift.\n");
     result = await buildAndWriteFullMemoryAudit(dataRoot);
     assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);

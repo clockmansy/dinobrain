@@ -342,13 +342,15 @@ function preferred(result) {
 
 function writeCalibration(dataRoot, report) {
   const promptSha256 = sha256("blinded randomized answer-quality fixture protocol v1");
+  const packetSha256 = "5".repeat(64);
   const packets = report.calibration_packet;
   const review = {
-    version: "answer_quality_independent_review_v1",
+    version: "answer_quality_independent_review_v2",
     generated_at: "2026-07-11T00:02:00.000Z",
     golden_sha256: report.golden_sha256,
     evaluator_sha256: report.evidence_identity.evaluator_sha256,
     retrieval_index_sha256: report.evidence_identity.retrieval_index_sha256,
+    packet_sha256: packetSha256,
     judge_ids: judgeIds,
     protocol: { blinded: true, arms_randomized: true, prompt_sha256: promptSha256 },
     cases: packets.map((packet) => {
@@ -358,6 +360,10 @@ function writeCalibration(dataRoot, report) {
         case_id: packet.case_id,
         category: packet.category,
         arm_mapping: packet.case_id.length % 2 === 0 ? { A: "memory_on", B: "memory_off" } : { A: "memory_off", B: "memory_on" },
+        candidate_a_sha256: packet.case_id.length % 2 === 0 ? packet.memory_on_answer_sha256 : packet.memory_off_answer_sha256,
+        candidate_b_sha256: packet.case_id.length % 2 === 0 ? packet.memory_off_answer_sha256 : packet.memory_on_answer_sha256,
+        memory_on_answer_sha256: packet.memory_on_answer_sha256,
+        memory_off_answer_sha256: packet.memory_off_answer_sha256,
         consensus_preferred: consensus,
         forbidden_safe: true,
         votes: judgeIds.map((judgeId) => ({ judge_id: judgeId, preferred: consensus, forbidden_safe: true })),
@@ -368,10 +374,11 @@ function writeCalibration(dataRoot, report) {
   json(reviewPath, review);
   const reviewSha256 = sha256(readFileSync(reviewPath));
   const calibration = {
-    version: "answer_quality_calibration_v1",
+    version: "answer_quality_calibration_v2",
     golden_sha256: report.golden_sha256,
     evaluator_sha256: report.evidence_identity.evaluator_sha256,
     retrieval_index_sha256: report.evidence_identity.retrieval_index_sha256,
+    packet_sha256: packetSha256,
     judge_kind: "independent_llm",
     judge_ids: judgeIds,
     judge_model: "fixture-independent-judge",
@@ -430,7 +437,15 @@ async function main() {
 
     const calibration = writeCalibration(dataRoot, result.report);
     result = await buildAndWriteAnswerQualityReport(dataRoot, { now: new Date("2026-07-11T00:03:00.000Z") });
-    assert(result.report.status === "healthy", `calibrated answer fixture should be healthy, got ${result.report.status}`);
+    assert(
+      result.report.status === "healthy",
+      `calibrated answer fixture should be healthy: ${JSON.stringify({
+        status: result.report.status,
+        failing_cases: result.report.failing_cases,
+        calibration: result.report.calibration,
+        evidence_identity: result.report.evidence_identity,
+      })}`,
+    );
     assert(result.report.calibration.status === "healthy", "independent calibration did not become healthy");
     assert(result.report.calibration.sample_cases === 7, "calibration sample size mismatch");
     assert(result.report.calibration.disagreements === 1, "declared negative-case judge disagreement was not preserved");
@@ -438,6 +453,53 @@ async function main() {
     assert(result.report.metrics.forbidden_memory_avoidance === 1, "forbidden-memory safety regressed");
     assert(result.report.metrics.current_instruction_compliance === 1, "current instruction was violated");
     assert(result.report.resource_usage.within_budget === true, "1,000-distractor evaluation exceeded the RAM budget");
+
+    const stableRetrievalIdentity = result.report.evidence_identity.retrieval_index_sha256;
+    const densePath = path.join(dataRoot, ".dino", "index", "dense-vectors.json");
+    const dense = JSON.parse(readFileSync(densePath, "utf8"));
+    const operationalPath = "60_Operations/rag-evaluation/new-independent-review.json";
+    dense.records[operationalPath] = Array.from({ length: dense.dimensions }, () => 0);
+    dense.record_metadata ??= {};
+    dense.record_metadata[operationalPath] = {
+      contextual_chunk: "generated answer-quality judge operation",
+      source_sha256: "f".repeat(64),
+      parent_record_path: null,
+      language: "en",
+      lifecycle_state: "active",
+      verification_status: "internal",
+      retrieval_lane: "operations",
+      knowledge_role: "operations_evidence",
+    };
+    dense.record_count = Object.keys(dense.records).length;
+    dense.record_count_verified = dense.record_count;
+    json(densePath, dense);
+    const operationalDrift = await buildAndWriteAnswerQualityReport(dataRoot, { now: new Date("2026-07-11T00:03:30.000Z") });
+    assert(operationalDrift.report.status === "healthy", "operational evaluation artifact invalidated calibration");
+    assert(
+      operationalDrift.report.evidence_identity.retrieval_index_sha256 === stableRetrievalIdentity,
+      "operational evaluation artifact changed the curated retrieval identity",
+    );
+    assert(
+      operationalDrift.report.results.every((item) => item.returned_paths.every((returnedPath) => !returnedPath.startsWith("60_Operations/"))),
+      "operational evaluation artifact leaked into answer retrieval",
+    );
+
+    const eligiblePath = Object.keys(dense.records).find((recordPath) => !recordPath.startsWith("60_Operations/"));
+    dense.record_metadata ??= {};
+    dense.record_metadata[eligiblePath] = { ...(dense.record_metadata[eligiblePath] ?? {}), identity_test_nonce: "metadata-only-drift" };
+    json(densePath, dense);
+    const metadataDrift = await buildAndWriteAnswerQualityReport(dataRoot, { now: new Date("2026-07-11T00:03:45.000Z") });
+    assert(metadataDrift.report.status === "healthy", "stable sampled answers were invalidated by metadata-only index drift");
+    assert(
+      metadataDrift.report.evidence_identity.retrieval_index_sha256 !== stableRetrievalIdentity,
+      "metadata-only drift did not change the retrieval audit identity",
+    );
+    assert(metadataDrift.report.calibration.retrieval_index_match === false, "calibration index drift was not exposed");
+    assert(metadataDrift.report.calibration.review_retrieval_index_match === false, "review index drift was not exposed");
+    assert(
+      metadataDrift.report.calibration.results.every((item) => item.answer_hashes_match),
+      "metadata-only drift changed sampled candidate answers",
+    );
 
     calibration.judgments[0].memory_on_answer_sha256 = "0".repeat(64);
     json(path.join(dataRoot, ...calibrationRelativePath.split("/")), calibration);

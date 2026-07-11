@@ -13,7 +13,14 @@ type RetrievalStats = IndexedRetrievalStats | SqliteRetrievalStats;
 
 export type ContextPackRetrievalOptions = {
   includeRecentTasks?: boolean;
+  excludedPathPrefixes?: string[];
 };
+
+function withoutExcludedPaths(records: RankedRecord[], prefixes: string[] | undefined): RankedRecord[] {
+  const normalized = (prefixes ?? []).map((prefix) => prefix.replace(/\\/g, "/")).filter(Boolean);
+  if (normalized.length === 0) return records;
+  return records.filter((record) => !normalized.some((prefix) => record.path.replace(/\\/g, "/").startsWith(prefix)));
+}
 
 export async function searchWiki(
   dataRoot: string,
@@ -46,7 +53,7 @@ export async function getContextPackItems(
   const recentTasks = options.includeRecentTasks === false
     ? []
     : (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
-  const records = [...sqlite.records, ...recentTasks];
+  const records = withoutExcludedPaths([...sqlite.records, ...recentTasks], options.excludedPathPrefixes);
   const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
 
   return {
