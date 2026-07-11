@@ -22,23 +22,9 @@ export const RAG_GOLDEN_RELATIVE_PATH = ".dino/evaluations/rag-golden.json";
 export const RAG_PROOF_STATUS_RELATIVE_PATH = ".dino/state/rag_proof_status.json";
 export const RAG_PROOF_VERSION = "rag_proof_v2";
 
-type BehaviorGolden = {
-  version: number;
-  description?: string;
-  target_memory_lift?: number;
-  minimum_cases?: number;
-  cases: Array<{
-    id: string;
-    request: string;
-    expected_memory_paths: string[];
-    required_context_terms?: string[];
-    expected_behavior_terms?: string[];
-    forbidden_context_terms?: string[];
-  }>;
-};
-
 type RagGolden = {
   version: number;
+  golden_id?: string;
   description: string;
   pack_limit: number;
   target_recall: number;
@@ -63,6 +49,9 @@ export type RagProofReport = {
   generated_at: string;
   data_root: string;
   rag_golden_path: string;
+  rag_golden_version: number | null;
+  rag_golden_sha256: string | null;
+  rag_golden_source: "explicit_v2" | "missing_or_invalid";
   dense_vector_path: string;
   source_behavior_golden_path: string | null;
   counts: {
@@ -152,30 +141,6 @@ function recordText(record: WikiIndex["records"][number]): string {
   return contextualText(record);
 }
 
-function convertBehaviorGolden(behavior: BehaviorGolden): RagGolden {
-  return {
-    version: 1,
-    description: `Explicit RAG golden generated from reviewed behavior golden cases. ${behavior.description ?? ""}`.trim(),
-    pack_limit: 8,
-    target_recall: 0.8,
-    target_required_term_recall: 0.8,
-    target_memory_lift: behavior.target_memory_lift ?? 35,
-    min_hybrid_ratio: 1,
-    minimum_cases: behavior.minimum_cases ?? 1,
-    cases: behavior.cases.map((item) => ({
-      id: item.id,
-      query: item.request,
-      expected_paths: item.expected_memory_paths,
-      required_terms: Array.from(
-        new Set([...(item.required_context_terms ?? []), ...(item.expected_behavior_terms ?? [])].filter(Boolean)),
-      ),
-      forbidden_terms: item.forbidden_context_terms ?? [],
-      allowed_prefixes: ["50_Instances/accepted/"],
-      require_hybrid: true,
-    })),
-  };
-}
-
 export function getRagGoldenPath(dataRoot: string): string {
   return dataPath(dataRoot, RAG_GOLDEN_RELATIVE_PATH);
 }
@@ -194,12 +159,17 @@ export async function buildAndWriteRagProof(
 ): Promise<{ report: RagProofReport; statusPath: string }> {
   const generatedAt = (options.now ?? new Date()).toISOString();
   const dimensions = options.dimensions ?? 128;
-  const behaviorPath = dataPath(dataRoot, ".dino/evaluations/behavior-golden.json");
-  const behavior = await readJsonIfExists<BehaviorGolden>(behaviorPath);
-  const ragGolden = behavior ? convertBehaviorGolden(behavior) : null;
+  const ragGoldenPath = getRagGoldenPath(dataRoot);
+  const ragGoldenRaw = await fs.readFile(ragGoldenPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const parsedRagGolden = ragGoldenRaw ? JSON.parse(ragGoldenRaw.toString("utf8")) as RagGolden : null;
+  const ragGolden = parsedRagGolden?.version === 2 && parsedRagGolden.golden_id?.trim() && parsedRagGolden.cases?.length
+    ? parsedRagGolden
+    : null;
   const wiki = await buildAndWriteWikiIndex(dataRoot);
 
-  const ragGoldenPath = getRagGoldenPath(dataRoot);
   const denseVectorPath = getDenseVectorPath(dataRoot);
   const statusPath = getRagProofStatusPath(dataRoot);
   const records: Record<string, number[]> = {};
@@ -268,7 +238,6 @@ export async function buildAndWriteRagProof(
 
   const expectedPaths = new Set((ragGolden?.cases ?? []).flatMap((item) => item.expected_paths));
   const missingExpected = Array.from(expectedPaths).filter((expectedPath) => !records[expectedPath]);
-  if (ragGolden) await writeJson(ragGoldenPath, ragGolden);
   const sourceIndexSha256 = createHash("sha256")
     .update(JSON.stringify(wiki.records.map((record) => [record.path, record.source_sha256])), "utf8")
     .digest("hex");
@@ -296,8 +265,11 @@ export async function buildAndWriteRagProof(
     generated_at: generatedAt,
     data_root: path.resolve(dataRoot),
     rag_golden_path: RAG_GOLDEN_RELATIVE_PATH,
+    rag_golden_version: ragGolden?.version ?? null,
+    rag_golden_sha256: ragGoldenRaw ? createHash("sha256").update(ragGoldenRaw).digest("hex") : null,
+    rag_golden_source: ragGolden ? "explicit_v2" : "missing_or_invalid",
     dense_vector_path: DENSE_VECTOR_INDEX_RELATIVE_PATH,
-    source_behavior_golden_path: behavior ? ".dino/evaluations/behavior-golden.json" : null,
+    source_behavior_golden_path: null,
     counts: {
       golden_cases: ragGolden?.cases.length ?? 0,
       record_vectors: Object.keys(records).length,
@@ -319,7 +291,7 @@ export async function buildAndWriteRagProof(
       manifest_path: vectorMigration.manifest_path ?? vectorMigration.latest_migration?.manifest_path ?? null,
     },
     warnings: [
-      !ragGolden ? "behavior_golden_missing" : "",
+      !ragGolden ? "explicit_rag_golden_v2_missing_or_invalid" : "",
       missingExpected.length > 0 ? "rag_expected_paths_missing_from_wiki_index" : "",
       semanticProvider ? "" : "local_text_hashing_vectors_are_not_external_embedding_provider",
     ].filter(Boolean),

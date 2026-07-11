@@ -148,6 +148,28 @@ function hasClosedLoopEvidence(check) {
 function classifyRagCompletionBlocker(proofCheck, evalCheck) {
   if (proofCheck.ok !== true || evalCheck.ok !== true) return "real_rag_eval_failed";
   const proof = proofCheck.parsed;
+  const evaluation = evalCheck.parsed;
+  if (proof?.status !== "healthy" || evaluation?.status !== "healthy") return "real_rag_eval_failed";
+  if (proof?.rag_golden_source !== "explicit_v2" || proof?.rag_golden_version !== 2 || !proof?.rag_golden_sha256) {
+    return "rag_explicit_golden_missing";
+  }
+  if (proof?.source_behavior_golden_path !== null || Number(proof?.counts?.missing_expected_paths ?? 1) !== 0) {
+    return "rag_proof_fallback_or_missing_paths";
+  }
+  if (evaluation?.version !== "rag_eval_v2" || evaluation?.golden_source !== "rag_golden_v2") {
+    return "rag_eval_v2_evidence_missing";
+  }
+  if (
+    (evaluation?.coverage?.missing_categories?.length ?? 1) > 0 ||
+    (evaluation?.coverage?.missing_languages?.length ?? 1) > 0 ||
+    Number(evaluation?.counts?.failed ?? 1) !== 0 ||
+    Number(evaluation?.counts?.lexical_fallback ?? 1) !== 0 ||
+    Number(evaluation?.counts?.missing_expected_paths ?? 1) !== 0 ||
+    Number(evaluation?.counts?.forbidden_returned_paths ?? 1) !== 0 ||
+    Number(evaluation?.hybrid_ratio ?? 0) < Number(evaluation?.min_hybrid_ratio ?? 1)
+  ) {
+    return "rag_eval_acceptance_failed";
+  }
   const denseVector = proof?.dense_vector;
   if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
   if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
@@ -157,16 +179,42 @@ function classifyRagCompletionBlocker(proofCheck, evalCheck) {
 function hasAnswerQualityEvidence(check) {
   const parsed = check.parsed;
   const metrics = parsed?.metrics ?? {};
+  const calibration = parsed?.calibration ?? {};
+  const thresholds = parsed?.thresholds ?? {};
+  const identity = parsed?.evidence_identity ?? {};
   return Boolean(
     check.ok === true &&
+      parsed?.version === "answer_quality_v2" &&
       parsed?.status === "healthy" &&
-      parsed?.evaluator_class === "ragas_like_local" &&
-      Number(parsed?.counts?.cases ?? 0) > 0 &&
+      parsed?.golden_source === "answer_quality_golden_v2" &&
+      parsed?.evaluator === "structured_memory_behavior_generator_v2" &&
+      parsed?.evaluator_class === "independent_calibrated_local" &&
+      /^[a-f0-9]{64}$/i.test(identity.evaluator_sha256 ?? "") &&
+      /^[a-f0-9]{64}$/i.test(identity.retrieval_index_sha256 ?? "") &&
+      Number(parsed?.counts?.cases ?? 0) >= Number(parsed?.minimum_cases ?? 1) &&
+      Number(parsed?.counts?.failed ?? 1) === 0 &&
+      Number(parsed?.counts?.lexical_fallback ?? 1) === 0 &&
+      Number(parsed?.counts?.missing_expected_paths ?? 1) === 0 &&
+      Number(parsed?.counts?.forbidden_returned_paths ?? 1) === 0 &&
+      (parsed?.coverage?.missing_categories?.length ?? 1) === 0 &&
+      (parsed?.coverage?.missing_languages?.length ?? 1) === 0 &&
       typeof metrics.faithfulness === "number" &&
       typeof (metrics.answer_relevance ?? metrics.answer_relevancy) === "number" &&
       typeof (metrics.correctness ?? metrics.answer_correctness) === "number" &&
       typeof (metrics.grounding ?? metrics.source_support) === "number" &&
-      typeof metrics.average_memory_lift === "number",
+      typeof metrics.average_memory_lift === "number" &&
+      metrics.forbidden_memory_avoidance === 1 &&
+      metrics.current_instruction_compliance === 1 &&
+      calibration.status === "healthy" &&
+      ["independent_llm", "ragas"].includes(calibration.judge_kind) &&
+      new Set(calibration.judge_ids ?? []).size >= 3 &&
+      Number(calibration.sample_cases ?? 0) >= Number(thresholds.min_calibration_cases ?? 1) &&
+      Number(calibration.disagreement_rate ?? 1) <= Number(thresholds.max_judge_disagreement_rate ?? 0) &&
+      (calibration.missing_required_categories?.length ?? 1) === 0 &&
+      (calibration.stale_judgments?.length ?? 1) === 0 &&
+      /^[a-f0-9]{64}$/i.test(calibration.review_artifact_sha256 ?? "") &&
+      parsed?.resource_usage?.within_budget === true &&
+      Number(metrics.p95_latency_ms ?? Number.POSITIVE_INFINITY) <= Number(thresholds.max_p95_latency_ms ?? 0),
   );
 }
 

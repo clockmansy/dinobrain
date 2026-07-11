@@ -486,11 +486,12 @@ export async function getIndexedPackItems(
   dataRoot: string,
   question: string,
   limit: number,
+  options: { includeRecentTasks?: boolean } = {},
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: IndexedRetrievalStats }> {
   const index = await ensureWikiIndex(dataRoot);
   const candidateLimit = Math.min(index.record_count, Math.max(limit * 200, 1000));
   const candidates = selectCandidates(index, question, candidateLimit);
-  const recentTasks = await collectRecentTaskRecords(dataRoot, 10);
+  const recentTasks = options.includeRecentTasks === false ? [] : await collectRecentTaskRecords(dataRoot, 10);
   const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
   const selectedRecords = mergeDenseVectorCandidates(index, candidates.records, question, denseVectorIndex, candidateLimit);
   const records = [...selectedRecords, ...recentTasks];

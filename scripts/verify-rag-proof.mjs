@@ -1,14 +1,13 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [{ buildAndWriteRagProof, RAG_GOLDEN_RELATIVE_PATH, RAG_PROOF_STATUS_RELATIVE_PATH }, { buildAndWriteRagEvalReport }] =
-  await Promise.all([
-    import(pathToFileURL(path.join(root, "dist", "rag-proof.js")).href),
-    import(pathToFileURL(path.join(root, "dist", "rag-eval.js")).href),
-  ]);
+const { buildAndWriteRagProof, RAG_GOLDEN_RELATIVE_PATH, RAG_PROOF_STATUS_RELATIVE_PATH } = await import(
+  pathToFileURL(path.join(root, "dist", "rag-proof.js")).href
+);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,148 +23,127 @@ function text(filePath, value) {
   writeFileSync(filePath, value, "utf8");
 }
 
-function acceptedLifecycle(record, id, at, evidencePath, candidatePath, reviewPath) {
-  const transitionId = `node-transition-${id}`;
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function acceptedRecord(query) {
+  const at = "2026-07-11T00:00:00.000Z";
+  const transitionId = "node-transition-rag-quality";
   return {
-    ...record,
-    node_id: id,
+    memory_id: "rag-quality",
+    node_id: "rag-quality",
+    knowledge_role: "behavior_guidance",
+    title: "RAG quality proof",
+    aliases: [query],
+    claim: "Use verified chunks, honest retrieval modes, hybrid retrieval, and behavior evaluation.",
+    reusable_rule: "Cite reviewed evidence and do not treat URL anchors as verified chunks.",
+    tags: ["rag", "retrieval", "evaluation"],
+    status: "accepted",
     lifecycle_version: "node_lifecycle_v3",
     lifecycle_state: "accepted",
     lifecycle_state_entered_at: at,
     lifecycle_last_transition_id: transitionId,
     lifecycle_history: [{
       transition_id: transitionId,
-      idempotency_key: `verify-rag-proof|${id}|accepted`,
+      idempotency_key: "verify-rag-proof|rag-quality|accepted",
       from_state: null,
       to_state: "accepted",
       reason_code: "verified_fixture",
       reason: "Seed a reviewed accepted memory for RAG proof verification.",
       actor: "verify-rag-proof",
-      evidence_paths: [evidencePath],
+      evidence_paths: ["30_Sources/chunks/rag-method.json"],
       predecessor_paths: [],
       successor_paths: [],
       at,
     }],
     predecessor_paths: [],
     successor_paths: [],
-    source_candidate_path: candidatePath,
-    source_review_path: reviewPath,
-    status: "accepted",
+    review_status: "accepted_by_agent_review",
+    reviewed_by: "verify-rag-proof",
+    reviewed_at: at,
     updated_at: at,
+    source_candidate_path: "50_Instances/candidates/rag-quality.json",
+    source_review_path: "50_Instances/reviews/rag-quality.json",
+    source_paths: ["30_Sources/chunks/rag-method.json"],
+    evidence: { source: "30_Sources/chunks/rag-method.json" },
   };
 }
 
-async function seedVault(dataRoot) {
+function seedVault(dataRoot) {
   const query = "How should DinoBrain prove RAG quality?";
-  text(
-    path.join(dataRoot, "20_Wiki", "README.md"),
-    `---
-title: Wiki
-summary: Curated reusable notes.
-tags: [wiki]
----
-
-# Wiki
-`,
-  );
+  text(path.join(dataRoot, "20_Wiki", "README.md"), "# Wiki\n\nCurated reusable notes.\n");
   json(path.join(dataRoot, "30_Sources", "chunks", "rag-method.json"), {
     title: "RAG quality source chunk",
     source_uri: "https://example.invalid/rag-method",
     source_status: "verified_chunk",
-    chunk_text: "RAG quality should separate verified chunks from anchor-only source records.",
-    last_verified: "2026-07-07",
+    chunk_text: "RAG quality separates verified chunks from anchor-only source records.",
+    last_verified: "2026-07-11",
   });
-  const acceptedPath = "50_Instances/accepted/rag-quality.json";
-  const candidatePath = "50_Instances/candidates/rag-quality.json";
-  const reviewPath = "50_Instances/reviews/rag-quality.json";
-  json(path.join(dataRoot, ...candidatePath.split("/")), { candidate_id: "rag-quality", status: "reviewed" });
-  json(path.join(dataRoot, ...reviewPath.split("/")), {
-    status: "approved",
-    candidate_path: candidatePath,
-    accepted_path: acceptedPath,
-  });
-  json(path.join(dataRoot, ...acceptedPath.split("/")), acceptedLifecycle({
+  json(path.join(dataRoot, "50_Instances", "candidates", "rag-quality.json"), {
     candidate_id: "rag-quality",
-    title: "RAG quality proof requires grounded evaluation",
-    claim:
-      "DinoBrain RAG quality must use verified chunks, retrieval mode honest reporting, memory-on behavior comparison, and source evidence.",
-    summary:
-      "Use verified chunks, retrieval mode honest reporting, memory-on behavior comparison, and source evidence before claiming RAG quality.",
-    tags: ["rag", "retrieval", "evaluation", "provenance"],
-    source_paths: ["30_Sources/chunks/rag-method.json"],
-    evidence: {
-      snippet:
-        "Use verified chunks, retrieval mode honest reporting, memory-on behavior comparison, and source evidence.",
-    },
-    confidence: "high",
-    reviewed_by: "verify-rag-proof",
-    reviewed_at: "2026-07-07T00:00:00.000Z",
-    review_status: "accepted_by_agent_review",
-    last_verified: "2026-07-07",
-  }, "rag-quality", "2026-07-07T00:00:00.000Z", "30_Sources/chunks/rag-method.json", candidatePath, reviewPath));
+    status: "reviewed",
+  });
+  json(path.join(dataRoot, "50_Instances", "reviews", "rag-quality.json"), {
+    status: "approved",
+    candidate_path: "50_Instances/candidates/rag-quality.json",
+    accepted_path: "50_Instances/accepted/rag-quality.json",
+  });
+  json(path.join(dataRoot, "50_Instances", "accepted", "rag-quality.json"), acceptedRecord(query));
   json(path.join(dataRoot, ".dino", "evaluations", "behavior-golden.json"), {
     version: 1,
-    description: "RAG proof fixture behavior golden.",
-    target_memory_lift: 10,
-    minimum_cases: 1,
-    cases: [
-      {
-        id: "rag-fixture",
-        request: query,
-        expected_memory_paths: ["50_Instances/accepted/rag-quality.json"],
-        required_context_terms: [
-          "verified chunks",
-          "retrieval mode honest",
-          "memory-on behavior",
-          "source evidence",
-        ],
-      },
-    ],
+    cases: [{ id: "poison-fallback", request: "This fallback must never replace the RAG golden.", expected_memory_paths: [] }],
   });
-  return query;
+  const golden = {
+    version: 2,
+    golden_id: "rag-proof-explicit-v2-fixture",
+    description: "Explicit immutable RAG proof fixture.",
+    cases: [{
+      id: "rag-proof-explicit",
+      category: "exact",
+      language: "en",
+      query,
+      expected_paths: ["50_Instances/accepted/rag-quality.json"],
+      required_terms: ["verified chunks", "hybrid retrieval"],
+      required_knowledge_roles: ["behavior_guidance"],
+      max_noise_paths: 4,
+      require_hybrid: true,
+    }],
+  };
+  json(path.join(dataRoot, RAG_GOLDEN_RELATIVE_PATH), golden);
 }
 
 async function main() {
-  const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-rag-proof-"));
+  const goodRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-rag-proof-v2-"));
+  const missingRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-rag-proof-missing-"));
   try {
-    await seedVault(dataRoot);
-    const proof = await buildAndWriteRagProof(dataRoot, {
-      now: new Date("2026-07-07T00:00:00.000Z"),
-      dimensions: 32,
-    });
+    seedVault(goodRoot);
+    const goldenPath = path.join(goodRoot, RAG_GOLDEN_RELATIVE_PATH);
+    const before = readFileSync(goldenPath);
+    const proof = await buildAndWriteRagProof(goodRoot, { now: new Date("2026-07-11T00:00:00.000Z") });
+    const after = readFileSync(goldenPath);
+
     assert(proof.report.status === "healthy", `proof should be healthy, got ${proof.report.status}`);
-    assert(proof.report.counts.golden_cases === 1, "proof did not create one golden case");
-    assert(proof.report.counts.record_vectors >= 2, "proof did not vectorize indexed records");
-    assert(proof.report.counts.query_vectors === 1, "proof did not vectorize query");
-    assert(existsSync(path.join(dataRoot, RAG_GOLDEN_RELATIVE_PATH)), "rag-golden.json missing");
-    assert(existsSync(path.join(dataRoot, ".dino", "index", "dense-vectors.json")), "dense-vectors.json missing");
-    assert(existsSync(path.join(dataRoot, RAG_PROOF_STATUS_RELATIVE_PATH)), "rag proof status missing");
+    assert(proof.report.rag_golden_source === "explicit_v2", "proof did not require explicit v2 golden data");
+    assert(proof.report.rag_golden_version === 2, "proof lost the golden version");
+    assert(proof.report.rag_golden_sha256 === sha256(before), "proof reported the wrong golden hash");
+    assert(before.equals(after), "rag:proof overwrote or normalized the explicit golden file");
+    assert(proof.report.source_behavior_golden_path === null, "behavior-golden fallback leaked into proof evidence");
+    assert(proof.report.counts.golden_cases === 1, "explicit golden case count mismatch");
+    assert(proof.report.counts.missing_expected_paths === 0, "expected memory was not indexed");
+    assert(existsSync(path.join(goodRoot, ".dino", "index", "dense-vectors.json")), "dense vector proof missing");
+    assert(existsSync(path.join(goodRoot, RAG_PROOF_STATUS_RELATIVE_PATH)), "RAG proof status missing");
 
-    const dense = JSON.parse(readFileSync(path.join(dataRoot, ".dino", "index", "dense-vectors.json"), "utf8"));
-    assert(dense.version === 2, "contextual dense index schema version missing");
-    assert(dense.provider === "huggingface_transformers_feature_extraction_v1", "semantic vector provider metadata missing");
-    assert(dense.model === "Xenova/all-MiniLM-L6-v2", "semantic model metadata missing");
-    assert(dense.semantic_embedding_provider === true, "proof did not use a real semantic embedding provider");
-    assert(dense.dimensions === 384, "semantic embedding dimensions missing");
-    assert(dense.source_index_sha256?.length === 64, "dense source index hash missing");
-    assert(Object.keys(dense.record_metadata ?? {}).length === proof.report.counts.record_vectors, "dense row metadata mismatch");
-    assert(Object.values(dense.record_metadata ?? {}).every((metadata) => metadata.knowledge_role), "dense knowledge-role metadata missing");
-    assert(proof.report.counts.record_metadata === proof.report.counts.record_vectors, "proof row metadata count mismatch");
+    text(path.join(missingRoot, "20_Wiki", "README.md"), "# Empty fixture\n");
+    const missing = await buildAndWriteRagProof(missingRoot, { now: new Date("2026-07-11T00:01:00.000Z") });
+    assert(missing.report.status !== "healthy", "missing explicit golden produced a false-green proof");
+    assert(missing.report.rag_golden_source === "missing_or_invalid", "missing golden was not reported honestly");
+    assert(!existsSync(path.join(missingRoot, RAG_GOLDEN_RELATIVE_PATH)), "proof synthesized a missing golden file");
 
-    const evalResult = await buildAndWriteRagEvalReport(dataRoot, {
-      now: new Date("2026-07-07T00:01:00.000Z"),
-    });
-    assert(evalResult.report.golden_source === "rag_golden", "eval did not use explicit rag golden");
-    assert(evalResult.report.status === "healthy", `eval should be healthy, got ${evalResult.report.status}`);
-    assert(evalResult.report.hybrid_ratio === 1, "eval did not prove full hybrid ratio");
-    assert(evalResult.report.counts.lexical_fallback === 0, "eval still used lexical fallback");
-    assert(evalResult.report.generated_answer_eval?.status === "healthy", "generated answer eval did not pass");
-    assert(typeof evalResult.report.generated_answer_eval?.metrics?.faithfulness === "number", "faithfulness metric missing");
-    assert(!evalResult.report.warnings.includes("rag_eval_using_fallback_golden"), "fallback golden warning remained");
-
-    console.log("rag proof verification ok");
+    console.log("rag proof v2 verification ok");
   } finally {
-    rmSync(dataRoot, { recursive: true, force: true });
+    rmSync(goodRoot, { recursive: true, force: true });
+    rmSync(missingRoot, { recursive: true, force: true });
   }
 }
 

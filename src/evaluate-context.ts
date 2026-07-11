@@ -62,7 +62,7 @@ function isAllowedPath(returnedPath: string, allowedPaths: string[], allowedPref
 }
 
 async function evaluateCase(goldenCase: GoldenCase, packLimit: number, targetMaxNoise: number): Promise<CaseResult> {
-  const { ranked } = await getContextPackItems(dataRoot, goldenCase.question, packLimit);
+  const { ranked } = await getContextPackItems(dataRoot, goldenCase.question, packLimit, { includeRecentTasks: false });
   const returnedPaths = unique(ranked.map((record) => record.path));
   const expectedPaths = unique(goldenCase.expected_paths);
   const allowedPaths = unique(goldenCase.allowed_paths ?? []);

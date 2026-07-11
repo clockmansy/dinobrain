@@ -189,6 +189,15 @@ PASS requires:
 - generated memory-on answers beat memory-off answers for faithfulness,
   relevance, correctness, grounding, source support, and forbidden-memory
   avoidance;
+- answer evaluation uses an explicit v2 golden, excludes recent task/judge text,
+  and is calibrated against at least three blinded independent judges with
+  golden, answer, combined runtime, dense-index, and review-artifact hashes;
+- current-instruction and forbidden-memory safety are perfect, judge
+  disagreement stays within the declared bound, and stale/tampered calibration
+  fails closed;
+- query vectors, semantic model pipelines, and Observatory refresh state are
+  bounded; overlapping refreshes or per-query pipeline construction fail the
+  resource regression gate;
 - warm p95 targets pass: Context Pack under 700 ms, `wiki_search` under 300 ms
   at 50k curated records, recent-task lookup under 50 ms, incremental operation
   write under 50 ms, and full 50k shard rebuild under 3 minutes.
@@ -199,6 +208,9 @@ Required evidence:
 - `.dino/state/rag_eval_status.json`;
 - `.dino/state/live_semantic_query_status.json`;
 - `.dino/state/answer_quality_status.json`;
+- `.dino/evaluations/answer-quality-calibration.json`;
+- the calibration's hash-bound independent review artifact under
+  `60_Operations/rag-evaluation/`;
 - `.dino/state/vector_index_migration.json`;
 - current-vault and scale-test reports, not fixture reports alone.
 
@@ -438,6 +450,9 @@ the current-vault artifacts named above.
 | RAG regressions | `npm run eval:rag:verify` | HG-04 regression coverage |
 | RAG regressions | `npm run verify:live-semantic-query` | HG-04 regression coverage |
 | RAG regressions | `npm run verify:answer-quality` | HG-04 regression coverage |
+| Query cache budget | `npm run verify:live-query-cache-budget` | HG-04/HG-10 bounded live-query memory |
+| Semantic pipeline cache | `npm run verify:semantic-pipeline-cache` | HG-04/HG-10 one model pipeline per process/config |
+| Observatory resource regression | `npm run observatory:verify` | HG-08/HG-10 coalesced refresh and bounded payload proof |
 | Graph | `npm run graph:health` | HG-08 current graph evidence |
 | Graph regression | `npm run graph:health:verify` | HG-08 regression coverage |
 | Session ingest | `npm run session:verify` | HG-03/HG-06/HG-09 ingestion safety |

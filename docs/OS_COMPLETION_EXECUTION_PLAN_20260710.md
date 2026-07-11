@@ -603,6 +603,22 @@ transactional regression evidence.
 **Acceptance:** memory-on wins by predefined minimum margins without reducing
 forbidden-memory avoidance; judge disagreement remains below a declared bound.
 
+**Implemented evidence (2026-07-11):** RAG-03 is complete for the current-vault
+gate. Retrieval uses an explicit 18-case v2 golden and answer behavior uses an
+independent 14-case bilingual v2 golden; neither path accepts behavior-golden
+fallback. Recent task and judge records are excluded from evaluation retrieval.
+The answer generator receives no expected actions, uses only the top reviewed
+guidance item, removes blocked guidance sentences, and is bound to a composite
+answer/retrieval runtime hash plus the dense-index hash. Seven exact-text
+memory-on/off pairs were reviewed blind with randomized arms by three independent
+judges. The final calibration has 21 safe votes, zero local/independent
+disagreements, and a hash-bound durable review artifact. Current evidence reports
+14/14 answer cases, 18/18 retrieval cases, perfect forbidden-memory and
+current-instruction compliance, average memory lift 57.545, and p95 answer
+evaluation latency 379 ms. `rag:proof:verify`, `eval:rag:verify`, and
+`verify:answer-quality` include fallback, task-leakage, held-memory, 1,000-noise,
+golden nonce, and tamper regressions.
+
 #### RAG-04: 50k scale and latency proof
 
 **Hard gates:** HG-04, HG-08, HG-10

@@ -75,6 +75,8 @@
     "eval:rag:verify": "node scripts/verify-rag-eval.mjs",
     "status:live-semantic-query": "node dist/build-live-semantic-query-status.js",
     "verify:live-semantic-query": "node scripts/verify-live-semantic-query.mjs",
+    "verify:live-query-cache-budget": "node scripts/verify-live-query-cache-budget.mjs",
+    "verify:semantic-pipeline-cache": "node scripts/verify-semantic-pipeline-cache.mjs",
     "status:answer-quality": "node dist/build-answer-quality-status.js",
     "verify:answer-quality": "node scripts/verify-answer-quality.mjs",
     "status:release-manifest": "node dist/build-release-manifest-status.js",

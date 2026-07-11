@@ -42,10 +42,72 @@ type LoadedLiveQueryIndex = {
   proof: LiveQueryEmbeddingProof;
 };
 
+const DEFAULT_LIVE_QUERY_CACHE_CAPACITY = 128;
+const MAX_LIVE_QUERY_CACHE_CAPACITY = 2048;
 const liveQueryVectorCache = new Map<string, number[]>();
+let liveQueryVectorCacheEvictions = 0;
+
+function liveQueryCacheCapacity(): number {
+  const configured = Number(process.env.DINOBRAIN_LIVE_QUERY_CACHE_CAPACITY ?? DEFAULT_LIVE_QUERY_CACHE_CAPACITY);
+  if (!Number.isFinite(configured)) return DEFAULT_LIVE_QUERY_CACHE_CAPACITY;
+  return Math.max(0, Math.min(MAX_LIVE_QUERY_CACHE_CAPACITY, Math.floor(configured)));
+}
 
 function cacheKey(model: string | null | undefined, query: string): string {
   return `${model ?? ""}\u0000${normalizeVectorKey(query)}`;
+}
+
+function cachedLiveQueryVector(key: string): number[] | null {
+  const vector = liveQueryVectorCache.get(key);
+  if (!vector) return null;
+  liveQueryVectorCache.delete(key);
+  liveQueryVectorCache.set(key, vector);
+  return vector;
+}
+
+function cacheLiveQueryVector(key: string, vector: number[]): void {
+  const capacity = liveQueryCacheCapacity();
+  if (capacity === 0) return;
+  liveQueryVectorCache.delete(key);
+  liveQueryVectorCache.set(key, vector);
+  while (liveQueryVectorCache.size > capacity) {
+    const oldestKey = liveQueryVectorCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    liveQueryVectorCache.delete(oldestKey);
+    liveQueryVectorCacheEvictions += 1;
+  }
+}
+
+export function getLiveQueryVectorCacheStats(): {
+  entries: number;
+  capacity: number;
+  evictions: number;
+  estimated_vector_bytes: number;
+} {
+  const estimatedVectorBytes = Array.from(liveQueryVectorCache.values()).reduce(
+    (sum, vector) => sum + vector.length * Float64Array.BYTES_PER_ELEMENT,
+    0,
+  );
+  return {
+    entries: liveQueryVectorCache.size,
+    capacity: liveQueryCacheCapacity(),
+    evictions: liveQueryVectorCacheEvictions,
+    estimated_vector_bytes: estimatedVectorBytes,
+  };
+}
+
+export function resetLiveQueryVectorCache(): void {
+  liveQueryVectorCache.clear();
+  liveQueryVectorCacheEvictions = 0;
+}
+
+export function primeLiveQueryVectorCache(model: string | null, query: string, vector: number[]): void {
+  if (vector.length === 0 || vector.some((value) => !Number.isFinite(value))) return;
+  cacheLiveQueryVector(cacheKey(model, query), [...vector]);
+}
+
+export function hasLiveQueryVectorCacheEntry(model: string | null, query: string): boolean {
+  return liveQueryVectorCache.has(cacheKey(model, query));
 }
 
 function baseProof(
@@ -97,7 +159,7 @@ export async function ensureLiveQueryDenseVector(
   }
 
   const key = cacheKey(declaredModel, query);
-  const cached = liveQueryVectorCache.get(key);
+  const cached = cachedLiveQueryVector(key);
   if (cached) {
     setDenseQueryVector(denseVectorIndex, query, cached);
     return {
@@ -143,7 +205,7 @@ export async function ensureLiveQueryDenseVector(
       proof: baseProof(denseVectorIndex, query, "query_vector_generation_failed", "empty_semantic_query_vector"),
     };
   }
-  liveQueryVectorCache.set(key, vector);
+  cacheLiveQueryVector(key, vector);
   setDenseQueryVector(denseVectorIndex, query, vector);
   return {
     index: denseVectorIndex,

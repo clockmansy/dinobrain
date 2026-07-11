@@ -10,8 +10,10 @@ DinoBrain v2 closes the memory OS loop around a mandatory pre-response contract:
 6. `record_feedback_correction` creates a provenance-backed pending candidate bound to the source task prompt hash and pre-links contradicted accepted behavior. `review_candidate` requires an explicit `no_conflict`, `hold_superseded`, or `demote_superseded` resolution; accepted correction and superseded-node transitions commit atomically before later Context Packs can retrieve the correction.
 7. Completed task traces are distilled by `run_compounding_cycle` into accepted behavior rules. The cycle also merges duplicate behavior rules, holds evidence-poor behavior rules, writes an operation index, and refreshes retrieval indexes. When `DINOBRAIN_AUTO_COMPOUND=1`, `finish_task` runs this cycle before auto sync.
 8. Behavior lift is checked with `evaluate_behavior` / `npm run eval:behavior`, comparing memory-on retrieval and selected structured action against a memory-off baseline. Correction cases must retrieve the reviewed rule, change the action, and match the expected memory-on action.
-9. Risk is evaluated with `os_gate`; destructive work, missing verified context traces, auto-detected sensitive prompts, sync/release risk, and missing OS tools produce safe actions.
-10. Recovery equivalence is verified by `npm run verify:v2` plus installer/version alignment checks. A restored PC must expose the same v2 MCP tools and pass the same gate/retrieval/lifecycle/provenance/eval loop.
+9. RAG and generated-answer completion use explicit version-2 goldens only. Evaluation retrieval excludes recent task/judge records. Answer quality requires blinded independent calibration bound to the golden, generated answers, combined answer/retrieval runtime, dense index, judge protocol, and durable review artifact; stale or tampered evidence fails closed.
+10. Live query vectors, semantic pipelines, and Observatory state are bounded. One process reuses a pipeline per model/configuration and serializes inference; Observatory coalesces in-flight work and serves a compact snapshot.
+11. Risk is evaluated with `os_gate`; destructive work, missing verified context traces, auto-detected sensitive prompts, sync/release risk, and missing OS tools produce safe actions.
+12. Recovery equivalence is verified by `npm run verify:v2` plus installer/version alignment checks. A restored PC must expose the same v2 MCP tools and pass the same gate/retrieval/lifecycle/provenance/eval loop.
 
 The practical target is not model-weight learning. The target is a closed, inspectable loop:
 

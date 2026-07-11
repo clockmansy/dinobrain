@@ -104,6 +104,69 @@ const STOPWORDS = new Set([
 const SHORT_TOKEN_ALLOWLIST = new Set(["ai", "ci", "db", "go", "js", "llm", "mcp", "pr", "qa", "ui", "ux", "v0", "v1", "v2", "v3"]);
 const MAX_COMMON_TERM_RATIO = 0.65;
 const MIN_BM25_IDF = 0.15;
+const MIN_RARE_EXACT_EVIDENCE_SCORE = 12;
+const MIN_LEXICAL_EVIDENCE_SCORE = 8;
+const MIN_DENSE_LEXICAL_FALLBACK_SCORE = 2;
+const MIN_DENSE_ONLY_COSINE_SCORE = 7.5;
+const HANGUL_TOKEN = /^[\p{Script=Hangul}]+$/u;
+const KOREAN_SUFFIXES = [
+  "으로부터",
+  "에게서는",
+  "이라면",
+  "이라는",
+  "이라고",
+  "하려면",
+  "하려고",
+  "해야만",
+  "하는지",
+  "했는지",
+  "되는지",
+  "되어야",
+  "하도록",
+  "에서는",
+  "으로는",
+  "에게서",
+  "께서는",
+  "까지",
+  "부터",
+  "처럼",
+  "만큼",
+  "조차",
+  "마저",
+  "에서",
+  "에게",
+  "한테",
+  "께서",
+  "으로",
+  "보다",
+  "인지",
+  "이라",
+  "이나",
+  "거나",
+  "해야",
+  "하는",
+  "되는",
+  "했다",
+  "한다",
+  "하고",
+  "되고",
+  "하면",
+  "되면",
+  "지만",
+  "은",
+  "는",
+  "이",
+  "가",
+  "을",
+  "를",
+  "에",
+  "의",
+  "도",
+  "만",
+  "와",
+  "과",
+  "로",
+] as const;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_TOTAL = 3;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_PER_TOPIC = 2;
 export const CONTROLLED_RULE_CONTEXT_PACK_MAX_CHARS = 2400;
@@ -121,8 +184,19 @@ function unique(values: string[]): string[] {
 
 export function isMeaningfulHybridToken(term: string): boolean {
   if (!term || STOPWORDS.has(term)) return false;
+  if (HANGUL_TOKEN.test(term)) return term.length >= 2;
   if (term.length <= 2 && !SHORT_TOKEN_ALLOWLIST.has(term)) return false;
   return true;
+}
+
+function normalizeKoreanToken(term: string): string {
+  if (!HANGUL_TOKEN.test(term)) return term;
+  for (const suffix of KOREAN_SUFFIXES) {
+    if (!term.endsWith(suffix)) continue;
+    const stem = term.slice(0, -suffix.length);
+    if (stem.length >= 2) return stem;
+  }
+  return term;
 }
 
 export function tokenizeHybrid(value: string): string[] {
@@ -130,6 +204,7 @@ export function tokenizeHybrid(value: string): string[] {
     .toLowerCase()
     .split(/[^\p{L}\p{N}_-]+/u)
     .map((term) => term.trim())
+    .map(normalizeKoreanToken)
     .filter(isMeaningfulHybridToken);
 }
 
@@ -581,12 +656,19 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
 function applyContextPackIntentBudget(records: RankedRecord[], query: string, limit?: number): RankedRecord[] {
   const targetLimit = typeof limit === "number" ? limit : records.length;
   if (targetLimit <= 0) return [];
-  const intents = rootIntentsForQuery(query);
-  if (intents.length === 0) return takeWithContextPackBudgets(records, targetLimit, query);
+  return takeWithContextPackBudgets(records, targetLimit, query);
+}
 
-  const primary = records.filter((record) => intents.some((prefix) => record.path.startsWith(prefix)));
-  const secondary = records.filter((record) => !intents.some((prefix) => record.path.startsWith(prefix)));
-  return takeWithContextPackBudgets([...primary, ...secondary.slice(0, Math.min(2, targetLimit))], targetLimit, query);
+function hasMinimumRetrievalEvidence(record: RankedRecord): boolean {
+  const score = record.score_breakdown;
+  if (!score) return record.reasons.some((reason) => /(?:matched|exact|bm25|dense_lexical)/.test(reason));
+  const lexicalEvidence = score.sparse_field + score.bm25;
+  return (
+    score.exact_alias >= MIN_RARE_EXACT_EVIDENCE_SCORE ||
+    lexicalEvidence >= MIN_LEXICAL_EVIDENCE_SCORE ||
+    score.dense_lexical_fallback >= MIN_DENSE_LEXICAL_FALLBACK_SCORE ||
+    score.dense_cosine >= MIN_DENSE_ONLY_COSINE_SCORE
+  );
 }
 
 function hasReviewLineage(record: RankedRecord): boolean {
@@ -854,8 +936,10 @@ export function rankRecordsHybridV2(
     .filter((record) => record.score > 0)
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
 
-  if (options.contextPackBudget) return applyContextPackIntentBudget(ranked, query, options.limit);
-  return typeof options.limit === "number" ? ranked.slice(0, options.limit) : ranked;
+  const confident = ranked.filter(hasMinimumRetrievalEvidence);
+
+  if (options.contextPackBudget) return applyContextPackIntentBudget(confident, query, options.limit);
+  return typeof options.limit === "number" ? confident.slice(0, options.limit) : confident;
 }
 
 export function recordDisplayName(recordPath: string): string {

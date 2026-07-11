@@ -11,6 +11,8 @@ const { publishStatusGeneration, STATUS_GENERATION_ARTIFACT_PATHS } = await impo
 );
 const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-observatory-graph-"));
 const port = 3900 + Math.floor(Math.random() * 400);
+const cacheTtlMs = 100;
+const statePayloadBudgetBytes = 256 * 1024;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -111,6 +113,7 @@ tags: [context-pack]
         updated_at: "2026-07-01T00:00:00.000Z",
         data_root: dataRoot,
         sync_policy: "blocked_until_review",
+        diagnostic_blob: "x".repeat(320 * 1024),
       },
       null,
       2,
@@ -232,6 +235,26 @@ tags: [context-pack]
     },
     post_audit: { invalid: [] },
   });
+  writeJson(".dino/state/review_queue_backpressure.json", {
+    version: "review_queue_backpressure_v1",
+    status: "healthy",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    growth_mode: "bounded_hot_queue",
+    counts: {
+      hot_review_units: 2,
+      cold_candidates: 3,
+      deterministic_hold_pending: 1,
+      pending_merge_reviews: 1,
+    },
+    warnings: [],
+  });
+  writeJson(".dino/state/cold_partitions.json", {
+    version: "cold_partition_index_v1",
+    status: "healthy",
+    generated_at: "2026-07-01T00:00:00.000Z",
+    counts: { partitions: 1 },
+    warnings: [],
+  });
   writeJson(".dino/state/rag_proof_status.json", {
     status: "healthy",
     generated_at: "2026-07-01T00:00:00.000Z",
@@ -332,7 +355,11 @@ tags: [context-pack]
   });
   const server = spawn(process.execPath, [path.join(root, "scripts", "dinobrain-observatory.mjs"), `--port=${port}`], {
     cwd: root,
-    env: { ...process.env, DINOBRAIN_DATA_DIR: dataRoot },
+    env: {
+      ...process.env,
+      DINOBRAIN_DATA_DIR: dataRoot,
+      DINOBRAIN_OBSERVATORY_CACHE_TTL_MS: String(cacheTtlMs),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -356,19 +383,32 @@ tags: [context-pack]
     assert(graph.edges.some((edge) => edge.type === "retrieves_memory"), "Graph did not connect context pack to memory");
     assert(graph.edges.some((edge) => edge.type === "used_memory"), "Graph did not connect trace to used memory");
     assert(graph.stats.memory_edges >= 2, "Graph did not count memory edges");
-    const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+    const stateResponse = await fetch(`http://127.0.0.1:${port}/api/state`);
+    const stateText = await stateResponse.text();
+    const stateBytes = Buffer.byteLength(stateText, "utf8");
+    const state = JSON.parse(stateText);
     assert(state.ok === true, "State endpoint did not return ok=true");
+    assert(stateBytes < statePayloadBudgetBytes, `State payload exceeded 256KB: ${stateBytes} bytes`);
+    assert(state.payload?.within_budget === true, "State payload did not report itself within budget");
+    assert(!stateText.includes("diagnostic_blob"), "State projection leaked an unbounded task field");
     assert(state.summary.active_task_count === 1, "State endpoint did not report active task count");
     assert(state.graph_health && typeof state.graph_health.score === "number", "State endpoint did not include graph health");
     assert(state.lifecycle && state.lifecycle.counts, "State endpoint did not include node lifecycle");
     assert(state.lifecycle.node_status === "healthy", "State endpoint did not expose healthy node lifecycle status");
     assert(state.lifecycle.counts.retrievable_accepted === 1, "State endpoint did not expose retrievable accepted count");
+    assert(
+      state.lifecycle.retry_candidates.some((item) => item._path === ".dino/state/review_queue_backpressure.json"),
+      "Lifecycle retry summaries were not derived from state artifacts",
+    );
     assert(state.read_trace && state.read_trace.status, "State endpoint did not include read trace");
     assert(state.sync_risk && state.sync_risk.status, "State endpoint did not include sync risk");
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert(health.ok === true && health.observatory_version, "Health endpoint did not report Observatory version");
     assert(health.graph_health && typeof health.graph_health.score === "number", "Health endpoint did not include graph health");
     assert(health.endpoints.includes("/api/readiness"), "Health endpoint did not list readiness endpoint");
+    assert(health.endpoints.includes("/api/snapshot"), "Health endpoint did not list snapshot endpoint");
+    assert(health.cache?.resources?.state && health.cache?.resources?.snapshot, "Health endpoint did not expose cache counters");
+    assert(typeof health.resources?.json_files_read === "number", "Health endpoint did not expose resource counters");
     const readiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(readiness.ok === false, "Readiness should fail while direct MCP and semantic RAG blockers exist");
     assert(readiness.health_status && Array.isArray(readiness.health_status.checks), "Readiness did not expose health checks");
@@ -398,6 +438,11 @@ tags: [context-pack]
     assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");
     assert(readiness.latest_audit?.trust_score === 72, "Readiness did not expose latest audit trust score");
     assert(readiness.latest_audit?.provided_memory_paths?.includes("20_Wiki/Graph-Speed.md"), "Audit provided paths missing");
+    const snapshot = await fetch(`http://127.0.0.1:${port}/api/snapshot`).then((response) => response.json());
+    assert(snapshot.ok === true, "Snapshot endpoint did not return ok=true");
+    assert(snapshot.state?.summary?.active_task_count === 1, "Snapshot did not include state");
+    assert(snapshot.graph?.nodes?.some((node) => node.type === "active_task"), "Snapshot did not include graph activity");
+    assert(snapshot.readiness?.lanes?.blockers, "Snapshot did not include readiness");
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
     assert(html.includes("Completion Readiness"), "UI does not include readiness block");
     assert(html.includes("graph-cluster-label"), "UI does not include graph cluster labels");
@@ -405,6 +450,44 @@ tags: [context-pack]
     assert(html.includes("memory links"), "UI does not include memory link statistics");
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
     assert(html.includes("readiness-audit-paths"), "UI does not include audit path container");
+    assert(html.includes('fetch("/api/snapshot"'), "UI does not use the combined snapshot endpoint");
+    assert(!html.includes("setInterval("), "UI still uses overlapping interval polling");
+    assert(html.includes("if (pollInFlight) return;"), "UI does not guard against overlapping polls");
+    const pollIntervalMatch = html.match(/const pollIntervalMs = (\d+);/);
+    assert(Number(pollIntervalMatch?.[1] ?? 0) >= 3000, "UI polling interval is below 3000ms");
+    assert(html.includes("window.setTimeout(tick, pollIntervalMs)"), "UI does not schedule recursive polling after completion");
+
+    const stateCacheBefore = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    await new Promise((resolve) => setTimeout(resolve, cacheTtlMs + 50));
+    await Promise.all(
+      Array.from({ length: 10 }, () => fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json())),
+    );
+    const stateCacheAfter = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    assert(
+      stateCacheAfter.cache.resources.state.loads === stateCacheBefore.cache.resources.state.loads + 1,
+      "Concurrent state requests performed duplicate state builds",
+    );
+    assert(
+      stateCacheAfter.cache.resources.state.coalesced > stateCacheBefore.cache.resources.state.coalesced,
+      "Concurrent state requests did not coalesce in flight",
+    );
+
+    const snapshotCacheBefore = stateCacheAfter;
+    await new Promise((resolve) => setTimeout(resolve, cacheTtlMs + 50));
+    const snapshots = await Promise.all(
+      Array.from({ length: 10 }, () => fetch(`http://127.0.0.1:${port}/api/snapshot`).then((response) => response.json())),
+    );
+    assert(snapshots.every((entry) => entry.state?.ok === true && entry.graph && entry.readiness), "Coalesced snapshot response was incomplete");
+    const snapshotCacheAfter = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    assert(
+      snapshotCacheAfter.cache.resources.snapshot.loads === snapshotCacheBefore.cache.resources.snapshot.loads + 1,
+      "Concurrent snapshot requests performed duplicate snapshot builds",
+    );
+    assert(
+      (snapshotCacheAfter.cache.resources.snapshot.coalesced - snapshotCacheBefore.cache.resources.snapshot.coalesced) +
+        (snapshotCacheAfter.cache.resources.snapshot.hits - snapshotCacheBefore.cache.resources.snapshot.hits) >= 9,
+      "Concurrent snapshot requests neither coalesced nor reused the completed snapshot",
+    );
     const graphHealth = await fetch(`http://127.0.0.1:${port}/api/graph-health`).then((response) => response.json());
     assert(graphHealth.ok === true && typeof graphHealth.score === "number", "Graph health endpoint did not return health");
     writeFileSync(path.join(dataRoot, ".dino", "state", "native_instruction_authority.json"), "{ bad json\n", "utf8");

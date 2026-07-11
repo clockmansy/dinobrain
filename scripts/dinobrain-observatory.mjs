@@ -17,11 +17,117 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-contextual-rag-v1";
+const observatoryVersion = "2026-07-11-observatory-ram-v1";
 const execFileAsync = promisify(execFile);
 const readinessVersion = "observatory_readiness_v1";
+const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 2000);
+const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 2000;
+const statePayloadBudgetBytes = 256 * 1024;
+const statePayloadTargetBytes = 240 * 1024;
+const stateLimits = Object.freeze({ events: 60, tasks: 24, context_packs: 12, traces: 12, memory_audits: 8 });
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
-let statusGenerationCache = { loaded_at: 0, value: null };
+let statusGenerationCache = { loaded_at: 0, value: null, in_flight: null };
+const resourceCounters = {
+  http_requests: 0,
+  http_active: 0,
+  http_peak_active: 0,
+  directory_scans: 0,
+  directory_entries_seen: 0,
+  directory_files_selected: 0,
+  json_files_read: 0,
+  json_bytes_read: 0,
+  jsonl_files_read: 0,
+  jsonl_bytes_read: 0,
+  sqlite_opens: 0,
+};
+const resourceCaches = new Map(
+  ["state", "graph", "readiness", "snapshot"].map((name) => [name, {
+    name,
+    has_value: false,
+    value: null,
+    key: null,
+    expires_at: 0,
+    in_flight: null,
+    hits: 0,
+    misses: 0,
+    coalesced: 0,
+    loads: 0,
+    errors: 0,
+    last_load_ms: 0,
+    last_loaded_at: null,
+    payload_bytes: 0,
+  }]),
+);
+
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value, null, 2), "utf8");
+}
+
+async function cachedResource(name, key, loader) {
+  const cache = resourceCaches.get(name);
+  if (!cache) throw new Error(`Unknown Observatory resource cache: ${name}`);
+  const now = Date.now();
+  if (cache.has_value && cache.key === key && now < cache.expires_at) {
+    cache.hits += 1;
+    return cache.value;
+  }
+  if (cache.in_flight) {
+    cache.coalesced += 1;
+    await cache.in_flight;
+    return cachedResource(name, key, loader);
+  }
+
+  cache.misses += 1;
+  cache.loads += 1;
+  const startedAt = Date.now();
+  cache.in_flight = Promise.resolve()
+    .then(loader)
+    .then((value) => {
+      cache.has_value = true;
+      cache.value = value;
+      cache.key = key;
+      cache.expires_at = Date.now() + cacheTtlMs;
+      cache.last_load_ms = Date.now() - startedAt;
+      cache.last_loaded_at = new Date().toISOString();
+      cache.payload_bytes = serializedBytes(value);
+      return value;
+    })
+    .catch((error) => {
+      cache.errors += 1;
+      throw error;
+    })
+    .finally(() => {
+      cache.in_flight = null;
+    });
+  return cache.in_flight;
+}
+
+function cacheHealth() {
+  const now = Date.now();
+  const resources = Object.fromEntries([...resourceCaches].map(([name, cache]) => [name, {
+    hits: cache.hits,
+    misses: cache.misses,
+    coalesced: cache.coalesced,
+    loads: cache.loads,
+    errors: cache.errors,
+    in_flight: Boolean(cache.in_flight),
+    cached: cache.has_value,
+    age_ms: cache.last_loaded_at ? Math.max(0, now - Date.parse(cache.last_loaded_at)) : null,
+    expires_in_ms: cache.has_value ? Math.max(0, cache.expires_at - now) : 0,
+    last_load_ms: cache.last_load_ms,
+    last_loaded_at: cache.last_loaded_at,
+    payload_bytes: cache.payload_bytes,
+  }]));
+  const totals = Object.values(resources).reduce((result, resource) => ({
+    hits: result.hits + resource.hits,
+    misses: result.misses + resource.misses,
+    coalesced: result.coalesced + resource.coalesced,
+    loads: result.loads + resource.loads,
+    errors: result.errors + resource.errors,
+    payload_bytes: result.payload_bytes + resource.payload_bytes,
+  }), { hits: 0, misses: 0, coalesced: 0, loads: 0, errors: 0, payload_bytes: 0 });
+  return { ttl_ms: cacheTtlMs, ...totals, resources };
+}
 
 function rel(filePath) {
   return path.relative(dataRoot, filePath).split(path.sep).join("/");
@@ -31,12 +137,18 @@ async function currentStatusGeneration() {
   if (statusGenerationCache.value && Date.now() - statusGenerationCache.loaded_at < 250) {
     return statusGenerationCache.value;
   }
-  const value = await loadCurrentStatusGeneration(dataRoot, {
+  if (statusGenerationCache.in_flight) return statusGenerationCache.in_flight;
+  statusGenerationCache.in_flight = loadCurrentStatusGeneration(dataRoot, {
     verifyEntries: true,
     verifySourceCoherence: true,
+  }).then((value) => {
+    statusGenerationCache.value = value;
+    statusGenerationCache.loaded_at = Date.now();
+    return value;
+  }).finally(() => {
+    statusGenerationCache.in_flight = null;
   });
-  statusGenerationCache = { loaded_at: Date.now(), value };
-  return value;
+  return statusGenerationCache.in_flight;
 }
 
 async function resolveObservablePath(filePath) {
@@ -51,7 +163,10 @@ async function readJson(filePath) {
   const resolved = await resolveObservablePath(filePath);
   if (resolved.managed && !resolved.filePath) return null;
   try {
-    return JSON.parse(await fs.readFile(resolved.filePath, "utf8"));
+    const text = await fs.readFile(resolved.filePath, "utf8");
+    resourceCounters.json_files_read += 1;
+    resourceCounters.json_bytes_read += Buffer.byteLength(text, "utf8");
+    return JSON.parse(text);
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     return null;
@@ -72,6 +187,8 @@ async function readStatusArtifact(relativePath) {
   }
   try {
     const text = await fs.readFile(resolved.filePath, "utf8");
+    resourceCounters.json_files_read += 1;
+    resourceCounters.json_bytes_read += Buffer.byteLength(text, "utf8");
     try {
       return {
         ok: true,
@@ -116,15 +233,34 @@ async function pathExists(filePath) {
   }
 }
 
-async function readDirFiles(dir, extension) {
+async function readDirFiles(dir, extension, { newestFirst = false, limit = Number.POSITIVE_INFINITY } = {}) {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries
+    resourceCounters.directory_scans += 1;
+    resourceCounters.directory_entries_seen += entries.length;
+    const files = entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(extension))
       .map((entry) => path.join(dir, entry.name))
       .sort();
+    if (newestFirst) files.reverse();
+    const selected = Number.isFinite(limit) ? files.slice(0, Math.max(0, limit)) : files;
+    resourceCounters.directory_files_selected += selected.length;
+    return selected;
   } catch (error) {
     if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function countDirFiles(relativeDir, extension = ".json") {
+  const dir = path.join(dataRoot, relativeDir);
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    resourceCounters.directory_scans += 1;
+    resourceCounters.directory_entries_seen += entries.length;
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(extension)).length;
+  } catch (error) {
+    if (error?.code === "ENOENT") return 0;
     throw error;
   }
 }
@@ -147,33 +283,38 @@ async function readSqliteOperations() {
     return null;
   }
 
+  resourceCounters.sqlite_opens += 1;
   const db = new DatabaseSync(shardPath, { readOnly: true });
   try {
     const counts = {
       tasks: db.prepare("SELECT COUNT(*) AS count FROM tasks").get().count,
+      active_tasks: db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'started'").get().count,
       traces: db.prepare("SELECT COUNT(*) AS count FROM traces").get().count,
       context_packs: db.prepare("SELECT COUNT(*) AS count FROM context_packs").get().count,
       events: db.prepare("SELECT COUNT(*) AS count FROM events").get().count,
     };
-    const tasks = db
-      .prepare("SELECT * FROM tasks ORDER BY updated_at DESC, path ASC LIMIT 50")
-      .all()
-      .map(withDisplayPath);
+    const activeTasks = db
+      .prepare(`SELECT * FROM tasks WHERE status = 'started' ORDER BY updated_at DESC, path ASC LIMIT ${stateLimits.tasks}`)
+      .all();
+    const recentTasks = db
+      .prepare(`SELECT * FROM tasks ORDER BY updated_at DESC, path ASC LIMIT ${stateLimits.tasks}`)
+      .all();
+    const tasks = mergeTasksByPath(activeTasks, recentTasks, stateLimits.tasks);
     const traces = db
-      .prepare("SELECT * FROM traces ORDER BY finished_at DESC, path ASC LIMIT 50")
+      .prepare(`SELECT * FROM traces ORDER BY finished_at DESC, path ASC LIMIT ${stateLimits.traces}`)
       .all()
       .map(withTraceDisplay);
     const packs = db
-      .prepare("SELECT * FROM context_packs ORDER BY created_at DESC, path ASC LIMIT 50")
+      .prepare(`SELECT * FROM context_packs ORDER BY created_at DESC, path ASC LIMIT ${stateLimits.context_packs}`)
       .all()
       .map((pack) => ({
         ...withDisplayPath(pack),
         items: db
-          .prepare("SELECT path, kind, title, summary, score FROM context_pack_items WHERE pack_path = ? ORDER BY ordinal ASC")
+          .prepare("SELECT path, kind, title, summary, score FROM context_pack_items WHERE pack_path = ? ORDER BY ordinal ASC LIMIT 8")
           .all(pack.path),
       }));
     const events = db
-      .prepare("SELECT payload_json FROM events ORDER BY at DESC, event_key ASC LIMIT 100")
+      .prepare(`SELECT payload_json FROM events ORDER BY at DESC, event_key ASC LIMIT ${stateLimits.events}`)
       .all()
       .map((row) => JSON.parse(row.payload_json));
     return {
@@ -275,6 +416,7 @@ async function readWikiGraph() {
   const shardPath = resolved.filePath;
   try {
     await fs.access(shardPath);
+    resourceCounters.sqlite_opens += 1;
     const db = new DatabaseSync(shardPath, { readOnly: true });
     try {
       const metadata = Object.fromEntries(
@@ -282,10 +424,32 @@ async function readWikiGraph() {
           .all()
           .map((row) => [String(row.key), String(row.value)]),
       );
-      const nodes = db.prepare("SELECT id, type, label, path, record_id, count FROM nodes").all().map(normalizeGraphNode);
-      const edges = db.prepare("SELECT from_id, to_id, type FROM edges").all().map(normalizeGraphEdge);
+      const nodeCount = Number(db.prepare("SELECT COUNT(*) AS count FROM nodes").get().count ?? 0);
+      const edgeCount = Number(db.prepare("SELECT COUNT(*) AS count FROM edges").get().count ?? 0);
+      const nodes = db.prepare(`
+        SELECT id, type, label, path, record_id, count
+        FROM nodes
+        ORDER BY CASE type
+          WHEN 'root' THEN 0
+          WHEN 'folder' THEN 1
+          WHEN 'kind' THEN 2
+          WHEN 'tag' THEN 3
+          WHEN 'record' THEN 4
+          WHEN 'wikilink' THEN 5
+          ELSE 9
+        END, count DESC, id ASC
+        LIMIT 450
+      `).all().map(normalizeGraphNode);
+      const nodeIds = nodes.map((node) => node.id);
+      const edges = nodeIds.length === 0
+        ? []
+        : db.prepare(`
+            SELECT from_id, to_id, type
+            FROM edges
+            WHERE from_id IN (${nodeIds.map(() => "?").join(",")})
+              AND to_id IN (${nodeIds.map(() => "?").join(",")})
+          `).all(...nodeIds, ...nodeIds).map(normalizeGraphEdge);
       const recordCount = db.prepare("SELECT COUNT(*) AS count FROM records").get().count;
-      const graph = selectGraphWindow(nodes, edges);
       return {
         ok: true,
         index_mode: "sqlite_wiki_graph_v0",
@@ -293,14 +457,14 @@ async function readWikiGraph() {
         data_root: dataRoot,
         stats: {
           records: Number(recordCount ?? 0),
-          nodes: nodes.length,
-          edges: edges.length,
-          shown_nodes: graph.shown_node_count,
-          shown_edges: graph.shown_edge_count,
-          truncated: graph.truncated,
+          nodes: nodeCount,
+          edges: edgeCount,
+          shown_nodes: nodes.length,
+          shown_edges: edges.length,
+          truncated: nodeCount > nodes.length || edgeCount > edges.length,
         },
-        nodes: graph.nodes,
-        edges: graph.edges,
+        nodes,
+        edges,
       };
     } finally {
       db.close();
@@ -345,10 +509,24 @@ async function readWikiGraph() {
 
 async function readEvents(limit = 100) {
   const eventDir = path.join(dataRoot, ".dino", "events");
-  const files = (await readDirFiles(eventDir, ".jsonl")).slice(-7);
+  const files = await readDirFiles(eventDir, ".jsonl", { newestFirst: true, limit: 7 });
   const events = [];
   for (const file of files) {
-    const text = await fs.readFile(file, "utf8");
+    const handle = await fs.open(file, "r");
+    let text = "";
+    try {
+      const { size } = await handle.stat();
+      const byteLength = Math.min(size, 256 * 1024);
+      const buffer = Buffer.allocUnsafe(byteLength);
+      const start = Math.max(0, size - byteLength);
+      const { bytesRead } = await handle.read(buffer, 0, byteLength, start);
+      text = buffer.subarray(0, bytesRead).toString("utf8");
+      if (start > 0) text = text.slice(Math.max(0, text.indexOf("\n") + 1));
+      resourceCounters.jsonl_files_read += 1;
+      resourceCounters.jsonl_bytes_read += bytesRead;
+    } finally {
+      await handle.close();
+    }
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
       try {
@@ -357,15 +535,17 @@ async function readEvents(limit = 100) {
         events.push({ event: "unparseable_event", at: null, _path: rel(file), raw: line.slice(0, 240) });
       }
     }
+    if (events.length >= limit * 2) break;
   }
   return events
     .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")))
     .slice(-limit);
 }
 
-async function readJsonDir(relativeDir, limit = 50, preserveRecord = () => false) {
+async function readJsonDir(relativeDir, limit = 50) {
   const dir = path.join(dataRoot, relativeDir);
-  const files = await readDirFiles(dir, ".json");
+  const scanLimit = Math.max(limit, Math.min(limit * 2, limit + 32));
+  const files = await readDirFiles(dir, ".json", { newestFirst: true, limit: scanLimit });
   const records = [];
   for (const file of files) {
     const value = await readJson(file);
@@ -376,15 +556,7 @@ async function readJsonDir(relativeDir, limit = 50, preserveRecord = () => false
         String(a.updated_at ?? a.created_at ?? a.generated_at ?? a.finished_at ?? a.audited_at ?? ""),
       ),
     );
-  const selected = sorted.slice(0, limit);
-  const selectedPaths = new Set(selected.map((record) => record._path));
-  for (const record of sorted) {
-    if (!selectedPaths.has(record._path) && preserveRecord(record)) {
-      selected.push(record);
-      selectedPaths.add(record._path);
-    }
-  }
-  return selected;
+  return sorted.slice(0, limit);
 }
 
 async function readAuditLogs(limit = 50) {
@@ -585,13 +757,16 @@ async function readControlledCompoundingStatus() {
 }
 
 async function readOsV2Status() {
-  const [gates, lifecycleReports, lifecycleStatus, behaviorEvals, provenance, sourceChunks] = await Promise.all([
-    readJsonDir(".dino/gates", 20),
-    readJsonDir(".dino/lifecycle", 20),
+  const [gates, gateCount, lifecycleReports, lifecycleReportCount, lifecycleStatus, behaviorEvals, behaviorEvalCount, provenanceCount, sourceChunkCount] = await Promise.all([
+    readJsonDir(".dino/gates", 8),
+    countDirFiles(".dino/gates"),
+    readJsonDir(".dino/lifecycle", 8),
+    countDirFiles(".dino/lifecycle"),
     readStatusArtifact(".dino/state/node_lifecycle.json"),
-    readJsonDir(".dino/evaluations", 20),
-    readJsonDir(".dino/provenance", 20),
-    readJsonDir("30_Sources/chunks", 20),
+    readJsonDir(".dino/evaluations", 8),
+    countDirFiles(".dino/evaluations"),
+    countDirFiles(".dino/provenance"),
+    countDirFiles("30_Sources/chunks"),
   ]);
   const latestGate = gates[0] ?? null;
   const latestBehavior = behaviorEvals.find((entry) => String(entry.evaluation_id ?? "").startsWith("behavior-eval-")) ?? null;
@@ -606,11 +781,11 @@ async function readOsV2Status() {
     latest_behavior_eval: latestBehavior,
     latest_lifecycle: latestLifecycle,
     counts: {
-      gates: gates.length,
-      lifecycle_reports: lifecycleReports.length,
-      behavior_evals: behaviorEvals.length,
-      provenance_links: provenance.length,
-      source_chunks: sourceChunks.length,
+      gates: gateCount,
+      lifecycle_reports: lifecycleReportCount,
+      behavior_evals: behaviorEvalCount,
+      provenance_links: provenanceCount,
+      source_chunks: sourceChunkCount,
     },
   };
 }
@@ -637,37 +812,18 @@ function sourcePaths(record) {
 }
 
 async function readLifecycleQueue() {
-  const [lifecycleArtifact, backpressureArtifact, coldArtifact, worklistArtifact, candidates, accepted, reviews, mergeReviews, quarantines] = await Promise.all([
+  const [lifecycleArtifact, backpressureArtifact, coldArtifact] = await Promise.all([
     readStatusArtifact(".dino/state/node_lifecycle.json"),
     readStatusArtifact(".dino/state/review_queue_backpressure.json"),
     readStatusArtifact(".dino/state/cold_partitions.json"),
-    readStatusArtifact(".dino/state/review_worklist.json"),
-    readJsonDir("50_Instances/candidates", 60),
-    readJsonDir("50_Instances/accepted", 80),
-    readJsonDir("80_Review_Queue/promotion", 60),
-    readJsonDir("80_Review_Queue/merge", 60),
-    readJsonDir(".dino/quarantine", 40),
   ]);
-  const reviewIds = new Set(reviews.map((entry) => path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
-  const candidateWithoutReview = candidates.filter((entry) => !reviewIds.has(path.basename(String(entry._path ?? entry.path ?? ""), ".json")));
-  const acceptedWithoutSource = accepted.filter((entry) => sourcePaths(entry).length === 0);
-  const acceptedMissingSource = [];
-  for (const entry of accepted) {
-    const sources = sourcePaths(entry);
-    if (sources.length > 0) {
-      const existence = await Promise.all(
-        sources.map((source) => pathExists(path.join(dataRoot, source.replace(/\//g, path.sep)))),
-      );
-      if (!existence.some(Boolean)) acceptedMissingSource.push(entry);
-    }
-  }
-  const retryCandidates = [...candidateWithoutReview, ...acceptedWithoutSource, ...acceptedMissingSource].slice(0, 10);
   const lifecycleReport = lifecycleArtifact.value ?? null;
   const reportCounts = lifecycleReport?.counts ?? {};
   const lifecycleBlockers = Number(reportCounts.lifecycle_blockers ?? lifecycleReport?.post_audit?.invalid?.length ?? 0);
-  const worklistCounts = worklistArtifact.value?.counts ?? {};
   const backpressureCounts = backpressureArtifact.value?.counts ?? {};
-  const queuePending = Number(worklistCounts.review_units ?? reviews.length + mergeReviews.length) > 0;
+  const hotReviewUnits = Number(backpressureCounts.hot_review_units ?? 0);
+  const pendingMergeReviews = Number(backpressureCounts.pending_merge_reviews ?? 0);
+  const queuePending = hotReviewUnits + pendingMergeReviews > 0;
   const queueConstrained = backpressureArtifact.artifact_parse_status !== "ok" || backpressureArtifact.value?.status !== "healthy";
   const status = lifecycleArtifact.artifact_parse_status !== "ok"
     ? "missing"
@@ -684,6 +840,24 @@ async function readLifecycleQueue() {
         claim: Array.isArray(entry.issues) ? entry.issues.join(", ") : "lifecycle blocker",
       }))
     : [];
+  const retrySummaries = [
+    hotReviewUnits > 0 && {
+      _path: backpressureArtifact.artifact_path,
+      claim: `${hotReviewUnits} hot review units await settlement`,
+    },
+    pendingMergeReviews > 0 && {
+      _path: backpressureArtifact.artifact_path,
+      claim: `${pendingMergeReviews} merge reviews remain pending`,
+    },
+    Number(backpressureCounts.cold_candidates ?? 0) > 0 && {
+      _path: coldArtifact.artifact_path,
+      claim: `${Number(backpressureCounts.cold_candidates)} candidates are held in cold review partitions`,
+    },
+    Number(backpressureCounts.deterministic_hold_pending ?? 0) > 0 && {
+      _path: backpressureArtifact.artifact_path,
+      claim: `${Number(backpressureCounts.deterministic_hold_pending)} deterministic holds await settlement`,
+    },
+  ].filter(Boolean);
   return {
     status,
     node_status: lifecycleReport?.status ?? "missing",
@@ -695,28 +869,23 @@ async function readLifecycleQueue() {
     transaction_id: lifecycleReport?.transaction?.transaction_id ?? lifecycleReport?.last_applied_transaction?.transaction_id ?? null,
     recovery_ref: lifecycleReport?.git?.recovery_ref ?? lifecycleReport?.last_recovery_ref ?? null,
     counts: {
-      candidates: Number(reportCounts.deferred_candidate_backlog ?? candidates.length),
-      accepted: Number(reportCounts.accepted ?? accepted.length),
-      promotion_reviews: Number(reportCounts.promotion_reviews ?? reviews.length),
-      pending_merge_reviews: Number(worklistCounts.pending_merge_reviews ?? mergeReviews.length),
-      hot_review_units: Number(backpressureCounts.hot_review_units ?? worklistCounts.review_units ?? 0),
+      candidates: Number(reportCounts.deferred_candidate_backlog ?? reportCounts.candidates ?? 0),
+      accepted: Number(reportCounts.accepted ?? 0),
+      promotion_reviews: Number(reportCounts.promotion_reviews ?? 0),
+      pending_merge_reviews: pendingMergeReviews,
+      hot_review_units: hotReviewUnits,
       cold_candidates: Number(backpressureCounts.cold_candidates ?? 0),
       deterministic_hold_pending: Number(backpressureCounts.deterministic_hold_pending ?? 0),
-      quarantined: quarantines.length,
+      quarantined: Number(reportCounts.quarantined ?? 0),
       retrievable_accepted: Number(reportCounts.retrievable_accepted ?? 0),
       held_or_excluded: Number(reportCounts.held_or_excluded ?? 0),
       lifecycle_blockers: lifecycleBlockers,
       applied_actions: Number(reportCounts.applied_actions ?? 0),
-      candidate_without_review: candidateWithoutReview.length,
-      accepted_without_source: acceptedWithoutSource.length,
-      accepted_missing_source: acceptedMissingSource.length,
+      candidate_without_review: Number(reportCounts.candidate_without_review ?? 0),
+      accepted_without_source: Number(reportCounts.accepted_without_source ?? 0),
+      accepted_missing_source: Number(reportCounts.accepted_missing_source ?? 0),
     },
-    candidates: candidates.slice(0, 12),
-    promotion_reviews: reviews.slice(0, 12),
-    merge_reviews: mergeReviews.slice(0, 12),
-    accepted: accepted.slice(0, 12),
-    quarantines: quarantines.slice(0, 8),
-    retry_candidates: [...reportBlockers, ...retryCandidates].slice(0, 10),
+    retry_candidates: [...reportBlockers, ...retrySummaries].slice(0, 10),
   };
 }
 
@@ -855,7 +1024,7 @@ function laneItem(id, status, reason, pathValue = null) {
   return { id, status, reason, path: pathValue };
 }
 
-async function readiness(existingState = null) {
+async function buildReadiness(existingState = null) {
   const [
     statusGeneration,
     healthArtifact,
@@ -1319,6 +1488,16 @@ function mergeByPath(indexedRecords = [], liveRecords = [], limit = 50) {
   return sortRecent([...byKey.values()]).slice(0, limit);
 }
 
+function mergeTasksByPath(indexedRecords = [], liveRecords = [], limit = stateLimits.tasks) {
+  const merged = mergeByPath(indexedRecords, liveRecords, indexedRecords.length + liveRecords.length);
+  return merged
+    .sort((left, right) => {
+      const activeDelta = Number(right.status === "started") - Number(left.status === "started");
+      return activeDelta || recordTime(right).localeCompare(recordTime(left));
+    })
+    .slice(0, limit);
+}
+
 function eventKey(event) {
   return [
     event?._path ?? "",
@@ -1337,10 +1516,10 @@ function mergeEvents(indexedEvents = [], liveEvents = [], limit = 100) {
 
 async function readLiveOperations() {
   const [events, tasks, packs, traces] = await Promise.all([
-    readEvents(),
-    readJsonDir(".dino/tasks", 80, (task) => task.status === "started"),
-    readJsonDir(".dino/context-packs"),
-    readJsonDir(".dino/traces"),
+    readEvents(stateLimits.events),
+    readJsonDir(".dino/tasks", stateLimits.tasks),
+    readJsonDir(".dino/context-packs", stateLimits.context_packs),
+    readJsonDir(".dino/traces", stateLimits.traces),
   ]);
   return {
     events: events.slice().reverse(),
@@ -1533,9 +1712,151 @@ function withActivityGraph(wikiGraph, operationState) {
   };
 }
 
-async function state() {
-  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
-    readAuditLogs(),
+function compactPayloadText(value, max = 640) {
+  if (typeof value !== "string") return value;
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function boundedPayloadValue(value, depth = 0) {
+  if (typeof value === "string") return compactPayloadText(value);
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    const limit = depth < 2 ? 12 : 8;
+    return value.slice(0, limit).map((item) => boundedPayloadValue(item, depth + 1));
+  }
+  if (depth >= 5) return null;
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 48)
+      .map(([key, item]) => [key, boundedPayloadValue(item, depth + 1)]),
+  );
+}
+
+function projectEvent(event) {
+  return Object.fromEntries([
+    "event", "at", "task_id", "pack_id", "audit_id", "trace_path", "context_pack_trace", "path", "_path", "error", "prompt_preview",
+  ].filter((key) => event?.[key] !== undefined).map((key) => [key, compactPayloadText(event[key], 480)]));
+}
+
+function projectTask(task) {
+  return {
+    task_id: task?.task_id ?? null,
+    status: task?.status ?? null,
+    request: compactPayloadText(task?.request, 640),
+    project: compactPayloadText(task?.project, 160),
+    mode: task?.mode ?? null,
+    sensitivity: task?.sensitivity ?? null,
+    created_at: task?.created_at ?? null,
+    updated_at: task?.updated_at ?? null,
+    sync_policy: task?.sync_policy ?? null,
+    path: task?.path ?? null,
+    _path: task?._path ?? task?.path ?? null,
+  };
+}
+
+function projectContextPack(pack) {
+  const items = Array.isArray(pack?.items) ? pack.items : [];
+  return {
+    pack_id: pack?.pack_id ?? null,
+    task_id: pack?.task_id ?? null,
+    question: compactPayloadText(pack?.question, 480),
+    created_at: pack?.created_at ?? null,
+    item_count: Number(pack?.item_count ?? items.length),
+    path: pack?.path ?? null,
+    _path: pack?._path ?? pack?.path ?? null,
+    items: items.slice(0, 8).map((item) => ({
+      path: item?.path ?? null,
+      kind: item?.kind ?? null,
+      title: compactPayloadText(item?.title, 240),
+      summary: compactPayloadText(item?.summary, 320),
+      score: item?.score ?? null,
+    })),
+  };
+}
+
+function projectTrace(trace) {
+  return {
+    task_id: trace?.task_id ?? null,
+    outcome: trace?.outcome ?? null,
+    summary: compactPayloadText(trace?.summary, 640),
+    growth_policy: trace?.growth_policy ?? null,
+    finished_at: trace?.finished_at ?? null,
+    path: trace?.path ?? null,
+    _path: trace?._path ?? trace?.path ?? null,
+    used_memory_paths: parseJsonArray(trace?.used_memory_paths ?? trace?.used_memory_paths_json).slice(0, 12),
+    context_pack_paths: parseJsonArray(trace?.context_pack_paths ?? trace?.context_pack_paths_json).slice(0, 4),
+  };
+}
+
+function projectAudit(audit) {
+  const limitPaths = (value) => (Array.isArray(value) ? value.slice(0, 12).map((item) => compactPayloadText(String(item), 320)) : []);
+  return {
+    audit_id: audit?.audit_id ?? null,
+    task_id: audit?.task_id ?? null,
+    audited_at: audit?.audited_at ?? null,
+    trust_score: audit?.trust_score ?? null,
+    verdict: audit?.verdict ?? null,
+    provided_memory_paths: limitPaths(audit?.provided_memory_paths),
+    declared_used_memory_paths: limitPaths(audit?.declared_used_memory_paths),
+    observed_used_memory_paths: limitPaths(audit?.observed_used_memory_paths),
+    missing_expected_memory: limitPaths(audit?.missing_expected_memory),
+    hallucinated_memory_reference: limitPaths(audit?.hallucinated_memory_reference),
+    graph_health_snapshot: audit?.graph_health_snapshot ? { score: audit.graph_health_snapshot.score ?? null } : null,
+    path: audit?.path ?? null,
+    _path: audit?._path ?? audit?.path ?? null,
+  };
+}
+
+function enforceStatePayloadBudget(payload) {
+  const listKeys = ["events", "tasks", "context_packs", "traces", "memory_audits"];
+  let projected = payload;
+  let bytes = serializedBytes(projected);
+  while (bytes > statePayloadTargetBytes && listKeys.some((key) => projected[key].length > 1)) {
+    projected = {
+      ...projected,
+      ...Object.fromEntries(listKeys.map((key) => [key, projected[key].slice(0, Math.max(1, Math.ceil(projected[key].length / 2)))])),
+    };
+    bytes = serializedBytes(projected);
+  }
+  projected.payload = {
+    projection_version: "observatory_state_projection_v1",
+    budget_bytes: statePayloadBudgetBytes,
+    serialized_bytes: 0,
+    within_budget: bytes < statePayloadBudgetBytes,
+  };
+  projected.payload.serialized_bytes = serializedBytes(projected);
+  projected.payload.within_budget = projected.payload.serialized_bytes < statePayloadBudgetBytes;
+  projected.payload.serialized_bytes = serializedBytes(projected);
+  return projected;
+}
+
+function projectStatePayload(payload) {
+  return enforceStatePayloadBudget({
+    ok: payload.ok === true,
+    summary: boundedPayloadValue(payload.summary),
+    events: payload.events.slice(0, stateLimits.events).map(projectEvent),
+    tasks: payload.tasks.slice(0, stateLimits.tasks).map(projectTask),
+    context_packs: payload.context_packs.slice(0, stateLimits.context_packs).map(projectContextPack),
+    traces: payload.traces.slice(0, stateLimits.traces).map(projectTrace),
+    memory_audits: payload.memory_audits.slice(0, stateLimits.memory_audits).map(projectAudit),
+    graph_health: boundedPayloadValue(payload.graph_health),
+    native_instruction_authority: boundedPayloadValue(payload.native_instruction_authority),
+    source_lineage: boundedPayloadValue(payload.source_lineage),
+    behavior_recall_migration: boundedPayloadValue(payload.behavior_recall_migration),
+    behavior_recall: boundedPayloadValue(payload.behavior_recall),
+    controlled_compounding: boundedPayloadValue(payload.controlled_compounding),
+    lifecycle: boundedPayloadValue(payload.lifecycle),
+    sync_risk: boundedPayloadValue(payload.sync_risk),
+    os_v2: boundedPayloadValue(payload.os_v2),
+    read_trace: boundedPayloadValue(payload.read_trace),
+  });
+}
+
+async function buildState() {
+  const [audits, auditCount, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
+    readAuditLogs(stateLimits.memory_audits),
+    countDirFiles(".dino/audits"),
     readLiveOperations(),
     readSqliteOperations(),
     readGraphHealth(),
@@ -1548,7 +1869,7 @@ async function state() {
     readSyncRisk(),
     readOsV2Status(),
   ]);
-  const decorate = (payload) => ({
+  const decorate = (payload) => projectStatePayload({
     ...payload,
     summary: {
       ...payload.summary,
@@ -1575,10 +1896,10 @@ async function state() {
     read_trace: readTraceSummary(payload.events, payload.context_packs, payload.traces),
   });
   if (sqlite) {
-    const events = mergeEvents(sqlite.events, live.events, 120);
-    const tasks = mergeByPath(sqlite.tasks, live.tasks, 80);
-    const contextPacks = mergeByPath(sqlite.context_packs, live.context_packs, 80);
-    const traces = mergeByPath(sqlite.traces, live.traces, 80).map(withTraceDisplay);
+    const events = mergeEvents(sqlite.events, live.events, stateLimits.events);
+    const tasks = mergeTasksByPath(sqlite.tasks, live.tasks, stateLimits.tasks);
+    const contextPacks = mergeByPath(sqlite.context_packs, live.context_packs, stateLimits.context_packs);
+    const traces = mergeByPath(sqlite.traces, live.traces, stateLimits.traces).map(withTraceDisplay);
     return decorate({
       ok: true,
       summary: {
@@ -1588,9 +1909,9 @@ async function state() {
         event_count: Math.max(sqlite.counts.events, events.length),
         task_count: Math.max(sqlite.counts.tasks, tasks.length),
         context_pack_count: Math.max(sqlite.counts.context_packs, contextPacks.length),
-        memory_audit_count: audits.length,
+        memory_audit_count: auditCount,
         today_event_count: events.filter((event) => String(event.at ?? "").startsWith(new Date().toISOString().slice(0, 10))).length,
-        active_task_count: tasks.filter((task) => task.status === "started").length,
+        active_task_count: Math.max(Number(sqlite.counts.active_tasks ?? 0), tasks.filter((task) => task.status === "started").length),
         last_event_at: events[0]?.at ?? null,
       },
       events,
@@ -1603,10 +1924,14 @@ async function state() {
 
   const index = await readOperationIndex();
   if (index) {
-    const events = mergeEvents(index.recent_events ?? [], live.events, 120);
-    const tasks = mergeByPath((index.recent_tasks ?? []).map(withDisplayPath), live.tasks, 80);
-    const contextPacks = mergeByPath((index.recent_context_packs ?? []).map(withDisplayPath), live.context_packs, 80);
-    const traces = mergeByPath((index.recent_traces ?? []).map(withTraceDisplay), live.traces, 80).map(withTraceDisplay);
+    const events = mergeEvents(index.recent_events ?? [], live.events, stateLimits.events);
+    const tasks = mergeTasksByPath(
+      [...(index.active_tasks ?? []), ...(index.recent_tasks ?? [])].map(withDisplayPath),
+      live.tasks,
+      stateLimits.tasks,
+    );
+    const contextPacks = mergeByPath((index.recent_context_packs ?? []).map(withDisplayPath), live.context_packs, stateLimits.context_packs);
+    const traces = mergeByPath((index.recent_traces ?? []).map(withTraceDisplay), live.traces, stateLimits.traces).map(withTraceDisplay);
     return decorate({
       ok: true,
       summary: {
@@ -1617,7 +1942,7 @@ async function state() {
         context_pack_count: Math.max(index.counts?.context_packs ?? 0, contextPacks.length),
         active_task_count: tasks.filter((task) => task.status === "started").length,
         last_event_at: events[0]?.at ?? null,
-        memory_audit_count: audits.length,
+        memory_audit_count: auditCount,
       },
       events,
       tasks,
@@ -1629,12 +1954,45 @@ async function state() {
 
   return decorate({
     ok: true,
-    summary: { ...summarize(live.events.slice().reverse(), live.tasks, live.context_packs), memory_audit_count: audits.length },
+    summary: { ...summarize(live.events.slice().reverse(), live.tasks, live.context_packs), memory_audit_count: auditCount },
     events: live.events,
     tasks: live.tasks,
     context_packs: live.context_packs,
     traces: live.traces,
     memory_audits: audits,
+  });
+}
+
+async function getState() {
+  return cachedResource("state", "state", buildState);
+}
+
+async function getGraph(existingState = null) {
+  const operationState = existingState ?? await getState();
+  const key = String(operationState?.summary?.generated_at ?? "state-missing");
+  return cachedResource("graph", key, async () => withActivityGraph(await readWikiGraph(), operationState));
+}
+
+async function getReadiness(existingState = null) {
+  const operationState = existingState ?? await getState();
+  const key = String(operationState?.summary?.generated_at ?? "state-missing");
+  return cachedResource("readiness", key, () => buildReadiness(operationState));
+}
+
+async function getSnapshot() {
+  return cachedResource("snapshot", "snapshot", async () => {
+    const operationState = await getState();
+    const [graph, completionReadiness] = await Promise.all([
+      getGraph(operationState),
+      getReadiness(operationState),
+    ]);
+    return {
+      ok: operationState.ok === true,
+      generated_at: new Date().toISOString(),
+      state: operationState,
+      graph,
+      readiness: completionReadiness,
+    };
   });
 }
 
@@ -3124,85 +3482,98 @@ function html() {
         ["path", audit._path]
       ] : []);
     }
+    const pollIntervalMs = 3000;
+    let pollInFlight = false;
     async function tick() {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
-        const [stateResponse, graphResponse, readinessResponse] = await Promise.all([
-          fetch("/api/state", { cache: "no-store" }),
-          fetch("/api/graph", { cache: "no-store" }),
-          fetch("/api/readiness", { cache: "no-store" }),
-        ]);
-        render(await stateResponse.json());
-        renderGraph(await graphResponse.json());
-        renderReadiness(await readinessResponse.json());
+        const response = await fetch("/api/snapshot", { cache: "no-store" });
+        if (!response.ok) throw new Error("snapshot request failed: " + response.status);
+        const snapshot = await response.json();
+        render(snapshot.state);
+        renderGraph(snapshot.graph);
+        renderReadiness(snapshot.readiness);
       } catch (error) {
         statusEl.textContent = "disconnected";
+      } finally {
+        pollInFlight = false;
+        window.setTimeout(tick, pollIntervalMs);
       }
     }
     tick();
-    setInterval(tick, 1200);
   </script>
 </body>
 </html>`;
 }
 
-const server = http.createServer(async (request, response) => {
-  if (request.url === "/api/health") {
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify({
-      ok: true,
-      observatory_version: observatoryVersion,
-      app_root: root,
-      data_root: dataRoot,
-      graph_health: await readGraphHealth(),
-      endpoints: ["/api/health", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],
-    }, null, 2));
-    return;
-  }
-
-  if (request.url === "/api/readiness") {
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify(await readiness(), null, 2));
-    return;
-  }
-
-  if (request.url === "/api/graph-health") {
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify(await readGraphHealth(), null, 2));
-    return;
-  }
-
-  if (request.url === "/api/state") {
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify(await state(), null, 2));
-    return;
-  }
-
-  if (request.url === "/api/graph") {
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify(withActivityGraph(await readWikiGraph(), await state()), null, 2));
-    return;
-  }
-
+function sendJson(response, value) {
+  const body = JSON.stringify(value, null, 2);
   response.writeHead(200, {
-    "content-type": "text/html; charset=utf-8",
+    "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    "content-length": Buffer.byteLength(body, "utf8"),
   });
-  response.end(html());
+  response.end(body);
+}
+
+const server = http.createServer(async (request, response) => {
+  resourceCounters.http_requests += 1;
+  resourceCounters.http_active += 1;
+  resourceCounters.http_peak_active = Math.max(resourceCounters.http_peak_active, resourceCounters.http_active);
+  try {
+    if (request.url === "/api/health") {
+      const graphHealth = await readGraphHealth();
+      sendJson(response, {
+        ok: true,
+        observatory_version: observatoryVersion,
+        app_root: root,
+        data_root: dataRoot,
+        graph_health: graphHealth,
+        cache: cacheHealth(),
+        resources: {
+          ...resourceCounters,
+          state_payload_budget_bytes: statePayloadBudgetBytes,
+          process_memory: process.memoryUsage(),
+        },
+        endpoints: ["/api/health", "/api/snapshot", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],
+      });
+      return;
+    }
+
+    if (request.url === "/api/snapshot") {
+      sendJson(response, await getSnapshot());
+      return;
+    }
+
+    if (request.url === "/api/readiness") {
+      sendJson(response, await getReadiness());
+      return;
+    }
+
+    if (request.url === "/api/graph-health") {
+      sendJson(response, await readGraphHealth());
+      return;
+    }
+
+    if (request.url === "/api/state") {
+      sendJson(response, await getState());
+      return;
+    }
+
+    if (request.url === "/api/graph") {
+      sendJson(response, await getGraph());
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    response.end(html());
+  } finally {
+    resourceCounters.http_active = Math.max(0, resourceCounters.http_active - 1);
+  }
 });
 
 server.listen(port, host, () => {

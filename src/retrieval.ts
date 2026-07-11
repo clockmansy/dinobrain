@@ -11,6 +11,10 @@ import { getIndexedPackItems, queryIndexedWiki, type IndexedRetrievalStats } fro
 
 type RetrievalStats = IndexedRetrievalStats | SqliteRetrievalStats;
 
+export type ContextPackRetrievalOptions = {
+  includeRecentTasks?: boolean;
+};
+
 export async function searchWiki(
   dataRoot: string,
   query: string,
@@ -26,9 +30,10 @@ export async function getContextPackItems(
   dataRoot: string,
   question: string,
   limit: number,
+  options: ContextPackRetrievalOptions = {},
 ): Promise<{ records: RankedRecord[]; ranked: RankedRecord[]; stats: RetrievalStats }> {
   if (!(await sqliteShardExists(dataRoot, "wiki"))) {
-    return await getIndexedPackItems(dataRoot, question, limit);
+    return await getIndexedPackItems(dataRoot, question, limit, options);
   }
 
   const { index: denseVectorIndex } = await loadDenseVectorIndexWithLiveQuery(dataRoot, question);
@@ -37,8 +42,9 @@ export async function getContextPackItems(
     rankLimit: Math.max(limit * 200, 1000),
     denseVectorIndex,
   });
-  const recentTasks =
-    (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
+  const recentTasks = options.includeRecentTasks === false
+    ? []
+    : (await collectRecentTaskRecordsFromSqlite(dataRoot, 10)) ?? (await collectRecentTaskRecords(dataRoot, 10));
   const records = [...sqlite.records, ...recentTasks];
   const ranked = rankRecordsHybridV2(records, question, { limit, denseVectorIndex, contextPackBudget: true });
 

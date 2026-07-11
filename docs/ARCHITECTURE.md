@@ -1,7 +1,7 @@
 # DinoBrain Architecture
 
-Date: 2026-07-01
-Status: Phase 1 foundation
+Date: 2026-07-11
+Status: OS v2 completion execution
 
 ## Purpose
 
@@ -93,6 +93,12 @@ Live OS records use `.dino/index/operations-index.json`.
 
 The MCP server updates this index when it writes tasks, traces, Context Packs, and events. Recent-task retrieval and Observatory state read this index before falling back to legacy directory scans. See `docs/OPERATIONS_INDEX.md`.
 
+## Evaluation Isolation And Resource Boundary
+
+Normal Context Packs may use recent task records. Versioned RAG and answer-quality evaluations explicitly exclude them so test prompts, judge tasks, and prior evaluation output cannot satisfy their own golden cases. Answer calibration binds the golden, generated answer hashes, combined answer/retrieval runtime identity, dense index, judge protocol, judge IDs, and durable review artifact.
+
+Live semantic query vectors use a bounded LRU. A process keeps at most the configured semantic pipeline count and serializes inference per pipeline. Observatory coalesces in-flight state work, serves one bounded snapshot DTO, and polls only after the prior refresh completes. Multiple live stdio MCP connections still create separate processes and can duplicate one model residency per process; a shared embedding sidecar remains later scale work.
+
 ## SQLite Shards
 
 SQLite shards are the preferred speed layer over the JSON manifests.
@@ -135,7 +141,7 @@ The following are intentionally deferred:
 - multi-user permission model
 - external fact ingestion
 - automatic push without policy checks
-- vector search before keyword/frontmatter retrieval is proven
+- shared cross-process embedding service for eliminating per-MCP model residency
 - unredacted full transcript storage
 
 ## Phase 5 Promotion And Demotion Boundary

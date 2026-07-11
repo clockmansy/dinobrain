@@ -111,7 +111,7 @@ export async function evaluateBehaviorMemoryLift(
 
   const results = [];
   for (const behaviorCase of golden.cases) {
-    const pack = await getContextPackItems(dataRoot, behaviorCase.request, options.packLimit ?? 8);
+    const pack = await getContextPackItems(dataRoot, behaviorCase.request, options.packLimit ?? 8, { includeRecentTasks: false });
     const returnedPaths = unique(pack.ranked.map((record) => record.path));
     const expectedPaths = unique(behaviorCase.expected_memory_paths);
     const requiredTerms = unique([...(behaviorCase.required_context_terms ?? []), ...(behaviorCase.expected_behavior_terms ?? [])]);
