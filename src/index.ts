@@ -847,7 +847,10 @@ async function buildSyncPlan(options: {
   };
 }
 
-async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation> {
+async function observeGateSyncRisk(
+  request: string,
+  options: { taskId?: string; allowedPaths?: string[]; allowConditional?: boolean } = {},
+): Promise<SyncRiskObservation> {
   const intent = detectRequestActionIntent(request);
   if (!intent.data_sync) {
     return {
@@ -861,6 +864,70 @@ async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation
   }
 
   try {
+    if (options.taskId && Array.isArray(options.allowedPaths) && options.allowedPaths.length > 0) {
+      const scopeResolution = await resolveTaskSyncScope({
+        dataRoot: DATA_ROOT,
+        taskId: options.taskId,
+        requestedPaths: options.allowedPaths,
+      });
+      if (!scopeResolution.ok) {
+        return {
+          status: "blocked",
+          scope: "task_scope",
+          task_id: options.taskId,
+          changed_file_count: 0,
+          requested_path_count: scopeResolution.requested_path_count,
+          selected_path_count: scopeResolution.selected_path_count,
+          out_of_scope_changed_count: 0,
+          syncable_count: 0,
+          conditional_count: 0,
+          blocked_count: Math.max(1, scopeResolution.rejected_paths.length),
+          reason_codes: scopeResolution.reason_codes,
+        };
+      }
+      const scopeEntries = new Map(scopeResolution.entries.map((entry) => [entry.path, entry]));
+      const plan = await buildSyncPlan({
+        includeSensitiveScan: true,
+        allowConditionalAutoSync: options.allowConditional === true,
+        dryRun: false,
+        wouldPush: false,
+        candidatePaths: new Set(scopeEntries.keys()),
+        scopeEntries,
+      });
+      if (!plan.ok) {
+        return {
+          status: "unavailable",
+          scope: "task_scope",
+          task_id: options.taskId,
+          changed_file_count: 0,
+          requested_path_count: scopeResolution.requested_path_count,
+          selected_path_count: scopeResolution.selected_path_count,
+          out_of_scope_changed_count: 0,
+          syncable_count: 0,
+          conditional_count: 0,
+          blocked_count: 0,
+          reason_codes: ["task_scoped_sync_plan_unavailable"],
+        };
+      }
+      const unresolved = plan.files.filter(
+        (file) => !isAutoSyncAllowed(file, options.allowConditional === true, scopeEntries.get(file.path)),
+      );
+      const blockedCount = unresolved.filter((file) => file.classification === "blocked").length;
+      const reviewCount = unresolved.filter((file) => file.classification === "conditional").length;
+      return {
+        status: blockedCount > 0 ? "blocked" : reviewCount > 0 ? "review_required" : "clean",
+        scope: "task_scope",
+        task_id: options.taskId,
+        changed_file_count: plan.changed_file_count,
+        requested_path_count: scopeResolution.requested_path_count,
+        selected_path_count: scopeResolution.selected_path_count,
+        out_of_scope_changed_count: plan.out_of_scope_changed_count,
+        syncable_count: plan.summary.syncable,
+        conditional_count: plan.summary.conditional,
+        blocked_count: blockedCount,
+        reason_codes: Array.from(new Set(unresolved.flatMap((file) => file.reasons))).slice(0, 24),
+      };
+    }
     const plan = await buildSyncPlan({
       includeSensitiveScan: true,
       dryRun: true,
@@ -869,6 +936,7 @@ async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation
     if (!plan.ok) {
       return {
         status: "unavailable",
+        scope: "repository",
         changed_file_count: 0,
         syncable_count: 0,
         conditional_count: 0,
@@ -883,6 +951,7 @@ async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation
         : "clean";
     return {
       status,
+      scope: "repository",
       changed_file_count: plan.changed_file_count,
       syncable_count: plan.summary.syncable,
       conditional_count: plan.summary.conditional,
@@ -899,6 +968,8 @@ async function observeGateSyncRisk(request: string): Promise<SyncRiskObservation
   } catch (error) {
     return {
       status: "unavailable",
+      scope: options.taskId && options.allowedPaths?.length ? "task_scope" : "repository",
+      task_id: options.taskId ?? null,
       changed_file_count: 0,
       syncable_count: 0,
       conditional_count: 0,
@@ -3243,13 +3314,25 @@ registerTool(
       request: z.string().min(1),
       task_id: z.string().optional(),
       context_pack_path: z.string().optional(),
+      allowed_paths: z.array(z.string()).default([]),
+      allow_conditional: z.boolean().default(false),
       context_item_count: z.number().int().min(0).default(0),
       has_context_pack: z.boolean().default(false),
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
       backup_risk: z.boolean().optional(),
     },
   },
-  async ({ request, task_id, context_pack_path, context_item_count, has_context_pack, sensitivity, backup_risk }) => {
+  async ({
+    request,
+    task_id,
+    context_pack_path,
+    allowed_paths,
+    allow_conditional,
+    context_item_count,
+    has_context_pack,
+    sensitivity,
+    backup_risk,
+  }) => {
     const sanitized = sanitizeTaskRequest(request);
     const gateTaskId = task_id?.trim() || makeTaskId(sanitized.request);
     const contextEvidence = await deriveGateContextEvidence({
@@ -3258,7 +3341,11 @@ registerTool(
       declaredHasContextPack: has_context_pack,
       declaredContextItemCount: context_item_count,
     });
-    const syncObservation = await observeGateSyncRisk(request);
+    const syncObservation = await observeGateSyncRisk(request, {
+      taskId: task_id?.trim() || undefined,
+      allowedPaths: allowed_paths,
+      allowConditional: allow_conditional,
+    });
     const gates = evaluateActionGates({
       request,
       hasContextPack: contextEvidence.hasContextPack,
@@ -3284,6 +3371,8 @@ registerTool(
       verified_context_item_count: contextEvidence.contextItemCount,
       context_declaration_mismatch: contextEvidence.declarationMismatch,
       declared_backup_risk: backup_risk ?? null,
+      requested_allowed_paths: allowed_paths,
+      allow_conditional,
       backup_risk_source: "os_observed_sync_plan",
       observed_tools: observedOsTools(),
       sync_observation: syncObservation,

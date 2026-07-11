@@ -32,7 +32,12 @@ export type ActionGateInput = {
 
 export type SyncRiskObservation = {
   status: "not_requested" | "clean" | "review_required" | "blocked" | "unavailable";
+  scope?: "repository" | "task_scope";
+  task_id?: string | null;
   changed_file_count: number;
+  requested_path_count?: number;
+  selected_path_count?: number;
+  out_of_scope_changed_count?: number;
   syncable_count: number;
   conditional_count: number;
   blocked_count: number;

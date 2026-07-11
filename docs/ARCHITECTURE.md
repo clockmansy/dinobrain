@@ -174,6 +174,14 @@ live local scope ledger; pre-push and full-history scans independently recheck
 the public receipt and committed blobs. A repository-wide Git lock serializes
 automatic stage/commit/push operations.
 
+For a data-publication action, `os_gate` accepts an exact requested path set but
+does not trust it directly. The server resolves those paths against the task's
+local scope ledger, rechecks current hashes, Git blob identities, approval
+state, and classifier results, and reports unrelated dirty files separately as
+out of scope. An unregistered, changed, pending, or blocked requested path
+still fails closed; unrelated backlog cannot veto an otherwise verified scoped
+operation.
+
 Scope filenames include the scope policy version. An installer/update can start
 a v2 ledger without rewriting or trusting an in-flight v1 ledger; artifacts
 must be registered again by current v2 writers before they become syncable.

@@ -814,6 +814,13 @@ missing/forged receipt rejection, task-record enforcement, post-review tamper
 rejection, and detached-trailer rejection. The one-time fully scanned root is a
 migration baseline; every later conditional commit is receipt-gated.
 
+`os_gate` also accepts an exact task allowlist for publication checks and
+derives its observation from the server-owned scope ledger rather than caller
+self-report. It revalidates current SHA-256/Git blob/approval/classification,
+reports neighboring dirty backlog as out of scope, permits only a clean exact
+scope, and rejects unregistered paths. This removes the prior whole-worktree
+false block without weakening fail-closed behavior.
+
 HG-09/HG-12 remain `NOT_COMPLETE` until one real receipted data-remote push,
 encrypted restore, clean-machine equivalence, and final audit are independently
 cleared.

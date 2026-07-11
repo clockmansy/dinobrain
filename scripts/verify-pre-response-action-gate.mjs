@@ -347,6 +347,45 @@ async function main() {
     assert(syncBlocked.sync_observation?.status === "blocked", "OS did not independently observe blocked sync paths");
     assert(syncBlocked.gates.some((gate) => gate.id === "sync_policy_blocked"), "Blocked sync reason absent");
 
+    const scopedRoot = makeRoot("gate-scoped-sync");
+    const scopedClient = await connect(scopedRoot);
+    clients.push(scopedClient);
+    const scopedBegin = await call(scopedClient, "os_begin_task", {
+      request: "Prepare one exact task-scoped publication proof.",
+      project: "gate-verifier",
+      sensitivity: "normal",
+    });
+    writeFileSync(path.join(scopedRoot, ".dino", "events", "unrelated-private-backlog.jsonl"), "{}\n", "utf8");
+    const scopedAllowed = await call(scopedClient, "os_gate", {
+      request: "Sync the DinoBrain data repo to GitHub using the exact task allowlist.",
+      task_id: scopedBegin.task_id,
+      context_pack_path: scopedBegin.context_pack.trace_path,
+      has_context_pack: true,
+      context_item_count: scopedBegin.context_pack.item_count,
+      sensitivity: "normal",
+      allowed_paths: [scopedBegin.task_path],
+      allow_conditional: true,
+    });
+    assert(scopedAllowed.fail_closed === false, "Verified task-scoped sync was blocked by unrelated backlog");
+    assert(scopedAllowed.sync_observation?.scope === "task_scope", "Scoped sync observation did not identify its scope");
+    assert(scopedAllowed.sync_observation?.status === "clean", "Verified task scope was not clean");
+    assert(scopedAllowed.sync_observation?.selected_path_count === 1, "Scoped sync selected the wrong path count");
+    assert(scopedAllowed.sync_observation?.out_of_scope_changed_count > 0, "Unrelated backlog was not observed out of scope");
+    const scopedRejected = await call(scopedClient, "os_gate", {
+      request: "Sync the DinoBrain data repo to GitHub using an unregistered path.",
+      task_id: scopedBegin.task_id,
+      context_pack_path: scopedBegin.context_pack.trace_path,
+      has_context_pack: true,
+      context_item_count: scopedBegin.context_pack.item_count,
+      sensitivity: "normal",
+      allowed_paths: ["20_Wiki/unregistered.md"],
+      allow_conditional: true,
+    });
+    assert(scopedRejected.fail_closed === true, "Unregistered task-scoped path did not fail closed");
+    assert(scopedRejected.sync_observation?.scope === "task_scope", "Rejected scope lost task-scope evidence");
+    assert(scopedRejected.gates.some((gate) => gate.id === "sync_policy_blocked"), "Unregistered scope block reason absent");
+    await finish(scopedClient, scopedBegin, "Task-scoped sync gate verified.");
+
     const hookRoot = makeRoot("gate-hook-order");
     const reportRoot = path.join(hookRoot, "hook-reports");
     const hook = runHook(hookRoot, reportRoot);
@@ -407,6 +446,9 @@ async function main() {
           sensitive_persistence_blocked: true,
           destructive_action_blocked: true,
           observed_sync_blocked: true,
+          verified_task_scoped_sync_allowed: true,
+          unrelated_sync_backlog_excluded: true,
+          unregistered_task_scope_blocked: true,
           hook_event_order: names,
           hook_context_delivery_verified: true,
           sensitive_hook_growth_and_sync_skipped: true,

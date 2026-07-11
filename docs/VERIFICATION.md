@@ -466,6 +466,8 @@ The fixture requires all of the following:
 - conditional artifacts require the exact task record and one hash-bound public receipt in the same commit
 - pre-push recomputes the receipt, task binding, artifact identities, and commit trailers
 - missing, forged, changed, or trailer-detached receipts block
+- `os_gate` derives risk from the server-verified task allowlist, permits a clean
+  scope despite unrelated dirty backlog, and blocks unregistered requested paths
 - neighboring dirty backlog remains unchanged
 - a second invocation returns `no_op`
 - a push failure after commit returns `retry_required` with the commit SHA
