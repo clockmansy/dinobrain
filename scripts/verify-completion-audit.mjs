@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [{ COMPLETION_ARTIFACTS, COMPLETION_COMMANDS, COMPLETION_GATES, HARD_GATE_IDS }, { runCompletionAudit, verifyCompletionEvidencePack }] =
+const [{ COMPLETION_ARTIFACTS, COMPLETION_COMMANDS, COMPLETION_EXTERNAL_EVIDENCE, COMPLETION_GATES, HARD_GATE_IDS }, { runCompletionAudit, verifyCompletionEvidencePack }] =
   await Promise.all([
     import(pathToFileURL(path.join(root, "dist", "completion-registry.js")).href),
     import(pathToFileURL(path.join(root, "dist", "completion-evidence.js")).href),
@@ -34,6 +34,16 @@ async function main() {
   assert(COMPLETION_COMMANDS.length === concurrencyStart + 5, "completion registry must end with three concurrency runs, status refresh, and final goal verification");
   assert(COMPLETION_GATES.every((gate) => gate.command_ids.length > 0), "gate without commands found");
   assert(COMPLETION_GATES.every((gate) => gate.artifact_ids.length > 0), "gate without artifacts found");
+  const lifecycleSoakEvidence = COMPLETION_EXTERNAL_EVIDENCE.find((entry) => entry.id === "task_lifecycle_soak");
+  assert(
+    lifecycleSoakEvidence?.gates.includes("HG-03") && lifecycleSoakEvidence?.gates.includes("HG-10"),
+    "signed 24-hour lifecycle soak must gate HG-03 and HG-10",
+  );
+  assert(
+    COMPLETION_COMMANDS.some((entry) => entry.npm_script === "soak:lifecycle:check") &&
+      COMPLETION_COMMANDS.some((entry) => entry.npm_script === "soak:lifecycle:verify"),
+    "completion command registry must check current lifecycle soak evidence and execute its regression",
+  );
   const fullMemoryArtifact = COMPLETION_ARTIFACTS.find((entry) => entry.id === "full_memory_audit");
   assert(
     JSON.stringify(fullMemoryArtifact?.accepted_statuses) === JSON.stringify(["healthy", "drift_classified"]),
@@ -143,6 +153,7 @@ async function main() {
             "registry_scripts_exist_in_package",
             "local_repo_paths_are_not_persisted",
             "classified_full_memory_drift_is_accepted",
+            "signed_24_hour_lifecycle_soak_is_mandatory",
           ],
         },
         null,

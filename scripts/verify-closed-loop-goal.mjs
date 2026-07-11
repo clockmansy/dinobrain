@@ -341,6 +341,8 @@ function nextActionFor(requirementEvidence) {
       return "Run npm run task:lifecycle and inspect .dino/state/task_sessions.json plus .dino/state/task_finish_grounding_classifications.jsonl, then repair or settle missing terminal traces before rerunning npm run verify:goal.";
     case "task_lifecycle_auto_settlement_failed":
       return "Run npm run task:lifecycle:settle -- --apply only after reviewing deterministic repair candidates, then rerun npm run task:lifecycle and npm run verify:goal.";
+    case "real_client_lifecycle_soak_not_verified":
+      return "Run npm run soak:lifecycle:show to inspect an active run or npm run soak:lifecycle:begin to start one. Keep app/data refs unchanged for 24 real hours, create fresh Codex and Claude direct-MCP proofs near the end, run npm run soak:lifecycle:finalize, then rerun npm run verify:goal.";
     case "rag_semantic_provider_not_configured":
     case "rag_text_hashing_scaffold_only":
     case "rag_deterministic_canary_only":
@@ -537,6 +539,20 @@ function main() {
         "Current task lifecycle settlement must have no remaining auto-close candidates.",
       command: node,
       args: ["dist/build-task-lifecycle-settlement.js"],
+    }),
+    runCheck({
+      id: "lifecycle_soak_regression",
+      description:
+        "Lifecycle soak must reject early, one-client, ref-drifted, payload-tampered, and referenced-file-tampered evidence.",
+      command: node,
+      args: ["scripts/verify-task-lifecycle-soak.mjs"],
+    }),
+    runCheck({
+      id: "lifecycle_soak_current",
+      description:
+        "Current release candidate must have a fresh signed 24-hour real Codex and Claude lifecycle soak with immutable refs and zero blockers.",
+      command: node,
+      args: ["scripts/check-task-lifecycle-soak.mjs"],
     }),
     runCheck({
       id: "observatory_evidence",
@@ -860,6 +876,15 @@ function main() {
         byId.task_lifecycle_settlement_current.ok === true
           ? null
           : "task_lifecycle_auto_settlement_failed",
+    },
+    {
+      requirement: "real_client_lifecycle_soak_24h",
+      ok: byId.lifecycle_soak_regression.ok === true && byId.lifecycle_soak_current.ok === true,
+      evidence: "lifecycle_soak_regression + fresh signed lifecycle_soak_current",
+      blocker:
+        byId.lifecycle_soak_regression.ok === true && byId.lifecycle_soak_current.ok === true
+          ? null
+          : "real_client_lifecycle_soak_not_verified",
     },
     {
       requirement: "observatory_health_gate_alignment",

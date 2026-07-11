@@ -24,6 +24,7 @@ import {
   type CompletionAuditPointer,
 } from "./readiness.js";
 import { validateCleanMachineEquivalenceEvidenceFile } from "./clean-machine-equivalence.js";
+import { validateTaskLifecycleSoakEvidenceFile } from "./task-lifecycle-soak.js";
 
 const execFileAsync = promisify(execFile);
 const COMPLETION_AUDIT_VERSION = "completion_audit_v1";
@@ -781,6 +782,20 @@ export async function runCompletionAudit(options: CompletionAuditOptions): Promi
           entry.status = "FAIL";
           entry.fresh = false;
           entry.reason = `clean_machine_evidence_invalid:${validation.errors.slice(0, 8).join("|")}`;
+        }
+      }
+      if (entry.status === "PASS" && spec.id === "task_lifecycle_soak") {
+        const evidencePath = path.resolve(suppliedPath);
+        const resolvedDataRoot = path.resolve(dataRoot);
+        const insideDataRoot =
+          evidencePath !== resolvedDataRoot && evidencePath.startsWith(`${resolvedDataRoot}${path.sep}`);
+        const validation = insideDataRoot
+          ? await validateTaskLifecycleSoakEvidenceFile(evidencePath, { dataRoot: resolvedDataRoot })
+          : { ok: false, errors: ["evidence_path_outside_data_root"] };
+        if (!validation.ok) {
+          entry.status = "FAIL";
+          entry.fresh = false;
+          entry.reason = `task_lifecycle_soak_invalid:${validation.errors.slice(0, 8).join("|")}`;
         }
       }
     }

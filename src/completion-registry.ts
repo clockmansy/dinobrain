@@ -1,4 +1,4 @@
-export const COMPLETION_CONTRACT_VERSION = "completion_contract_20260710_v1";
+export const COMPLETION_CONTRACT_VERSION = "completion_contract_20260710_v2";
 
 export const HARD_GATE_IDS = [
   "HG-01",
@@ -84,6 +84,8 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("task:lifecycle:verify", ["HG-03"]),
   command("task:lifecycle:settle", ["HG-03"]),
   command("task:lifecycle:settle:verify", ["HG-03"]),
+  command("soak:lifecycle:check", ["HG-03", "HG-10"]),
+  command("soak:lifecycle:verify", ["HG-03", "HG-10"]),
   command("memory:lifecycle", ["HG-05", "HG-06", "HG-10"]),
   command("memory:lifecycle:verify", ["HG-05", "HG-06", "HG-10"]),
   command("review:settle", ["HG-06"]),
@@ -455,6 +457,12 @@ export const COMPLETION_EXTERNAL_EVIDENCE: CompletionExternalEvidenceSpec[] = [
     gates: ["HG-01", "HG-02", "HG-09", "HG-11"],
     freshness_ms: null,
     description: "Clean Windows machine install/update/rollback/uninstall proof with both clients",
+  },
+  {
+    id: "task_lifecycle_soak",
+    gates: ["HG-03", "HG-10"],
+    freshness_ms: 2 * DAY_MS,
+    description: "Signed 24-hour real Codex and Claude lifecycle soak with immutable refs and zero new blockers",
   },
   {
     id: "github_release_asset",

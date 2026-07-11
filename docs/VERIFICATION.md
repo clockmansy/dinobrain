@@ -92,7 +92,7 @@ derive from or match that authority. `npm run build` and `npm run check` invoke
 this verification before TypeScript work.
 
 `npm run completion:audit` is the evidence-producing wrapper around the
-normative command table. The current registry expands to 72 mandatory command
+normative command table. The current registry expands to 92 mandatory command
 instances; the plan-only output is the exact authority when the registry
 changes. It writes only bounded command metadata and stdout/stderr
 hashes, not raw command output, under:
@@ -110,7 +110,7 @@ version drift, or generation mismatch produce `NOT_COMPLETE`.
 
 Use `npm run completion:audit -- --plan-only --allow-not-complete` to create a
 truthful baseline without executing the mandatory suite. This still records all
-56 commands as `BLOCKED`; it can never certify completion. Use repeated
+92 commands as `BLOCKED`; it can never certify completion. Use repeated
 `--external evidence_id=.dino/proofs/...json` arguments only for hash-bound JSON
 proof stored inside the data root. Run `npm run completion:audit:verify` to test
 partial-run rejection, failing-command rejection, manifest integrity, tamper
@@ -155,6 +155,8 @@ publication files leak.
 `npm run task:lifecycle:settle` writes `.dino/state/task_lifecycle_settlement.json`. By default it is a dry-run and fails when lifecycle blockers remain. With `-- --apply`, it creates a Git recovery ref, exact local-only backups, and a hash-chained migration ledger before mutating deterministic repair shapes. Non-user service tasks and stale no-trace user tasks are closed as blocked, stale `started` tasks may inherit an outcome only from a grounded task-matched trace, terminal tasks can be bound to an existing trace without rewriting that trace, and blocked tasks receive a reconstructed trace only when no task-matched trace exists. Post-apply lifecycle invariants must be zero or the migration rolls back automatically.
 
 `npm run task:lifecycle:settle -- --rollback <migration-id>` verifies the immutable ledger and backup hashes, rejects conflicting external writes, restores prior files byte-for-byte, removes migration-created traces, and rebuilds lifecycle status. `npm run task:lifecycle:settle:verify` proves successful apply, exact rollback/reapply, interruption recovery, tamper-safe rollback refusal, concurrent apply serialization, terminal task/trace transaction recovery, existing-trace binding without trace mutation, and idempotent no-op apply while preserving recent active work.
+
+`npm run soak:lifecycle:begin` starts the release-candidate lifecycle soak from a clean app worktree and blocker-free task lifecycle baseline. The descriptor and Ed25519 private key stay under the machine-local DinoBrain proof root, outside the app and data repositories. Keep the app and data Git commits unchanged for at least 24 real hours, use both real Codex and Claude clients, and create fresh direct-MCP v2 proofs near the end of the window. `npm run soak:lifecycle:show` reports the active run without exposing the private key. After the full duration, `npm run soak:lifecycle:finalize` refuses early, stale, one-client, ref-drifted, dirty-app, or lifecycle-blocked runs and writes a signed, hash-bound public proof under `60_Operations/lifecycle-soak/`. `npm run soak:lifecycle:check` is the current-vault gate, `npm run soak:lifecycle:verify` provides adversarial fixture coverage, and final certification imports the completed proof with `--external task_lifecycle_soak=<data-root>/60_Operations/lifecycle-soak/<run-id>.json`.
 
 `npm run rag:proof` writes `.dino/evaluations/rag-golden.json`, `.dino/index/dense-vectors.json`, and `.dino/state/rag_proof_status.json` from the current reviewed behavior golden and Wiki index. Every sparse and dense row carries a bounded contextual chunk, source hash, parent record, language, lifecycle, verification, and retrieval-lane contract. A configured MiniLM provider produces semantic vectors; deterministic text hashing remains an honestly labeled fallback and cannot satisfy HG-04.
 

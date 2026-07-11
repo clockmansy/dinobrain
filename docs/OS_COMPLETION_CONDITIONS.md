@@ -422,6 +422,8 @@ the current-vault artifacts named above.
 | Lifecycle regression | `npm run task:lifecycle:verify` | HG-03 regression coverage |
 | Lifecycle settlement | `npm run task:lifecycle:settle` | HG-03 requires no pending deterministic repair |
 | Settlement regression | `npm run task:lifecycle:settle:verify` | HG-03 regression coverage |
+| Real-client lifecycle soak | `npm run soak:lifecycle:check` | HG-03/HG-10 require fresh signed, hash-bound 24-hour Codex+Claude evidence with immutable refs and zero new blockers |
+| Lifecycle soak regression | `npm run soak:lifecycle:verify` | Rejects early, one-client, payload-tampered, and referenced-file-tampered evidence |
 | Memory lifecycle | `npm run memory:lifecycle` | HG-05/HG-06/HG-10 require a healthy current-vault lifecycle report |
 | Memory lifecycle regression | `npm run memory:lifecycle:verify` | HG-05/HG-06/HG-10 require atomic, reversible, idempotent transitions |
 | Review settlement | `npm run review:settle` | HG-06 requires bounded classified queues |
@@ -518,6 +520,8 @@ $commands = @(
   'npm run task:lifecycle:verify',
   'npm run task:lifecycle:settle',
   'npm run task:lifecycle:settle:verify',
+  'npm run soak:lifecycle:check',
+  'npm run soak:lifecycle:verify',
   'npm run memory:lifecycle',
   'npm run memory:lifecycle:verify',
   'npm run review:settle',

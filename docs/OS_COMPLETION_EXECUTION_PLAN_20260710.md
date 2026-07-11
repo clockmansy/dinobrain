@@ -68,7 +68,7 @@ release evidence required by the normative contract.
 The first foundation slice is implemented and remains intentionally
 `NOT_COMPLETE`:
 
-- FND-01 now has a typed 12-gate registry, 78 mandatory command instances,
+- FND-01 now has a typed 12-gate registry, 92 mandatory command instances,
   bounded command-result ledger, hashed artifact manifest, verdict-last atomic
   publication, post-write integrity verification, and tamper regression tests;
 - the first current-vault plan-only evidence pack is
@@ -416,6 +416,20 @@ blocked for missing terminal evidence rather than claiming completion. The
 post-apply vault has zero stale active tasks, expired leases, missing/orphan
 trace bindings, ungrounded finishes, auto-close candidates, or manual repair
 requirements. The 24-hour real-client soak remains independently pending.
+
+**Implementation update (2026-07-12):** the 24-hour soak is now a mechanical
+external-evidence gate rather than a documentation-only promise.
+`soak:lifecycle:begin` binds a clean app ref, unchanged data ref, blocker-free
+baseline, machine-local Ed25519 identity, and the baseline task set.
+`soak:lifecycle:finalize` cannot run before 24 real hours and requires fresh
+server-validated Codex and Claude direct-MCP v2 proofs whose durable tasks were
+created inside the window, zero final lifecycle blockers, immutable refs, and a
+clean app worktree. It publishes only signed, hash-bound task/trace/proof
+metadata under `60_Operations/lifecycle-soak/`; the completion audit validates
+the signature and every referenced file hash. The adversarial verifier covers
+early finalization, missing Claude, payload tamper, and referenced-proof tamper.
+The implementation is complete, but the real 24-hour run remains pending until
+its clock has actually elapsed and its evidence is imported.
 
 ### Phase 2 - Memory Lifecycle And Knowledge Compounding (P0/P1, 5-8 engineer-days)
 
