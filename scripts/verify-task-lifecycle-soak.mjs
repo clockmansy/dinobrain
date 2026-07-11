@@ -96,6 +96,13 @@ async function main() {
     const begun = await soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt });
     assert(begun.descriptor.status === "running", "soak did not start");
     assert(begun.descriptor.baseline.counts.blockers === 0, "fixture baseline was not healthy");
+    if (process.platform === "win32") {
+      const keyAcl = execFileSync("icacls", [path.join(localStateRoot, "attestation-ed25519-private.pem")], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      assert(!/\(I\)/i.test(keyAcl), "lifecycle soak private key retained inherited Windows ACL entries");
+    }
 
     const originalDescriptor = readFileSync(begun.descriptorPath, "utf8");
     const tamperedDescriptor = JSON.parse(originalDescriptor);
@@ -244,6 +251,7 @@ async function main() {
       checks: [
         "minimum_24_hour_duration_enforced",
         "signed_start_timestamp_tamper_blocked",
+        "private_key_acl_hardened",
         "clean_app_and_immutable_refs_bound",
         "blocker_free_baseline_and_final_bound",
         "fresh_codex_and_claude_proofs_required",

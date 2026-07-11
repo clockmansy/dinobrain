@@ -231,6 +231,31 @@ async function fileSha256(filePath: string): Promise<string> {
   return sha256Bytes(await fs.readFile(filePath));
 }
 
+async function hardenPrivateKeyPermissions(filePath: string): Promise<void> {
+  await fs.chmod(filePath, 0o600);
+  if (process.platform !== "win32") return;
+  const identity = await execFileAsync("whoami", ["/user", "/fo", "csv", "/nh"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  const sid = identity.stdout.match(/"(S-[0-9-]+)"\s*$/m)?.[1];
+  if (!sid) throw new Error("Could not resolve the current Windows SID for lifecycle soak key ACL");
+  await execFileAsync(
+    "icacls",
+    [
+      filePath,
+      "/inheritance:r",
+      "/grant:r",
+      `*${sid}:(F)`,
+      "*S-1-5-18:(F)",
+      "*S-1-5-32-544:(F)",
+    ],
+    { windowsHide: true, encoding: "utf8" },
+  );
+  const acl = await execFileAsync("icacls", [filePath], { windowsHide: true, encoding: "utf8" });
+  if (/\(I\)/i.test(acl.stdout)) throw new Error("Lifecycle soak private key still has inherited Windows ACL entries");
+}
+
 function lifecyclePayload(report: TaskLifecycleReport): unknown {
   return {
     version: report.version,
@@ -275,6 +300,7 @@ async function loadOrCreateAttestationKey(localStateRoot: string): Promise<{
       await atomicCreateText(filePath, pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString(), 0o600);
     }
   });
+  await hardenPrivateKeyPermissions(filePath);
   const privateKey = createPrivateKey(await fs.readFile(filePath, "utf8"));
   const publicKeyDer = createPublicKey({
     key: privateKey.export({ format: "pem", type: "pkcs8" }),
