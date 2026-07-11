@@ -394,18 +394,18 @@ async function generateCorpus(root: string, recordCount: number, sessionCount: n
     const candidatePath = path.join(root, ".dino", "scale-lineage", `candidate-${suffix}.json`);
     const reviewPath = path.join(root, ".dino", "scale-lineage", `review-${suffix}.json`);
     const candidateRelative = `.dino/scale-lineage/candidate-${suffix}.json`;
-    await fs.writeFile(candidatePath, JSON.stringify({
+    await atomicWriteJson(candidatePath, {
       candidate_id: `scale-candidate-${suffix}`,
       status: "reviewed",
       claim: clusterText(cluster),
       sensitivity: "normal",
-    }), "utf8");
-    await fs.writeFile(reviewPath, JSON.stringify({
+    });
+    await atomicWriteJson(reviewPath, {
       review_id: `scale-review-${suffix}`,
       status: "approved",
       candidate_path: candidateRelative,
       reviewer: "scale-proof-generator",
-    }), "utf8");
+    });
   });
 
   const manifestEntries = new Array<string>(recordCount);
@@ -439,7 +439,7 @@ async function generateCorpus(root: string, recordCount: number, sessionCount: n
     if (relativePath.startsWith("50_Instances/accepted/")) Object.assign(record, lifecycleFields(relativePath, cluster, at));
     const raw = JSON.stringify(record);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, raw, "utf8");
+    await atomicWriteText(absolutePath, raw);
     const modified = new Date(baseTime - age.days * DAY_MS);
     await fs.utimes(absolutePath, modified, modified);
     manifestEntries[index] = `${relativePath}\u0000${sha256(raw)}`;
@@ -490,7 +490,7 @@ async function generateCorpus(root: string, recordCount: number, sessionCount: n
     const values = [[taskRelative, taskRaw], [traceRelative, traceRaw], [packRelative, packRaw]] as const;
     for (let offset = 0; offset < values.length; offset += 1) {
       const [relativePath, raw] = values[offset] ?? ["", ""];
-      await fs.writeFile(path.join(root, ...relativePath.split("/")), raw, "utf8");
+      await atomicWriteText(path.join(root, ...relativePath.split("/")), raw);
       sessionEntries[index * 3 + offset] = `${relativePath}\u0000${sha256(raw)}`;
     }
     for (let eventIndex = 0; eventIndex < 4; eventIndex += 1) {
@@ -501,7 +501,7 @@ async function generateCorpus(root: string, recordCount: number, sessionCount: n
       });
     }
   });
-  await fs.writeFile(path.join(root, ".dino", "events", "2026-07-01.jsonl"), `${eventLines.join("\n")}\n`, "utf8");
+  await atomicWriteText(path.join(root, ".dino", "events", "2026-07-01.jsonl"), `${eventLines.join("\n")}\n`);
   for (const clusterPaths of recordPathsByCluster) clusterPaths.sort((left, right) => left.localeCompare(right));
 
   return {

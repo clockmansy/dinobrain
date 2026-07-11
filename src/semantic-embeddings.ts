@@ -24,6 +24,10 @@ type SemanticPipelineFactory = (params: {
 }) => Promise<SemanticExtractor>;
 
 const DEFAULT_PIPELINE_CACHE_CAPACITY = 1;
+const DEFAULT_EMBEDDING_BATCH_SIZE = 4;
+const MAX_EMBEDDING_BATCH_SIZE = 64;
+const DEFAULT_MAX_INPUT_CHARS = 2_000;
+const MAX_INPUT_CHARS = 32_000;
 const pipelineCache = new Map<string, Promise<SemanticExtractor>>();
 const inferenceQueues = new Map<string, Promise<void>>();
 let pipelineConstructions = 0;
@@ -35,6 +39,18 @@ function pipelineCacheCapacity(): number {
   const configured = Number(process.env.DINOBRAIN_SEMANTIC_PIPELINE_CACHE_CAPACITY ?? DEFAULT_PIPELINE_CACHE_CAPACITY);
   if (!Number.isFinite(configured)) return DEFAULT_PIPELINE_CACHE_CAPACITY;
   return Math.max(1, Math.min(4, Math.floor(configured)));
+}
+
+function embeddingBatchSize(): number {
+  const configured = Number(process.env.DINOBRAIN_SEMANTIC_BATCH_SIZE ?? DEFAULT_EMBEDDING_BATCH_SIZE);
+  if (!Number.isFinite(configured)) return DEFAULT_EMBEDDING_BATCH_SIZE;
+  return Math.max(1, Math.min(MAX_EMBEDDING_BATCH_SIZE, Math.floor(configured)));
+}
+
+function maxInputChars(): number {
+  const configured = Number(process.env.DINOBRAIN_SEMANTIC_MAX_INPUT_CHARS ?? DEFAULT_MAX_INPUT_CHARS);
+  if (!Number.isFinite(configured)) return DEFAULT_MAX_INPUT_CHARS;
+  return Math.max(256, Math.min(MAX_INPUT_CHARS, Math.floor(configured)));
 }
 
 async function defaultPipelineFactory(params: {
@@ -114,7 +130,7 @@ async function runSerializedInference(key: string, pipeline: SemanticExtractor, 
   await previous;
   try {
     inferenceCalls += 1;
-    return await pipeline(texts, { pooling: "mean", normalize: true });
+    return await pipeline(texts, { pooling: "mean", normalize: true, truncation: true });
   } finally {
     release();
     if (inferenceQueues.get(key) === queued) inferenceQueues.delete(key);
@@ -127,6 +143,8 @@ export function getSemanticPipelineCacheStats(): {
   constructions: number;
   disposals: number;
   inference_calls: number;
+  batch_size: number;
+  max_input_chars: number;
 } {
   return {
     entries: pipelineCache.size,
@@ -134,6 +152,8 @@ export function getSemanticPipelineCacheStats(): {
     constructions: pipelineConstructions,
     disposals: pipelineDisposals,
     inference_calls: inferenceCalls,
+    batch_size: embeddingBatchSize(),
+    max_input_chars: maxInputChars(),
   };
 }
 
@@ -191,7 +211,13 @@ export async function tryEmbedTextsWithSemanticProvider(texts: string[]): Promis
   try {
     const cached = getPipeline(model, cacheDir, allowRemoteModels);
     const extractor = await cached.pipeline;
-    const vectors = toVectorRows(await runSerializedInference(cached.key, extractor, texts), texts.length);
+    const boundedTexts = texts.map((text) => text.slice(0, maxInputChars()));
+    const vectors: number[][] = [];
+    const batchSize = embeddingBatchSize();
+    for (let offset = 0; offset < boundedTexts.length; offset += batchSize) {
+      const batch = boundedTexts.slice(offset, offset + batchSize);
+      vectors.push(...toVectorRows(await runSerializedInference(cached.key, extractor, batch), batch.length));
+    }
     return {
       provider: HUGGINGFACE_TRANSFORMERS_PROVIDER,
       model,

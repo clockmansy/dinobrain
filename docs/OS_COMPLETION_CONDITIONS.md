@@ -303,6 +303,8 @@ PASS requires:
 Required evidence:
 
 - `.dino/index/graph-health.json`;
+- `.dino/state/current-status-generation.json` plus the immutable manifest;
+- `.dino/state/current-completion-audit.json` bound to that generation;
 - `.dino/state/health_status.json`;
 - `.dino/state/monitoring_status.json`;
 - Observatory verification plus current screenshot/API evidence.
@@ -409,6 +411,7 @@ the current-vault artifacts named above.
 | Completion runner | `npm run completion:audit:verify` | HG-08/HG-10/HG-12 require ledger, manifest, verdict, and tamper-detection integrity |
 | Atomic writers | `npm run atomic:writers:verify` | HG-03/HG-10 require zero direct production state writers and valid concurrent publication |
 | Status generation | `npm run status:generation:verify` | HG-08/HG-10/HG-12 require crash-safe pointer publication and zero mixed-generation reads |
+| Readiness parity | `npm run readiness:verify` | HG-08/HG-12 require identical gate status, reason, proof, freshness, generation, and next action across CLI/API/UI/graph/health |
 | Prompt eligibility | `npm run prompt:eligibility:verify` | HG-01/HG-03/HG-06 require zero durable internal jobs, idempotent duplicate hooks, lease ownership, and visible timeout blocking |
 | Pre-response action gate | `npm run pre-response:gate:verify` | HG-01/HG-02/HG-09 require OS-observed context/tool/freshness/sensitivity/sync evidence, ordered delivery, and fail-closed risk fixtures |
 | Freshness | `npm run status:freshness:verify` | HG-08/HG-12 require fresh coherent evidence |
@@ -496,6 +499,7 @@ $commands = @(
   'npm run completion:audit:verify',
   'npm run atomic:writers:verify',
   'npm run status:generation:verify',
+  'npm run readiness:verify',
   'npm run prompt:eligibility:verify',
   'npm run pre-response:gate:verify',
   'npm run audit:full-memory',

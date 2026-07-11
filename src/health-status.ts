@@ -1,30 +1,11 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { atomicWriteJson } from "./concurrency.js";
-import { ANSWER_QUALITY_STATUS_RELATIVE_PATH } from "./answer-quality.js";
-import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
-import { BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH } from "./behavior-recall-migration.js";
-import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
-import { COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
-import { CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH } from "./controlled-compounding.js";
 import { dataPath } from "./context.js";
-import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
-import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
-import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.js";
-import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
-import { RAG_EVAL_STATUS_RELATIVE_PATH } from "./rag-eval.js";
-import { RAG_PROOF_STATUS_RELATIVE_PATH } from "./rag-proof.js";
-import { RELEASE_MANIFEST_STATUS_RELATIVE_PATH } from "./release-manifest.js";
-import { REVIEW_QUEUE_STATUS_RELATIVE_PATH, SEMANTIC_JOBS_RELATIVE_PATH } from "./review-settlement.js";
-import { REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH } from "./review-backpressure.js";
-import { REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH } from "./review-worklist-actions.js";
-import { SOURCE_LINEAGE_STATUS_RELATIVE_PATH } from "./source-lineage.js";
-import { TASK_LIFECYCLE_STATUS_RELATIVE_PATH } from "./task-lifecycle.js";
-import { TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH } from "./task-lifecycle-settlement.js";
-import { NODE_LIFECYCLE_STATUS_PATH } from "./lifecycle.js";
+import { FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
+import { buildReadiness, type BuildReadinessOptions, type ReadinessFreshness } from "./readiness.js";
 
-export const HEALTH_STATUS_VERSION = "health_status_v1";
+export const HEALTH_STATUS_VERSION = "health_status_v2";
 export const HEALTH_STATUS_RELATIVE_PATH = `${FULL_MEMORY_STATE_DIR}/health_status.json`;
 
 export type HealthCheckStatus = "healthy" | "needs_attention" | "missing";
@@ -32,6 +13,7 @@ export type HealthCheckStatus = "healthy" | "needs_attention" | "missing";
 export type HealthCheck = {
   id: string;
   artifact_path: string;
+  proof_paths: string[];
   status: HealthCheckStatus;
   artifact_report_status: string | null;
   generated_at: string | null;
@@ -39,11 +21,16 @@ export type HealthCheck = {
   last_computed_at: string;
   authority_rank: number;
   stale_after_ms: number;
+  freshness: ReadinessFreshness;
   reason: string | null;
+  next_safe_action: string;
 };
 
 export type HealthStatusReport = {
   version: typeof HEALTH_STATUS_VERSION;
+  readiness_version: string;
+  readiness_parity_hash: string;
+  generation_id: string | null;
   status: "healthy" | "needs_attention";
   generated_at: string;
   latest_verified_at: string | null;
@@ -59,221 +46,47 @@ export type HealthStatusReport = {
   visible_status: string;
 };
 
-type BuildOptions = {
-  now?: Date;
+type BuildOptions = BuildReadinessOptions & {
   staleAfterMs?: number;
 };
-
-type JsonObject = Record<string, unknown>;
-
-type HealthArtifactSpec = {
-  id: string;
-  artifactPath: string;
-  authorityRank: number;
-  healthyStatuses: string[];
-};
-
-const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
-  {
-    id: "full_memory_audit",
-    artifactPath: FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
-    authorityRank: 100,
-    healthyStatuses: ["healthy", "baseline_created", "drift_classified"],
-  },
-  {
-    id: "client_mcp_direct_status",
-    artifactPath: CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
-    authorityRank: 95,
-    healthyStatuses: ["verified"],
-  },
-  {
-    id: "native_instruction_authority",
-    artifactPath: NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
-    authorityRank: 94,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "source_lineage",
-    artifactPath: SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
-    authorityRank: 93,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "behavior_recall_evidence_migration",
-    artifactPath: BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
-    authorityRank: 93,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "behavior_recall",
-    artifactPath: BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
-    authorityRank: 92,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "controlled_compounding",
-    artifactPath: CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH,
-    authorityRank: 91,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "review_queue_settlement",
-    artifactPath: REVIEW_QUEUE_STATUS_RELATIVE_PATH,
-    authorityRank: 80,
-    healthyStatuses: ["ready", "classified_backlog"],
-  },
-  {
-    id: "semantic_jobs",
-    artifactPath: SEMANTIC_JOBS_RELATIVE_PATH,
-    authorityRank: 80,
-    healthyStatuses: ["ready", "classified_backlog"],
-  },
-  {
-    id: "review_queue_backpressure",
-    artifactPath: REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH,
-    authorityRank: 88,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "review_worklist_actions",
-    artifactPath: REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH,
-    authorityRank: 87,
-    healthyStatuses: ["ready", "empty"],
-  },
-  {
-    id: "cold_partitions",
-    artifactPath: COLD_PARTITION_STATUS_RELATIVE_PATH,
-    authorityRank: 86,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "task_lifecycle",
-    artifactPath: TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
-    authorityRank: 85,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "task_lifecycle_settlement",
-    artifactPath: TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
-    authorityRank: 85,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "node_lifecycle",
-    artifactPath: NODE_LIFECYCLE_STATUS_PATH,
-    authorityRank: 89,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "rag_proof",
-    artifactPath: RAG_PROOF_STATUS_RELATIVE_PATH,
-    authorityRank: 75,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "rag_eval",
-    artifactPath: RAG_EVAL_STATUS_RELATIVE_PATH,
-    authorityRank: 75,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "live_semantic_query",
-    artifactPath: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
-    authorityRank: 75,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "answer_quality",
-    artifactPath: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
-    authorityRank: 75,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "release_manifest",
-    artifactPath: RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
-    authorityRank: 72,
-    healthyStatuses: ["healthy"],
-  },
-  {
-    id: "graph_health",
-    artifactPath: GRAPH_HEALTH_RELATIVE_PATH,
-    authorityRank: 70,
-    healthyStatuses: ["healthy"],
-  },
-];
-
-function nowIso(date: Date): string {
-  return date.toISOString();
-}
-
-async function readJson<T>(filePath: string): Promise<T | null> {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function maxIso(values: Array<string | null>): string | null {
-  const dates = values.filter((value): value is string => Boolean(value));
-  if (dates.length === 0) return null;
-  return dates.sort((a, b) => b.localeCompare(a))[0] ?? null;
-}
-
-function healthStatusFor(spec: HealthArtifactSpec, artifact: JsonObject | null): HealthCheckStatus {
-  if (!artifact) return "missing";
-  const status = firstString(artifact.status);
-  return status && spec.healthyStatuses.includes(status) ? "healthy" : "needs_attention";
-}
-
-function reasonFor(spec: HealthArtifactSpec, artifact: JsonObject | null, status: HealthCheckStatus): string | null {
-  if (status === "missing") return "artifact_missing";
-  if (status === "healthy") return null;
-  const artifactStatus = firstString(artifact?.status) ?? "unknown";
-  return `${spec.id}_reported_${artifactStatus}`;
-}
 
 export async function buildHealthStatus(
   dataRoot: string,
   options: BuildOptions = {},
 ): Promise<HealthStatusReport> {
-  const generatedAt = nowIso(options.now ?? new Date());
-  const staleAfterMs = options.staleAfterMs ?? 24 * 60 * 60 * 1000;
-  const checks: HealthCheck[] = [];
-
-  for (const spec of HEALTH_ARTIFACTS) {
-    const artifact = await readJson<JsonObject>(dataPath(dataRoot, ...spec.artifactPath.split("/")));
-    const status = healthStatusFor(spec, artifact);
-    checks.push({
-      id: spec.id,
-      artifact_path: spec.artifactPath,
-      status,
-      artifact_report_status: firstString(artifact?.status),
-      generated_at: firstString(artifact?.generated_at),
-      latest_verified_at: firstString(artifact?.latest_verified_at, artifact?.generated_at),
-      last_computed_at: generatedAt,
-      authority_rank: spec.authorityRank,
-      stale_after_ms: staleAfterMs,
-      reason: reasonFor(spec, artifact, status),
-    });
-  }
-
+  const now = options.now ?? new Date();
+  const staleAfterMs = options.staleAfterMs ?? options.generationStaleAfterMs ?? 24 * 60 * 60 * 1000;
+  const readiness = await buildReadiness(dataRoot, {
+    ...options,
+    now,
+    generationStaleAfterMs: staleAfterMs,
+  });
+  const checks: HealthCheck[] = readiness.gates.map((gate, index) => ({
+    id: gate.gate_id,
+    artifact_path: gate.proof_paths[0] ?? readiness.status_generation.artifact_path,
+    proof_paths: gate.proof_paths,
+    status: gate.operational_status === "PASS" ? "healthy" : "needs_attention",
+    artifact_report_status: gate.operational_status,
+    generated_at: readiness.status_generation.generated_at,
+    latest_verified_at: readiness.status_generation.generated_at,
+    last_computed_at: now.toISOString(),
+    authority_rank: 100 - index,
+    stale_after_ms: staleAfterMs,
+    freshness: gate.freshness,
+    reason: gate.operational_status === "PASS" ? null : gate.reason_codes[0] ?? "gate_not_healthy",
+    next_safe_action: gate.next_safe_action,
+  }));
   const needsAttention = checks.filter((check) => check.status === "needs_attention").length;
   const missing = checks.filter((check) => check.status === "missing").length;
   const status = needsAttention > 0 || missing > 0 ? "needs_attention" : "healthy";
   return {
     version: HEALTH_STATUS_VERSION,
+    readiness_version: readiness.version,
+    readiness_parity_hash: readiness.parity_hash,
+    generation_id: readiness.status_generation.generation_id,
     status,
-    generated_at: generatedAt,
-    latest_verified_at: maxIso(checks.map((check) => check.latest_verified_at)),
+    generated_at: now.toISOString(),
+    latest_verified_at: readiness.status_generation.generated_at,
     data_root: path.resolve(dataRoot),
     checks,
     counts: {

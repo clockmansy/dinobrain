@@ -803,6 +803,27 @@ clean-machine recovery evidence is supplied.
 **Acceptance:** injected blocker/staleness appears identically in CLI, API, and
 UI; parity verifier compares structured values rather than screenshots alone.
 
+**Implementation status (2026-07-11): OBS-01 implementation acceptance passed.**
+
+- `readiness_v2` is the sole 12-gate read model for CLI, health rollup,
+  Observatory API/UI, graph metadata, and graph-health metadata.
+- Every gate exposes status, operational status, completion-audit status,
+  reason codes, immutable proof paths, freshness, generation id, and the next
+  safe command. A stable structured `parity_hash` detects consumer drift.
+- The current completion audit pointer is hash-bound to one immutable status
+  generation. Missing, malformed, stale, source-drifted, snapshot-tampered, or
+  mixed-generation evidence cannot render green.
+- `npm run readiness:verify` proves healthy, warning, missing, stale, malformed,
+  mixed-generation, CLI/API/health/graph parity, UI endpoint consumption,
+  bounded polling, and a fixture Observatory RSS below 256 MiB.
+- Status-generation SQLite copy/hash verification is streaming. A 64 MiB
+  regression fixture increased RSS by only about 1.2 MiB under the 96 MiB
+  budget.
+- Semantic index refresh now embeds at most four bounded inputs per inference
+  batch and disposes the ONNX pipeline after refresh. On the current vault this
+  reduced peak refresh RSS from 3.38 GiB to 666 MiB and reduced elapsed time
+  from 24.5 seconds to 18.3 seconds.
+
 #### OBS-02: Evidence-bearing knowledge graph
 
 **Hard gates:** HG-05, HG-06, HG-08

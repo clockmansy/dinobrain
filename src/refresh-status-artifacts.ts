@@ -22,6 +22,7 @@ import { buildReviewQueueBackpressure } from "./review-backpressure.js";
 import { buildReviewWorklist } from "./review-worklist.js";
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { buildAndWriteSourceLineageReport } from "./source-lineage.js";
+import { disposeSemanticEmbeddingPipelines } from "./semantic-embeddings.js";
 import { buildAndWriteSqliteShards, SQLITE_MANIFEST_RELATIVE_PATH } from "./sqlite-shards.js";
 import { buildAndWriteStatusFreshness } from "./status-freshness.js";
 import { publishStatusGeneration, STATUS_GENERATION_POINTER_RELATIVE_PATH } from "./status-generation.js";
@@ -106,28 +107,32 @@ export async function refreshStatusArtifacts(
   await buildAndWriteSqliteShards(dataRoot);
   steps.push({ id: "sqlite_manifest", status: "written", path: SQLITE_MANIFEST_RELATIVE_PATH });
 
-  const ragProof = await buildAndWriteRagProof(dataRoot);
-  steps.push({ id: "rag_proof", status: ragProof.report.status, path: ragProof.statusPath });
+  try {
+    const ragProof = await buildAndWriteRagProof(dataRoot);
+    steps.push({ id: "rag_proof", status: ragProof.report.status, path: ragProof.statusPath });
 
-  const graph = await buildAndWriteGraphHealth(dataRoot);
-  steps.push({ id: "graph_health", status: graph.health.status, path: graph.path });
+    const graph = await buildAndWriteGraphHealth(dataRoot);
+    steps.push({ id: "graph_health", status: graph.health.status, path: graph.path });
 
-  const ragEval = await buildAndWriteRagEvalReport(dataRoot);
-  steps.push({ id: "rag_eval", status: ragEval.report.status, path: RAG_EVAL_STATUS_RELATIVE_PATH });
+    const ragEval = await buildAndWriteRagEvalReport(dataRoot);
+    steps.push({ id: "rag_eval", status: ragEval.report.status, path: RAG_EVAL_STATUS_RELATIVE_PATH });
 
-  const liveSemanticQuery = await buildAndWriteLiveSemanticQueryReport(dataRoot);
-  steps.push({
-    id: "live_semantic_query",
-    status: liveSemanticQuery.report.status,
-    path: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
-  });
+    const liveSemanticQuery = await buildAndWriteLiveSemanticQueryReport(dataRoot);
+    steps.push({
+      id: "live_semantic_query",
+      status: liveSemanticQuery.report.status,
+      path: LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
+    });
 
-  const answerQuality = await buildAndWriteAnswerQualityReport(dataRoot);
-  steps.push({
-    id: "answer_quality",
-    status: answerQuality.report.status,
-    path: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
-  });
+    const answerQuality = await buildAndWriteAnswerQualityReport(dataRoot);
+    steps.push({
+      id: "answer_quality",
+      status: answerQuality.report.status,
+      path: ANSWER_QUALITY_STATUS_RELATIVE_PATH,
+    });
+  } finally {
+    await disposeSemanticEmbeddingPipelines();
+  }
 
   const releaseManifest = await buildAndWriteReleaseManifestReport(dataRoot, { appRoot: process.cwd() });
   steps.push({
@@ -154,9 +159,6 @@ export async function refreshStatusArtifacts(
   const nativeAuthority = await buildAndWriteNativeInstructionAuthorityReport(dataRoot);
   steps.push({ id: "native_instruction_authority", status: nativeAuthority.report.status, path: nativeAuthority.path });
 
-  const health = await buildAndWriteHealthStatus(dataRoot);
-  steps.push({ id: "health_status", status: health.report.status, path: health.path });
-
   const freshness = await buildAndWriteStatusFreshness(dataRoot);
   steps.push({ id: "status_freshness", status: freshness.report.status, path: freshness.path });
 
@@ -166,6 +168,9 @@ export async function refreshStatusArtifacts(
     status: generation.pointer.status,
     path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
   });
+
+  const health = await buildAndWriteHealthStatus(dataRoot);
+  steps.push({ id: "health_status", status: health.report.status, path: health.path });
 
   const auditOk = !["drift_unclassified", "parse_error"].includes(audit.report.status);
 

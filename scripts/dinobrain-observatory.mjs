@@ -12,27 +12,29 @@ import {
   STATUS_GENERATION_ARTIFACT_PATHS,
   STATUS_GENERATION_POINTER_RELATIVE_PATH,
 } from "../dist/status-generation.js";
+import { buildReadiness as buildCanonicalReadiness } from "../dist/readiness.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-observatory-ram-v1";
+const observatoryVersion = "2026-07-11-readiness-v2";
 const execFileAsync = promisify(execFile);
-const readinessVersion = "observatory_readiness_v1";
 const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 2000);
 const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 2000;
 const configuredGenerationVerifyTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_GENERATION_VERIFY_TTL_MS ?? 30_000);
 const generationVerifyTtlMs = Number.isFinite(configuredGenerationVerifyTtlMs)
   ? Math.max(1_000, configuredGenerationVerifyTtlMs)
   : 30_000;
+const configuredSourceStatTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_SOURCE_STAT_TTL_MS ?? 1000);
+const sourceStatTtlMs = Number.isFinite(configuredSourceStatTtlMs) ? Math.max(100, configuredSourceStatTtlMs) : 1000;
 const statePayloadBudgetBytes = 256 * 1024;
 const statePayloadTargetBytes = 240 * 1024;
-const stateLimits = Object.freeze({ events: 60, tasks: 24, context_packs: 12, traces: 12, memory_audits: 8 });
-const graphWindowLimits = Object.freeze({ wiki_nodes: 380, total_nodes: 420, total_edges: 800 });
+const stateLimits = Object.freeze({ events: 40, tasks: 20, context_packs: 10, traces: 10, memory_audits: 8 });
+const graphWindowLimits = Object.freeze({ wiki_nodes: 300, total_nodes: 340, total_edges: 400 });
 const graphNodeTypeLimits = Object.freeze({ root: 32, folder: 80, kind: 16, tag: 60, wikilink: 12, record: 221 });
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
-let statusGenerationCache = { loaded_at: 0, pointer_signature: null, value: null, in_flight: null };
+let statusGenerationCache = { loaded_at: 0, source_checked_at: 0, pointer_signature: null, value: null, in_flight: null };
 const resourceCounters = {
   http_requests: 0,
   http_active: 0,
@@ -155,6 +157,7 @@ async function currentStatusGeneration() {
     statusGenerationCache.pointer_signature === pointerSignature &&
     Date.now() - statusGenerationCache.loaded_at < generationVerifyTtlMs;
   if (cacheFresh) {
+    if (Date.now() - statusGenerationCache.source_checked_at < sourceStatTtlMs) return statusGenerationCache.value;
     const manifestEntries = Array.isArray(statusGenerationCache.value?.manifest?.entries)
       ? statusGenerationCache.value.manifest.entries
       : [];
@@ -173,7 +176,10 @@ async function currentStatusGeneration() {
         break;
       }
     }
-    if (sourcesUnchanged) return statusGenerationCache.value;
+    if (sourcesUnchanged) {
+      statusGenerationCache.source_checked_at = Date.now();
+      return statusGenerationCache.value;
+    }
   }
   if (statusGenerationCache.in_flight) return statusGenerationCache.in_flight;
   resourceCounters.status_generation_verifications += 1;
@@ -183,6 +189,7 @@ async function currentStatusGeneration() {
   }).then((value) => {
     statusGenerationCache.value = value;
     statusGenerationCache.loaded_at = Date.now();
+    statusGenerationCache.source_checked_at = Date.now();
     statusGenerationCache.pointer_signature = pointerSignature;
     return value;
   }).finally(() => {
@@ -254,14 +261,6 @@ async function readStatusArtifact(relativePath) {
       error: error?.code === "ENOENT" ? null : String(error?.message ?? error),
     };
   }
-}
-
-function artifactWarnings(artifact) {
-  return Array.isArray(artifact?.value?.warnings) ? artifact.value.warnings.map(String) : [];
-}
-
-function artifactVisibleStatus(artifact, fallback = null) {
-  return String(artifact?.value?.visible_status ?? fallback ?? artifact?.value?.status ?? artifact?.artifact_parse_status ?? "unknown");
 }
 
 async function pathExists(filePath) {
@@ -994,76 +993,6 @@ async function readSyncRisk() {
   }
 }
 
-function statusOk(value, healthyStatuses = ["healthy", "verified", "ready", "clean"]) {
-  return healthyStatuses.includes(String(value ?? "").toLowerCase());
-}
-
-function hasGeneratedAnswerQualityEvidence(report) {
-  const metrics = report?.metrics ?? {};
-  return Boolean(
-    report?.status === "healthy" &&
-      report?.evaluator_class === "ragas_like_local" &&
-      Number(report?.counts?.cases ?? 0) > 0 &&
-      typeof metrics.faithfulness === "number" &&
-      typeof (metrics.answer_relevance ?? metrics.answer_relevancy) === "number" &&
-      typeof (metrics.correctness ?? metrics.answer_correctness) === "number" &&
-      typeof (metrics.grounding ?? metrics.source_support) === "number" &&
-      typeof metrics.average_memory_lift === "number",
-  );
-}
-
-function classifyRagCompletionBlocker(proof, evalReport, answerQualityReport) {
-  const denseVector = proof?.dense_vector;
-  if (denseVector?.semantic_embedding_provider !== true) return "rag_semantic_provider_not_configured";
-  if (denseVector?.provider === "local_text_hashing_v1") return "rag_text_hashing_scaffold_only";
-  if (!hasGeneratedAnswerQualityEvidence(answerQualityReport)) return "rag_answer_quality_eval_missing";
-  return null;
-}
-
-function classifyAnswerQualityBlocker(report) {
-  if (!report) return "answer_quality_status_missing";
-  if (report.status !== "healthy") return "answer_quality_not_healthy";
-  if (!hasGeneratedAnswerQualityEvidence(report)) return "answer_quality_missing_metrics";
-  return null;
-}
-
-function classifyLiveSemanticQueryBlocker(report) {
-  if (report?.status !== "healthy") return "live_semantic_query_not_healthy";
-  if (report?.proof?.status !== "generated_live_query_vector") return "live_semantic_query_not_on_the_fly";
-  if (report?.proof?.query_vector_preexisting === true) return "live_semantic_query_precomputed_only";
-  if (report?.proof?.on_the_fly_query_embedding !== true) return "live_semantic_query_embedding_missing";
-  if (report?.retrieval?.mode !== "hybrid_contextual_v2") return "live_semantic_query_not_hybrid";
-  if (!(report?.retrieval?.dense_reason_count > 0)) return "live_semantic_dense_topk_missing";
-  return null;
-}
-
-function hardGateFromArtifact({ id, label, artifact, expectedStatuses = ["healthy"], proofPath = null, missingTools = [], blockerReason = null }) {
-  const value = artifact.value;
-  const parseOk = artifact.artifact_parse_status === "ok";
-  const valueStatus = value?.status ?? null;
-  const ok = parseOk && statusOk(valueStatus, expectedStatuses) && !blockerReason;
-  return {
-    id,
-    label,
-    ok,
-    status: ok ? "healthy" : "needs_attention",
-    visible_status: ok ? artifactVisibleStatus(artifact, "healthy") : artifactVisibleStatus(artifact, "needs attention"),
-    blocker_reason:
-      blockerReason ??
-      (parseOk ? `${id}_not_healthy` : `${id}_${artifact.artifact_parse_status}`),
-    proof_path: proofPath,
-    artifact_path: artifact.artifact_path,
-    artifact_parse_status: artifact.artifact_parse_status,
-    artifact_report_status: valueStatus,
-    latest_verified_at: value?.latest_verified_at ?? value?.generated_at ?? null,
-    generated_at: value?.generated_at ?? null,
-    stale_after_ms: value?.stale_after_ms ?? null,
-    latest_migration: value?.latest_migration ?? null,
-    missing_tools: missingTools,
-    warnings: artifactWarnings(artifact),
-  };
-}
-
 function latestAuditForReadiness(audits) {
   const audit = audits?.[0];
   if (!audit) return null;
@@ -1083,380 +1012,14 @@ function latestAuditForReadiness(audits) {
   };
 }
 
-function laneItem(id, status, reason, pathValue = null) {
-  return { id, status, reason, path: pathValue };
-}
-
-async function buildReadiness(existingState = null) {
-  const [
-    statusGeneration,
-    healthArtifact,
-    clientArtifact,
-    nativeArtifact,
-    sourceArtifact,
-    recallMigrationArtifact,
-    recallArtifact,
-    compoundingArtifact,
-    taskArtifact,
-    settlementArtifact,
-    nodeLifecycleArtifact,
-    reviewBackpressureArtifact,
-    coldPartitionsArtifact,
-    ragProofArtifact,
-    vectorMigrationArtifact,
-    ragEvalArtifact,
-    liveSemanticQueryArtifact,
-    answerQualityArtifact,
-    scaleArtifact,
-    releaseManifestArtifact,
-    graphArtifact,
-    audits,
-  ] = await Promise.all([
-    currentStatusGeneration(),
-    readStatusArtifact(".dino/state/health_status.json"),
-    readStatusArtifact(".dino/state/client_mcp_direct_status.json"),
-    readStatusArtifact(".dino/state/native_instruction_authority.json"),
-    readStatusArtifact(".dino/state/source_lineage_status.json"),
-    readStatusArtifact(".dino/state/behavior_recall_evidence_migration.json"),
-    readStatusArtifact(".dino/state/behavior_recall_status.json"),
-    readStatusArtifact(".dino/state/controlled_compounding_status.json"),
-    readStatusArtifact(".dino/state/task_sessions.json"),
-    readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
-    readStatusArtifact(".dino/state/node_lifecycle.json"),
-    readStatusArtifact(".dino/state/review_queue_backpressure.json"),
-    readStatusArtifact(".dino/state/cold_partitions.json"),
-    readStatusArtifact(".dino/state/rag_proof_status.json"),
-    readStatusArtifact(".dino/state/vector_index_migration.json"),
-    readStatusArtifact(".dino/state/rag_eval_status.json"),
-    readStatusArtifact(".dino/state/live_semantic_query_status.json"),
-    readStatusArtifact(".dino/state/answer_quality_status.json"),
-    readStatusArtifact(".dino/evaluations/scale-50k-status.json"),
-    readStatusArtifact(".dino/state/release_manifest_status.json"),
-    readStatusArtifact(".dino/index/graph-health.json"),
-    existingState?.memory_audits ? Promise.resolve(existingState.memory_audits) : readAuditLogs(),
-  ]);
-  const generationArtifact = {
-    value: {
-      status: statusGeneration.status === "healthy" ? "healthy" : statusGeneration.status,
-      generated_at: statusGeneration.pointer?.generated_at ?? null,
-      generation_id: statusGeneration.pointer?.generation_id ?? null,
-      warnings: statusGeneration.errors,
-    },
-    artifact_parse_status: statusGeneration.status === "healthy" ? "ok" : `generation_${statusGeneration.status}`,
-    artifact_path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
-  };
-
-  const clientAgents = Array.isArray(clientArtifact.value?.agents) ? clientArtifact.value.agents : [];
-  const clientMissingTools = clientAgents.flatMap((agent) =>
-    Array.isArray(agent.missing_tools) ? agent.missing_tools.map((tool) => `${agent.agent}:${tool}`) : [],
-  );
-  const clientProofPath = clientAgents.map((agent) => agent.proof_path).filter(Boolean).join(" | ") || null;
-  const clientV2Parity =
-    clientArtifact.value?.release_parity_verified === true &&
-    ["codex", "claude"].every((agent) =>
-      clientAgents.some(
-        (entry) =>
-          entry?.agent === agent &&
-          entry?.status === "verified" &&
-          entry?.proof_version === "client_mcp_direct_proof_v2" &&
-          typeof entry?.challenge_id === "string" &&
-          typeof entry?.proof_sha256 === "string",
-      ),
-    );
-  const ragBlocker =
-    ragProofArtifact.artifact_parse_status === "ok" &&
-    ragEvalArtifact.artifact_parse_status === "ok" &&
-    answerQualityArtifact.artifact_parse_status === "ok"
-      ? classifyRagCompletionBlocker(ragProofArtifact.value, ragEvalArtifact.value, answerQualityArtifact.value)
-      : "rag_status_artifact_unavailable";
-  const liveSemanticBlocker =
-    liveSemanticQueryArtifact.artifact_parse_status === "ok"
-      ? classifyLiveSemanticQueryBlocker(liveSemanticQueryArtifact.value)
-      : "live_semantic_query_status_artifact_unavailable";
-  const answerQualityBlocker =
-    answerQualityArtifact.artifact_parse_status === "ok"
-      ? classifyAnswerQualityBlocker(answerQualityArtifact.value)
-      : "answer_quality_status_artifact_unavailable";
-
-  const hardGates = [
-    hardGateFromArtifact({
-      id: "status_generation",
-      label: "Atomic Status Generation",
-      artifact: generationArtifact,
-      expectedStatuses: ["healthy"],
-      blockerReason: statusGeneration.status === "healthy" ? null : statusGeneration.reason ?? "status_generation_invalid",
-    }),
-    hardGateFromArtifact({ id: "health_status", label: "Health Rollup", artifact: healthArtifact, expectedStatuses: ["healthy"] }),
-    hardGateFromArtifact({
-      id: "client_mcp_direct_status",
-      label: "Direct MCP Parity",
-      artifact: clientArtifact,
-      expectedStatuses: ["verified"],
-      proofPath: clientProofPath,
-      missingTools: clientMissingTools,
-      blockerReason: clientV2Parity ? null : "direct_mcp_v2_parity_not_verified",
-    }),
-    hardGateFromArtifact({
-      id: "native_instruction_authority",
-      label: "Native Instruction Authority",
-      artifact: nativeArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({ id: "source_lineage", label: "Source Lineage", artifact: sourceArtifact, expectedStatuses: ["healthy"] }),
-    hardGateFromArtifact({
-      id: "behavior_recall_evidence_migration",
-      label: "Behavior Evidence Migration",
-      artifact: recallMigrationArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({ id: "behavior_recall", label: "Behavior Recall", artifact: recallArtifact, expectedStatuses: ["healthy"] }),
-    hardGateFromArtifact({
-      id: "controlled_compounding",
-      label: "Controlled Compounding",
-      artifact: compoundingArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({ id: "task_lifecycle", label: "Task Lifecycle", artifact: taskArtifact, expectedStatuses: ["healthy"] }),
-    hardGateFromArtifact({
-      id: "task_lifecycle_settlement",
-      label: "Lifecycle Settlement",
-      artifact: settlementArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({
-      id: "node_lifecycle",
-      label: "Memory Node Lifecycle",
-      artifact: nodeLifecycleArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({
-      id: "review_queue_backpressure",
-      label: "Review Queue Backpressure",
-      artifact: reviewBackpressureArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({
-      id: "cold_partitions",
-      label: "Cold Time Partitions",
-      artifact: coldPartitionsArtifact,
-      expectedStatuses: ["healthy"],
-    }),
-    hardGateFromArtifact({
-      id: "rag_completion_grade",
-      label: "Semantic RAG + Answer Quality",
-      artifact: ragProofArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: ragProofArtifact.artifact_path,
-      blockerReason: ragBlocker,
-    }),
-    hardGateFromArtifact({
-      id: "vector_index_migration",
-      label: "Controlled Vector Migration",
-      artifact: vectorMigrationArtifact,
-      expectedStatuses: ["initialized", "same_identity_updated", "applied"],
-      proofPath: vectorMigrationArtifact.artifact_path,
-    }),
-    hardGateFromArtifact({
-      id: "rag_eval_quality",
-      label: "Generated Answer Evaluation",
-      artifact: ragEvalArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: ragEvalArtifact.artifact_path,
-      blockerReason: ragBlocker === null ? null : "rag_answer_quality_or_semantic_gate_not_complete",
-    }),
-    hardGateFromArtifact({
-      id: "live_semantic_query",
-      label: "Live Semantic Query",
-      artifact: liveSemanticQueryArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: liveSemanticQueryArtifact.artifact_path,
-      blockerReason: liveSemanticBlocker,
-    }),
-    hardGateFromArtifact({
-      id: "answer_quality",
-      label: "Answer Quality",
-      artifact: answerQualityArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: answerQualityArtifact.artifact_path,
-      blockerReason: answerQualityBlocker,
-    }),
-    hardGateFromArtifact({
-      id: "scale_50k",
-      label: "50k Scale + Latency",
-      artifact: scaleArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: scaleArtifact.artifact_path,
-      blockerReason: scaleArtifact.value?.qualifying === true ? null : "qualifying_50k_scale_proof_missing",
-    }),
-    hardGateFromArtifact({
-      id: "release_manifest",
-      label: "Release Manifest",
-      artifact: releaseManifestArtifact,
-      expectedStatuses: ["healthy"],
-      proofPath: releaseManifestArtifact.artifact_path,
-    }),
-    hardGateFromArtifact({ id: "graph_health", label: "Graph Health", artifact: graphArtifact, expectedStatuses: ["healthy"] }),
-  ];
-
-  const blockers = hardGates.filter((gate) => !gate.ok);
-  const reviewerPending = [];
-  const mainPending = [];
-  const verifierPending = [];
-  const recallCounts = recallArtifact.value?.counts ?? {};
-  const compoundingCounts = compoundingArtifact.value?.counts ?? {};
-  const reviewCounts = existingState?.lifecycle?.counts ?? {};
-  const ragProof = ragProofArtifact.value ?? {};
-  const ragEval = ragEvalArtifact.value ?? {};
-
-  if ((reviewCounts.promotion_reviews ?? 0) > (reviewCounts.accepted ?? 0)) {
-    reviewerPending.push(laneItem("review_queue", "pending", "promotion reviews remain visible", "80_Review_Queue/promotion"));
-  }
-  if (Number(compoundingCounts.controlled_candidates ?? 0) > 0) {
-    reviewerPending.push(laneItem(
-      "controlled_compounding_review",
-      "pending",
-      `${compoundingCounts.controlled_candidates} recurring behavior proposals await independent review`,
-      "80_Review_Queue/promotion",
-    ));
-  }
-  if (Number(recallCounts.handoff ?? 0) === 0) mainPending.push(laneItem("behavior_handoff", "pending", "no handoff recall coverage yet"));
-  if (Number(recallCounts.direction_change ?? 0) === 0) {
-    mainPending.push(laneItem("behavior_direction_change", "pending", "no direction-change recall coverage yet"));
-  }
-  if (Number(recallCounts.correction ?? 0) === 0) mainPending.push(laneItem("behavior_correction", "pending", "no correction recall coverage yet"));
-  if (ragProof?.dense_vector?.semantic_embedding_provider !== true) {
-    mainPending.push(laneItem("semantic_embedding_provider", "blocked", "completion-grade dense semantic provider missing", ragProofArtifact.artifact_path));
-  }
-  if (answerQualityBlocker) {
-    verifierPending.push(laneItem("answer_quality", "pending", answerQualityBlocker, answerQualityArtifact.artifact_path));
-  }
-  if (liveSemanticBlocker) {
-    verifierPending.push(
-      laneItem("live_semantic_query", "pending", liveSemanticBlocker, liveSemanticQueryArtifact.artifact_path),
-    );
-  }
-  verifierPending.push(laneItem("public_data_safety", "verify", "public-data safety proof is verified by CLI, not yet a dedicated Observatory artifact"));
-
-  const ok = blockers.length === 0;
+async function buildReadiness(existingState = null, loadedGeneration = null) {
+  const readiness = await buildCanonicalReadiness(dataRoot, {
+    loadedGeneration: loadedGeneration ?? await currentStatusGeneration(),
+    verifySourceCoherence: true,
+  });
   return {
-    ok,
-    version: readinessVersion,
-    generated_at: new Date().toISOString(),
-    data_root: dataRoot,
-    status: ok ? "ready" : "needs_attention",
-    visible_status: ok ? "Completion readiness green" : "Completion blockers visible",
-    status_generation: {
-      artifact_path: STATUS_GENERATION_POINTER_RELATIVE_PATH,
-      status: statusGeneration.status,
-      generation_id: statusGeneration.pointer?.generation_id ?? null,
-      generated_at: statusGeneration.pointer?.generated_at ?? null,
-      reason: statusGeneration.reason,
-      errors: statusGeneration.errors,
-    },
-    health_status: {
-      artifact_path: healthArtifact.artifact_path,
-      artifact_parse_status: healthArtifact.artifact_parse_status,
-      status: healthArtifact.value?.status ?? "missing",
-      checks: Array.isArray(healthArtifact.value?.checks) ? healthArtifact.value.checks : [],
-      warnings: artifactWarnings(healthArtifact),
-    },
-    node_lifecycle_status: {
-      artifact_path: nodeLifecycleArtifact.artifact_path,
-      artifact_parse_status: nodeLifecycleArtifact.artifact_parse_status,
-      status: nodeLifecycleArtifact.value?.status ?? "missing",
-      counts: nodeLifecycleArtifact.value?.counts ?? {},
-      transaction: nodeLifecycleArtifact.value?.transaction ?? nodeLifecycleArtifact.value?.last_applied_transaction ?? null,
-      recovery_ref: nodeLifecycleArtifact.value?.git?.recovery_ref ?? nodeLifecycleArtifact.value?.last_recovery_ref ?? null,
-    },
-    client_mcp_direct_status: {
-      artifact_path: clientArtifact.artifact_path,
-      artifact_parse_status: clientArtifact.artifact_parse_status,
-      status: clientArtifact.value?.status ?? "missing",
-      release_parity_verified: clientArtifact.value?.release_parity_verified === true,
-      agents: clientAgents,
-      warnings: artifactWarnings(clientArtifact),
-    },
-    rag_status: {
-      proof_artifact_parse_status: ragProofArtifact.artifact_parse_status,
-      eval_artifact_parse_status: ragEvalArtifact.artifact_parse_status,
-      provider: ragProof?.dense_vector?.provider ?? null,
-      semantic_embedding_provider: ragProof?.dense_vector?.semantic_embedding_provider === true,
-      blocker: ragBlocker,
-      eval_caveats: Array.isArray(ragEval?.caveats) ? ragEval.caveats : [],
-    },
-    vector_index_migration_status: {
-      artifact_path: vectorMigrationArtifact.artifact_path,
-      artifact_parse_status: vectorMigrationArtifact.artifact_parse_status,
-      status: vectorMigrationArtifact.value?.status ?? "missing",
-      migration_required: vectorMigrationArtifact.value?.migration_required === true,
-      migration_id: vectorMigrationArtifact.value?.migration_id ?? vectorMigrationArtifact.value?.latest_migration?.migration_id ?? null,
-      manifest_path: vectorMigrationArtifact.value?.manifest_path ?? vectorMigrationArtifact.value?.latest_migration?.manifest_path ?? null,
-      latest_migration_status: vectorMigrationArtifact.value?.latest_migration?.status ?? null,
-    },
-    live_semantic_query_status: {
-      artifact_path: liveSemanticQueryArtifact.artifact_path,
-      artifact_parse_status: liveSemanticQueryArtifact.artifact_parse_status,
-      status: liveSemanticQueryArtifact.value?.status ?? "missing",
-      blocker: liveSemanticBlocker,
-      proof: liveSemanticQueryArtifact.value?.proof ?? null,
-      retrieval: liveSemanticQueryArtifact.value?.retrieval ?? null,
-    },
-    answer_quality_status: {
-      artifact_path: answerQualityArtifact.artifact_path,
-      artifact_parse_status: answerQualityArtifact.artifact_parse_status,
-      status: answerQualityArtifact.value?.status ?? "missing",
-      blocker: answerQualityBlocker,
-      evaluator: answerQualityArtifact.value?.evaluator ?? null,
-      evaluator_class: answerQualityArtifact.value?.evaluator_class ?? null,
-      counts: answerQualityArtifact.value?.counts ?? null,
-      metrics: answerQualityArtifact.value?.metrics ?? null,
-    },
-    scale_50k_status: {
-      artifact_path: scaleArtifact.artifact_path,
-      artifact_parse_status: scaleArtifact.artifact_parse_status,
-      status: scaleArtifact.value?.status ?? "missing",
-      qualifying: scaleArtifact.value?.qualifying === true,
-      corpus: scaleArtifact.value?.corpus ?? null,
-      measurements: scaleArtifact.value?.measurements ?? null,
-      bounded_work: scaleArtifact.value?.bounded_work ?? null,
-      warnings: artifactWarnings(scaleArtifact),
-    },
-    controlled_compounding_status: {
-      artifact_path: compoundingArtifact.artifact_path,
-      artifact_parse_status: compoundingArtifact.artifact_parse_status,
-      status: compoundingArtifact.value?.status ?? "missing",
-      counts: compoundingCounts,
-      policy: compoundingArtifact.value?.policy ?? null,
-      blockers: Array.isArray(compoundingArtifact.value?.blockers) ? compoundingArtifact.value.blockers : [],
-      warnings: artifactWarnings(compoundingArtifact),
-    },
-    release_manifest_status: {
-      artifact_path: releaseManifestArtifact.artifact_path,
-      artifact_parse_status: releaseManifestArtifact.artifact_parse_status,
-      status: releaseManifestArtifact.value?.status ?? "missing",
-      package_version: releaseManifestArtifact.value?.package_version ?? null,
-      expected_tag: releaseManifestArtifact.value?.expected_tag ?? null,
-      blockers: Array.isArray(releaseManifestArtifact.value?.blockers) ? releaseManifestArtifact.value.blockers : [],
-      warnings: artifactWarnings(releaseManifestArtifact),
-      assets: releaseManifestArtifact.value?.assets ?? null,
-      tag: releaseManifestArtifact.value?.tag ?? null,
-    },
-    hard_gates: hardGates,
-    lanes: {
-      blockers,
-      reviewer_pending: reviewerPending,
-      main_pending: mainPending,
-      verifier_pending: verifierPending,
-    },
-    counts: {
-      blockers: blockers.length,
-      reviewer_pending: reviewerPending.length,
-      main_pending: mainPending.length,
-      verifier_pending: verifierPending.length,
-      hard_gates: hardGates.length,
-    },
-    latest_audit: latestAuditForReadiness(audits),
-    warnings: hardGates.flatMap((gate) => gate.warnings).filter(Boolean),
+    ...readiness,
+    latest_audit: latestAuditForReadiness(existingState?.memory_audits),
   };
 }
 
@@ -1957,6 +1520,132 @@ function projectStatePayload(payload) {
   });
 }
 
+function projectReadinessPayload(readiness) {
+  const compactGate = (gate) => ({
+    id: gate.id,
+    gate_id: gate.gate_id,
+    label: gate.label,
+    status: gate.status,
+    operational_status: gate.operational_status,
+    audit_status: gate.audit_status,
+    blocker_reason: gate.blocker_reason,
+    reason_codes: Array.isArray(gate.reason_codes) ? gate.reason_codes.slice(0, 4) : [],
+    proof_path: gate.proof_path,
+    freshness: gate.freshness,
+    generation_id: gate.generation_id,
+    next_safe_action: gate.next_safe_action,
+  });
+  return {
+    ok: readiness.ok,
+    version: readiness.version,
+    contract_version: readiness.contract_version,
+    generated_at: readiness.generated_at,
+    status: readiness.status,
+    operational_status: readiness.operational_status,
+    visible_status: readiness.visible_status,
+    parity_hash: readiness.parity_hash,
+    status_generation: {
+      ...readiness.status_generation,
+      errors: Array.isArray(readiness.status_generation?.errors) ? readiness.status_generation.errors.slice(0, 12) : [],
+      reason_codes: Array.isArray(readiness.status_generation?.reason_codes)
+        ? readiness.status_generation.reason_codes.slice(0, 12)
+        : [],
+    },
+    completion_audit: readiness.completion_audit,
+    health_status: {
+      ...readiness.health_status,
+      checks: Array.isArray(readiness.health_status?.checks)
+        ? readiness.health_status.checks.map((check) => ({
+            id: check.id,
+            status: check.status,
+            reason: check.reason,
+            freshness: check.freshness,
+          }))
+        : [],
+      warnings: Array.isArray(readiness.health_status?.warnings) ? readiness.health_status.warnings.slice(0, 12) : [],
+    },
+    node_lifecycle_status: boundedPayloadValue(readiness.node_lifecycle_status),
+    client_mcp_direct_status: boundedPayloadValue(readiness.client_mcp_direct_status),
+    rag_status: boundedPayloadValue(readiness.rag_status),
+    vector_index_migration_status: boundedPayloadValue(readiness.vector_index_migration_status),
+    live_semantic_query_status: boundedPayloadValue(readiness.live_semantic_query_status),
+    answer_quality_status: boundedPayloadValue(readiness.answer_quality_status),
+    scale_50k_status: boundedPayloadValue(readiness.scale_50k_status),
+    controlled_compounding_status: boundedPayloadValue(readiness.controlled_compounding_status),
+    release_manifest_status: boundedPayloadValue(readiness.release_manifest_status),
+    lanes: {
+      blockers: Array.isArray(readiness.lanes?.blockers) ? readiness.lanes.blockers.map(compactGate) : [],
+      reviewer_pending: Array.isArray(readiness.lanes?.reviewer_pending) ? readiness.lanes.reviewer_pending.slice(0, 12) : [],
+      main_pending: Array.isArray(readiness.lanes?.main_pending) ? readiness.lanes.main_pending.slice(0, 12) : [],
+      verifier_pending: Array.isArray(readiness.lanes?.verifier_pending) ? readiness.lanes.verifier_pending.slice(0, 12) : [],
+    },
+    counts: readiness.counts,
+    latest_audit: boundedPayloadValue(readiness.latest_audit),
+  };
+}
+
+function compactSerializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function enforceSnapshotPayloadBudget(snapshot) {
+  const projected = {
+    ...snapshot,
+    state: {
+      ...snapshot.state,
+      events: [...snapshot.state.events],
+      tasks: [...snapshot.state.tasks],
+      context_packs: [...snapshot.state.context_packs],
+      traces: [...snapshot.state.traces],
+      memory_audits: [...snapshot.state.memory_audits],
+    },
+    graph: {
+      ...snapshot.graph,
+      nodes: [...snapshot.graph.nodes],
+      edges: [...snapshot.graph.edges],
+    },
+  };
+  const trim = (items, floor, step) => {
+    if (items.length <= floor) return false;
+    items.length = Math.max(floor, items.length - step);
+    return true;
+  };
+  while (compactSerializedBytes(projected) > statePayloadTargetBytes) {
+    if (trim(projected.graph.edges, 200, 40)) continue;
+    if (trim(projected.state.events, 20, 5)) continue;
+    if (trim(projected.state.tasks, 10, 2)) continue;
+    if (trim(projected.state.traces, 5, 1)) continue;
+    if (trim(projected.state.context_packs, 5, 1)) continue;
+    if (trim(projected.state.memory_audits, 2, 1)) continue;
+    break;
+  }
+  projected.graph.stats = {
+    ...projected.graph.stats,
+    shown_nodes: projected.graph.nodes.length,
+    shown_edges: projected.graph.edges.length,
+    truncated:
+      projected.graph.stats?.truncated === true ||
+      projected.graph.edges.length < snapshot.graph.edges.length ||
+      projected.graph.nodes.length < snapshot.graph.nodes.length,
+  };
+  projected.state.payload = {
+    ...projected.state.payload,
+    serialized_bytes: compactSerializedBytes(projected.state),
+    within_budget: compactSerializedBytes(projected.state) < statePayloadBudgetBytes,
+  };
+  projected.payload = {
+    projection_version: "observatory_snapshot_projection_v1",
+    budget_bytes: statePayloadBudgetBytes,
+    target_bytes: statePayloadTargetBytes,
+    serialized_bytes: 0,
+    within_budget: false,
+  };
+  projected.payload.serialized_bytes = compactSerializedBytes(projected);
+  projected.payload.within_budget = projected.payload.serialized_bytes < statePayloadBudgetBytes;
+  projected.payload.serialized_bytes = compactSerializedBytes(projected);
+  return projected;
+}
+
 async function buildState() {
   const [audits, auditCount, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(stateLimits.memory_audits),
@@ -2074,13 +1763,30 @@ async function getState() {
 async function getGraph(existingState = null) {
   const operationState = existingState ?? await getState();
   const key = String(operationState?.summary?.generated_at ?? "state-missing");
-  return cachedResource("graph", key, async () => withActivityGraph(await readWikiGraph(), operationState));
+  return cachedResource("graph", key, async () => {
+    const [graph, readiness] = await Promise.all([
+      readWikiGraph(),
+      getReadiness(operationState),
+    ]);
+    return {
+      ...withActivityGraph(graph, operationState),
+      readiness: {
+        version: readiness.version,
+        parity_hash: readiness.parity_hash,
+        status: readiness.status,
+        operational_status: readiness.operational_status,
+        generation_id: readiness.status_generation?.generation_id ?? null,
+        gate_statuses: Object.fromEntries(readiness.gates.map((gate) => [gate.gate_id, gate.status])),
+      },
+    };
+  });
 }
 
 async function getReadiness(existingState = null) {
   const operationState = existingState ?? await getState();
-  const key = String(operationState?.summary?.generated_at ?? "state-missing");
-  return cachedResource("readiness", key, () => buildReadiness(operationState));
+  const generation = await currentStatusGeneration();
+  const key = `${String(operationState?.summary?.generated_at ?? "state-missing")}:${generation.pointer?.generation_id ?? generation.status}`;
+  return cachedResource("readiness", key, () => buildReadiness(operationState, generation));
 }
 
 async function getSnapshot() {
@@ -2090,13 +1796,13 @@ async function getSnapshot() {
       getGraph(operationState),
       getReadiness(operationState),
     ]);
-    return {
+    return enforceSnapshotPayloadBudget({
       ok: operationState.ok === true,
       generated_at: new Date().toISOString(),
       state: operationState,
       graph,
-      readiness: completionReadiness,
-    };
+      readiness: projectReadinessPayload(completionReadiness),
+    });
   });
 }
 
@@ -2714,7 +2420,7 @@ function html() {
     function renderLaneItems(items) {
       return Array.isArray(items) && items.length
         ? items.map((item) => \`
-          <div class="item"><code>\${esc(item.id || item.label || "")}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || item.blocker_reason || ""), 180))}</div><code>\${esc(item.path || item.proof_path || item.artifact_path || "")}</code></div>
+          <div class="item"><code>\${esc(item.id || item.label || "")}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || item.blocker_reason || item.reason_codes?.[0] || ""), 180))}</div><code>\${esc(item.path || item.proof_path || item.proof_paths?.[0] || item.artifact_path || "")}</code><div class="muted">\${esc(item.next_safe_action || "")}</div></div>
         \`).join("")
         : '<p class="muted">No items.</p>';
     }
@@ -2743,8 +2449,12 @@ function html() {
       );
       kv(readinessSummaryEl, [
         ["status", readiness.status],
+        ["operational", readiness.operational_status],
+        ["parity", readiness.parity_hash],
         ["generation", readiness.status_generation?.generation_id],
         ["generation health", readiness.status_generation?.status],
+        ["generation freshness", readiness.status_generation?.freshness],
+        ["completion audit", readiness.completion_audit?.status],
         ["blockers", readiness.counts?.blockers],
         ["reviewer pending", readiness.counts?.reviewer_pending],
         ["main pending", readiness.counts?.main_pending],
@@ -2769,7 +2479,7 @@ function html() {
         ...(readiness.lanes?.main_pending || []).map((item) => ({ ...item, id: "main:" + item.id })),
         ...(readiness.lanes?.verifier_pending || []).map((item) => ({ ...item, id: "verifier:" + item.id })),
       ].map((item) => \`
-        <div class="item"><code>\${esc(item.id)}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || ""), 180))}</div><code>\${esc(item.path || "")}</code></div>
+        <div class="item"><code>\${esc(item.id)}</code><div class="muted">\${esc(compact((item.status || "") + " / " + (item.reason || ""), 180))}</div><code>\${esc(item.path || "")}</code><div class="muted">\${esc(item.next_safe_action || "")}</div></div>
       \`).join("") || '<p class="muted">No pending lanes.</p>';
       const audit = readiness.latest_audit;
       readinessAuditPathsEl.innerHTML = audit ? [
@@ -3627,18 +3337,27 @@ const server = http.createServer(async (request, response) => {
   resourceCounters.http_peak_active = Math.max(resourceCounters.http_peak_active, resourceCounters.http_active);
   try {
     if (request.url === "/api/health") {
-      const graphHealth = await readGraphHealth();
+      const [graphHealth, readiness] = await Promise.all([readGraphHealth(), getReadiness()]);
       sendJson(response, {
         ok: true,
         observatory_version: observatoryVersion,
         app_root: root,
         data_root: dataRoot,
         graph_health: graphHealth,
+        readiness: {
+          version: readiness.version,
+          parity_hash: readiness.parity_hash,
+          status: readiness.status,
+          operational_status: readiness.operational_status,
+          generation_id: readiness.status_generation?.generation_id ?? null,
+          gate_statuses: Object.fromEntries(readiness.gates.map((gate) => [gate.gate_id, gate.status])),
+        },
         cache: cacheHealth(),
         resources: {
           ...resourceCounters,
           state_payload_budget_bytes: statePayloadBudgetBytes,
           generation_verify_ttl_ms: generationVerifyTtlMs,
+          source_stat_ttl_ms: sourceStatTtlMs,
           process_memory: process.memoryUsage(),
         },
         endpoints: ["/api/health", "/api/snapshot", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],
@@ -3657,7 +3376,18 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.url === "/api/graph-health") {
-      sendJson(response, await readGraphHealth());
+      const [graphHealth, readiness] = await Promise.all([readGraphHealth(), getReadiness()]);
+      sendJson(response, {
+        ...graphHealth,
+        readiness: {
+          version: readiness.version,
+          parity_hash: readiness.parity_hash,
+          status: readiness.status,
+          operational_status: readiness.operational_status,
+          generation_id: readiness.status_generation?.generation_id ?? null,
+          gate_statuses: Object.fromEntries(readiness.gates.map((gate) => [gate.gate_id, gate.status])),
+        },
+      });
       return;
     }
 

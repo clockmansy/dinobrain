@@ -106,7 +106,10 @@ async function main() {
     );
     assert(status.counts.missing === 0, "fresh vault should not have missing required artifacts");
     assert(status.checks.every((check) => check.visible_status), "visible status labels missing");
-    assert(status.checks.some((check) => check.id === "health_status"), "health status freshness check missing");
+    assert(
+      !status.checks.some((check) => check.id === "health_status"),
+      "derived health status must not be a freshness input cycle",
+    );
     assert(
       status.checks.some((check) => check.id === "client_mcp_direct_status"),
       "client MCP direct status freshness check missing",

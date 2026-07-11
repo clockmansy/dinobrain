@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const {
@@ -182,6 +183,25 @@ async function main() {
       readFileSync(path.join(dataRoot, ...STATUS_GENERATION_POINTER_RELATIVE_PATH.split("/")), "utf8"),
     );
     assert(!JSON.stringify(pointer).includes(dataRoot), "generation pointer leaked a local root path");
+
+    const largeSqlitePath = ".dino/index/sqlite/streaming-proof.sqlite";
+    const largeSqliteFullPath = path.join(dataRoot, ...largeSqlitePath.split("/"));
+    mkdirSync(path.dirname(largeSqliteFullPath), { recursive: true });
+    const largeDatabase = new DatabaseSync(largeSqliteFullPath);
+    try {
+      largeDatabase.exec("PRAGMA journal_mode=DELETE; CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB NOT NULL);");
+      largeDatabase.exec("INSERT INTO payload (body) VALUES (zeroblob(67108864));");
+    } finally {
+      largeDatabase.close();
+    }
+    const rssBefore = process.memoryUsage().rss;
+    await publishStatusGeneration(dataRoot, {
+      artifactPaths: [largeSqlitePath],
+      generationId: "status-20260710-000300000-streaming-sqlite",
+      now: new Date("2026-07-10T00:03:00.000Z"),
+    });
+    const rssDelta = Math.max(0, process.memoryUsage().rss - rssBefore);
+    assert(rssDelta < 96 * 1024 * 1024, `SQLite generation exceeded streaming RSS budget: ${rssDelta}`);
     console.log(
       JSON.stringify(
         {
@@ -197,6 +217,8 @@ async function main() {
           path_traversal_rejected: true,
           source_drift_detected: true,
           snapshot_tamper_detected: true,
+          sqlite_streaming_rss_delta_bytes: rssDelta,
+          sqlite_streaming_rss_budget_bytes: 96 * 1024 * 1024,
           local_path_leak: false,
         },
         null,

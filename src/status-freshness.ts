@@ -14,7 +14,6 @@ import { CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH } from "./controlled-compou
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
-import { HEALTH_STATUS_RELATIVE_PATH } from "./health-status.js";
 import { LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH } from "./live-semantic-query.js";
 import { NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH } from "./native-instruction-authority.js";
 import { OPERATIONS_INDEX_RELATIVE_PATH } from "./operations-index.js";
@@ -113,48 +112,6 @@ const ARTIFACTS: ArtifactSpec[] = [
     sourceRoots: ["."],
     required: true,
     authorityRank: 100,
-  },
-  {
-    id: "health_status",
-    label: "OS health status",
-    artifactPath: HEALTH_STATUS_RELATIVE_PATH,
-    sourceRoots: [
-      ".dino/events",
-      ".dino/tasks",
-      ".dino/traces",
-      ".dino/context-packs",
-      ".dino/index",
-      "20_Wiki",
-      "30_Sources",
-      "50_Instances/accepted",
-      "50_Instances/candidates",
-      "80_Review_Queue",
-    ],
-    required: true,
-    authorityRank: 98,
-    dependencyArtifacts: [
-      FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH,
-      CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH,
-      NATIVE_INSTRUCTION_AUTHORITY_RELATIVE_PATH,
-      SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
-      BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
-      BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
-      CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH,
-      REVIEW_QUEUE_STATUS_RELATIVE_PATH,
-      SEMANTIC_JOBS_RELATIVE_PATH,
-      REVIEW_WORKLIST_STATE_RELATIVE_PATH,
-      REVIEW_WORKLIST_ACTIONS_STATE_RELATIVE_PATH,
-      REVIEW_QUEUE_BACKPRESSURE_RELATIVE_PATH,
-      COLD_PARTITION_STATUS_RELATIVE_PATH,
-      TASK_LIFECYCLE_STATUS_RELATIVE_PATH,
-      TASK_LIFECYCLE_SETTLEMENT_RELATIVE_PATH,
-      RAG_PROOF_STATUS_RELATIVE_PATH,
-      RAG_EVAL_STATUS_RELATIVE_PATH,
-      LIVE_SEMANTIC_QUERY_STATUS_RELATIVE_PATH,
-      ANSWER_QUALITY_STATUS_RELATIVE_PATH,
-      RELEASE_MANIFEST_STATUS_RELATIVE_PATH,
-      GRAPH_HEALTH_RELATIVE_PATH,
-    ],
   },
   {
     id: "client_mcp_direct_status",

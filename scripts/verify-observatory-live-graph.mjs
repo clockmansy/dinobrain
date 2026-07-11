@@ -359,6 +359,7 @@ tags: [context-pack]
       ...process.env,
       DINOBRAIN_DATA_DIR: dataRoot,
       DINOBRAIN_OBSERVATORY_CACHE_TTL_MS: String(cacheTtlMs),
+      DINOBRAIN_OBSERVATORY_SOURCE_STAT_TTL_MS: "100",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -411,31 +412,39 @@ tags: [context-pack]
     assert(typeof health.resources?.json_files_read === "number", "Health endpoint did not expose resource counters");
     const readiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(readiness.ok === false, "Readiness should fail while direct MCP and semantic RAG blockers exist");
+    assert(readiness.version === "readiness_v2" && readiness.gates.length === 12, "Canonical 12-gate readiness model missing");
+    assert(health.readiness?.parity_hash === readiness.parity_hash, "Health/readiness parity hash mismatch");
     assert(readiness.health_status && Array.isArray(readiness.health_status.checks), "Readiness did not expose health checks");
     assert(readiness.node_lifecycle_status?.status === "healthy", "Readiness did not expose node lifecycle status");
     assert(readiness.client_mcp_direct_status?.agents?.length === 1, "Readiness did not expose direct MCP agents");
     assert(
-      readiness.lanes.blockers.some((gate) => gate.id === "client_mcp_direct_status"),
+      readiness.lanes.blockers.some(
+        (gate) => gate.id === "HG-02" && gate.reason_codes.some((reason) => reason.includes("client_mcp_direct_status")),
+      ),
       "Readiness did not expose direct MCP blocker",
     );
     assert(
-      readiness.lanes.blockers.some((gate) => gate.id === "rag_completion_grade" && gate.blocker_reason === "rag_semantic_provider_not_configured"),
+      readiness.lanes.blockers.some(
+        (gate) => gate.id === "HG-04" && gate.reason_codes.some((reason) => reason.includes("rag_proof")),
+      ),
       "Readiness did not expose semantic RAG blocker",
     );
     assert(
-      readiness.lanes.blockers.some((gate) => gate.id === "live_semantic_query" && gate.blocker_reason === "live_semantic_query_not_healthy"),
+      readiness.lanes.blockers.some(
+        (gate) => gate.id === "HG-04" && gate.reason_codes.some((reason) => reason.includes("live_semantic_query")),
+      ),
       "Readiness did not expose live semantic query blocker",
     );
     assert(
-      readiness.lanes.blockers.some((gate) => gate.id === "answer_quality" && gate.blocker_reason === "answer_quality_not_healthy"),
+      readiness.lanes.blockers.some(
+        (gate) => gate.id === "HG-04" && gate.reason_codes.some((reason) => reason.includes("answer_quality")),
+      ),
       "Readiness did not expose answer-quality blocker",
     );
-    assert(readiness.live_semantic_query_status?.blocker === "live_semantic_query_not_healthy", "Live semantic query readiness status missing");
+    assert(readiness.live_semantic_query_status?.blocker?.includes("live_semantic_query"), "Live semantic query readiness status missing");
     assert(readiness.answer_quality_status?.status === "needs_attention", "Answer-quality readiness status missing");
     assert(readiness.vector_index_migration_status?.status === "same_identity_updated", "Vector migration readiness status missing");
     assert(readiness.release_manifest_status?.status === "healthy", "Release manifest readiness status missing");
-    assert(readiness.lanes.verifier_pending.some((item) => item.id === "answer_quality"), "Answer-quality pending lane missing");
-    assert(readiness.lanes.verifier_pending.some((item) => item.id === "live_semantic_query"), "Live semantic query pending lane missing");
     assert(readiness.latest_audit?.trust_score === 72, "Readiness did not expose latest audit trust score");
     assert(readiness.latest_audit?.provided_memory_paths?.includes("20_Wiki/Graph-Speed.md"), "Audit provided paths missing");
     const snapshot = await fetch(`http://127.0.0.1:${port}/api/snapshot`).then((response) => response.json());
@@ -443,6 +452,10 @@ tags: [context-pack]
     assert(snapshot.state?.summary?.active_task_count === 1, "Snapshot did not include state");
     assert(snapshot.graph?.nodes?.some((node) => node.type === "active_task"), "Snapshot did not include graph activity");
     assert(snapshot.readiness?.lanes?.blockers, "Snapshot did not include readiness");
+    assert(
+      snapshot.payload?.within_budget === true && snapshot.payload.serialized_bytes < 256 * 1024,
+      "Snapshot exceeded the bounded 256 KiB payload budget",
+    );
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
     assert(html.includes("Completion Readiness"), "UI does not include readiness block");
     assert(html.includes("graph-cluster-label"), "UI does not include graph cluster labels");
@@ -490,18 +503,22 @@ tags: [context-pack]
     );
     const graphHealth = await fetch(`http://127.0.0.1:${port}/api/graph-health`).then((response) => response.json());
     assert(graphHealth.ok === true && typeof graphHealth.score === "number", "Graph health endpoint did not return health");
+    assert(graphHealth.readiness?.parity_hash === readiness.parity_hash, "Graph health/readiness parity hash mismatch");
     writeFileSync(path.join(dataRoot, ".dino", "state", "native_instruction_authority.json"), "{ bad json\n", "utf8");
     await new Promise((resolve) => setTimeout(resolve, 300));
     const invalidReadiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(
-      invalidReadiness.lanes.blockers.some(
-        (gate) => gate.id === "status_generation" && gate.blocker_reason === "source_generation_mismatch:.dino/state/native_instruction_authority.json",
-      ),
+      invalidReadiness.status_generation.reason_codes.includes(
+        "source_generation_mismatch:.dino/state/native_instruction_authority.json",
+      ) && invalidReadiness.gates.every((gate) => gate.status !== "PASS"),
       "Canonical status drift did not invalidate the published generation",
     );
     console.log("observatory live graph verification ok");
   } finally {
-    server.kill();
+    if (server.exitCode === null) {
+      server.kill();
+      await new Promise((resolve) => server.once("exit", resolve));
+    }
   }
 } finally {
   rmSync(dataRoot, { recursive: true, force: true });

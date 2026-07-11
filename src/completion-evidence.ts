@@ -18,6 +18,11 @@ import {
 import { DINOBRAIN_VERSION_MANIFEST } from "./version.js";
 import { loadCurrentStatusGeneration } from "./status-generation.js";
 import { refreshStatusArtifacts } from "./refresh-status-artifacts.js";
+import {
+  CURRENT_COMPLETION_AUDIT_POINTER_RELATIVE_PATH,
+  CURRENT_COMPLETION_AUDIT_POINTER_VERSION,
+  type CompletionAuditPointer,
+} from "./readiness.js";
 
 const execFileAsync = promisify(execFile);
 const COMPLETION_AUDIT_VERSION = "completion_audit_v1";
@@ -824,6 +829,22 @@ export async function runCompletionAudit(options: CompletionAuditOptions): Promi
   const verification = await verifyCompletionEvidencePack(dataRoot, auditRunId);
   if (!verification.ok) {
     throw new Error(`Completion evidence pack failed post-write verification: ${verification.errors.join(", ")}`);
+  }
+  if (!selected && statusGeneration.status === "healthy" && statusGeneration.pointer) {
+    const verdictRaw = await fs.readFile(completionVerdictPath);
+    const pointer: CompletionAuditPointer = {
+      version: CURRENT_COMPLETION_AUDIT_POINTER_VERSION,
+      status: "published",
+      audit_run_id: auditRunId,
+      generated_at: now().toISOString(),
+      status_generation_id: statusGeneration.pointer.generation_id,
+      status_generation_manifest_sha256: statusGeneration.pointer.manifest_sha256,
+      verdict_path: toDataRelativePath(dataRoot, completionVerdictPath) ?? "",
+      verdict_sha256: sha256(verdictRaw),
+      verdict_status: verdict.status,
+      contract_version: COMPLETION_CONTRACT_VERSION,
+    };
+    await atomicWriteJson(dataPath(dataRoot, CURRENT_COMPLETION_AUDIT_POINTER_RELATIVE_PATH), pointer);
   }
   return {
     audit_run_id: auditRunId,

@@ -73,6 +73,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("completion:audit:verify", ["HG-08", "HG-10", "HG-12"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("atomic:writers:verify", ["HG-03", "HG-10"]),
   command("status:generation:verify", ["HG-08", "HG-10", "HG-12"]),
+  command("readiness:verify", ["HG-08", "HG-12"]),
   command("prompt:eligibility:verify", ["HG-01", "HG-03", "HG-06"]),
   command("pre-response:gate:verify", ["HG-01", "HG-02", "HG-09"]),
   command("audit:full-memory", ["HG-09", "HG-10", "HG-12"], { timeout_ms: LONG_TIMEOUT_MS }),

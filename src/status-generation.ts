@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TextDecoder } from "node:util";
@@ -44,12 +44,14 @@ export const STATUS_GENERATION_ARTIFACT_PATHS = [
   ".dino/state/source_lineage_status.json",
   ".dino/state/behavior_recall_evidence_migration.json",
   ".dino/state/behavior_recall_status.json",
+  ".dino/state/controlled_compounding_status.json",
   ".dino/state/full_memory_manifest.json",
   ".dino/state/full_memory_audit_status.json",
   ".dino/state/client_mcp_direct_status.json",
   ".dino/state/native_instruction_authority.json",
-  ".dino/state/health_status.json",
   ".dino/state/monitoring_status.json",
+  ".dino/state/encrypted_restore_status.json",
+  ".dino/evaluations/scale-50k-status.json",
 ] as const;
 
 export type StatusGenerationEntry = {
@@ -114,6 +116,17 @@ function dataPath(dataRoot: string, relativePath: string): string {
 
 function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
 }
 
 function compactTimestamp(date: Date): string {
@@ -205,6 +218,13 @@ function validateSqliteFile(relativePath: string, filePath: string): void {
   }
 }
 
+async function cleanupSqliteSidecars(filePath: string): Promise<void> {
+  await Promise.all([
+    fs.rm(`${filePath}-shm`, { force: true }).catch(() => undefined),
+    fs.rm(`${filePath}-wal`, { force: true }).catch(() => undefined),
+  ]);
+}
+
 function validateArtifact(relativePath: string, raw: Buffer): {
   generated_at: string | null;
   reported_status: string | null;
@@ -239,6 +259,26 @@ async function copyArtifactToStage(params: {
   validateRelativePath(params.relativePath);
   const sourcePath = dataPath(params.dataRoot, params.relativePath);
   const snapshotPath = path.join(params.stageRoot, "files", ...params.relativePath.split("/"));
+  const kind = artifactKind(params.relativePath);
+  if (kind === "sqlite") {
+    const stat = await fs.stat(sourcePath);
+    await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
+    await fs.copyFile(sourcePath, snapshotPath, fsConstants.COPYFILE_EXCL);
+    const [sourceHash, snapshotHash] = await Promise.all([sha256File(sourcePath), sha256File(snapshotPath)]);
+    if (snapshotHash !== sourceHash) throw new Error(`Snapshot copy hash mismatch: ${params.relativePath}`);
+    validateSqliteFile(params.relativePath, snapshotPath);
+    await cleanupSqliteSidecars(snapshotPath);
+    return {
+      source_path: params.relativePath,
+      snapshot_path: `files/${params.relativePath}`,
+      kind,
+      size_bytes: stat.size,
+      sha256: sourceHash,
+      source_mtime: stat.mtime.toISOString(),
+      generated_at: null,
+      reported_status: null,
+    };
+  }
   const [raw, stat] = await Promise.all([fs.readFile(sourcePath), fs.stat(sourcePath)]);
   const metadata = validateArtifact(params.relativePath, raw);
   await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
@@ -256,7 +296,7 @@ async function copyArtifactToStage(params: {
   return {
     source_path: params.relativePath,
     snapshot_path: `files/${params.relativePath}`,
-    kind: artifactKind(params.relativePath),
+    kind,
     size_bytes: stat.size,
     sha256: sha256(raw),
     source_mtime: stat.mtime.toISOString(),
@@ -268,8 +308,9 @@ async function copyArtifactToStage(params: {
 async function assertSourceCoherence(dataRoot: string, entries: StatusGenerationEntry[]): Promise<void> {
   for (const entry of entries) {
     validateRelativePath(entry.source_path);
-    const raw = await fs.readFile(dataPath(dataRoot, entry.source_path));
-    if (sha256(raw) !== entry.sha256) {
+    const sourcePath = dataPath(dataRoot, entry.source_path);
+    const sourceHash = entry.kind === "sqlite" ? await sha256File(sourcePath) : sha256(await fs.readFile(sourcePath));
+    if (sourceHash !== entry.sha256) {
       throw new Error(`Source changed during status generation: ${entry.source_path}`);
     }
   }
@@ -337,7 +378,17 @@ export async function publishStatusGeneration(
       const artifactPaths = [...new Set(options.artifactPaths ?? STATUS_GENERATION_ARTIFACT_PATHS)];
       const entries: StatusGenerationEntry[] = [];
       for (const relativePath of artifactPaths) {
-        entries.push(await copyArtifactToStage({ dataRoot: resolvedRoot, stageRoot, relativePath }));
+        try {
+          entries.push(await copyArtifactToStage({ dataRoot: resolvedRoot, stageRoot, relativePath }));
+        } catch (error) {
+          if (
+            options.artifactPaths === undefined &&
+            (error as NodeJS.ErrnoException).code === "ENOENT"
+          ) {
+            continue;
+          }
+          throw error;
+        }
       }
       entries.sort((a, b) => a.source_path.localeCompare(b.source_path));
       const manifest: StatusGenerationManifest = {
@@ -503,18 +554,26 @@ export async function loadCurrentStatusGeneration(
         continue;
       }
       try {
-        const raw = await fs.readFile(snapshotPath);
-        if (raw.length !== entry.size_bytes) errors.push(`snapshot_size_mismatch:${entry.source_path}`);
-        if (sha256(raw) !== entry.sha256) errors.push(`snapshot_hash_mismatch:${entry.source_path}`);
-        validateArtifact(entry.source_path, raw);
-        if (entry.kind === "sqlite") validateSqliteFile(entry.source_path, snapshotPath);
+        if (entry.kind === "sqlite") {
+          const stat = await fs.stat(snapshotPath);
+          if (stat.size !== entry.size_bytes) errors.push(`snapshot_size_mismatch:${entry.source_path}`);
+          if ((await sha256File(snapshotPath)) !== entry.sha256) errors.push(`snapshot_hash_mismatch:${entry.source_path}`);
+          validateSqliteFile(entry.source_path, snapshotPath);
+          await cleanupSqliteSidecars(snapshotPath);
+        } else {
+          const raw = await fs.readFile(snapshotPath);
+          if (raw.length !== entry.size_bytes) errors.push(`snapshot_size_mismatch:${entry.source_path}`);
+          if (sha256(raw) !== entry.sha256) errors.push(`snapshot_hash_mismatch:${entry.source_path}`);
+          validateArtifact(entry.source_path, raw);
+        }
       } catch {
         errors.push(`snapshot_missing_or_invalid:${entry.source_path}`);
       }
       if (options.verifySourceCoherence) {
         try {
-          const sourceRaw = await fs.readFile(dataPath(resolvedRoot, entry.source_path));
-          if (sha256(sourceRaw) !== entry.sha256) errors.push(`source_generation_mismatch:${entry.source_path}`);
+          const sourcePath = dataPath(resolvedRoot, entry.source_path);
+          const sourceHash = entry.kind === "sqlite" ? await sha256File(sourcePath) : sha256(await fs.readFile(sourcePath));
+          if (sourceHash !== entry.sha256) errors.push(`source_generation_mismatch:${entry.source_path}`);
         } catch {
           errors.push(`source_missing:${entry.source_path}`);
         }

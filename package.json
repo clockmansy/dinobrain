@@ -14,6 +14,8 @@
     "completion:audit:verify": "node scripts/verify-completion-audit.mjs",
     "atomic:writers:verify": "node scripts/verify-atomic-state-writers.mjs",
     "status:generation:verify": "node scripts/verify-status-generation.mjs",
+    "status:readiness": "node dist/run-readiness.js",
+    "readiness:verify": "node scripts/verify-readiness-parity.mjs",
     "audit:full-memory": "node dist/build-full-memory-audit.js",
     "audit:full-memory:verify": "node scripts/verify-full-memory-audit.mjs",
     "flow:audit": "node scripts/audit-user-flow.mjs",
