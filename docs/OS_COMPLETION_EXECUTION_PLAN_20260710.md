@@ -408,6 +408,15 @@ ref; the post-apply vault has 610 tasks, 564 traces, zero stale active tasks,
 zero missing/orphan trace bindings, zero ungrounded finishes, and zero remaining
 settlement actions. This does not replace the pending 24-hour real-client soak.
 
+**Maintenance evidence (2026-07-12):** one earlier goal-continuation task later
+expired without a terminal trace. Reversible migration
+`task-lifecycle-20260711231120984-3fa38ca9-4755-488b-a01f-e9b0d183686a`
+preserved a six-entry hash ledger and recovery ref, then recorded the task as
+blocked for missing terminal evidence rather than claiming completion. The
+post-apply vault has zero stale active tasks, expired leases, missing/orphan
+trace bindings, ungrounded finishes, auto-close candidates, or manual repair
+requirements. The 24-hour real-client soak remains independently pending.
+
 ### Phase 2 - Memory Lifecycle And Knowledge Compounding (P0/P1, 5-8 engineer-days)
 
 #### MEM-01: Full node lifecycle state machine
@@ -726,6 +735,14 @@ qualifying run again covers 50,000 records and 1,000 sessions: cold build
 p95 162.800 ms, and process RSS peak 1,726.1 MiB. All assertions and current
 binding checks pass with zero verification issues; the scale worker exited and
 did not remain as an additional resident process.
+
+**Maintenance evidence (2026-07-12):** after retrieval/index source changes,
+the stale code binding was rejected and the qualifying report was regenerated
+sequentially. The current run covers 50,000 records and 1,000 sessions: cold
+build 23.480 s, Context Pack p95 499.464 ms, Wiki search p95 134.132 ms,
+graph refresh p95 180.009 ms, Observatory poll p95 60.829 ms, and process RSS
+peak 1,716.5 MiB. All assertions and code/generator/environment bindings pass;
+after exit, only the bounded Observatory and Codex MCP processes remained.
 
 ### Phase 4 - Privacy, Scoped Sync, Backup, And Recovery (P1, 4-7 engineer-days)
 

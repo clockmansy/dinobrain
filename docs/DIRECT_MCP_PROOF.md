@@ -108,6 +108,11 @@ the challenge id. Both proofs contain successful, ordered receipts for all five
 required tools against one task. This is current-machine evidence only and does
 not replace the DIST-02 clean Windows recovery run.
 
+The status CLI includes `release_parity_verified` and both agent proof summaries
+in its machine-readable output. The regression invokes that real CLI and fails
+if either field is omitted, preventing goal certification from disagreeing with
+the persisted status file.
+
 ## Trust Boundary
 
 This protocol prevents accidental self-certification, ordinary file editing,

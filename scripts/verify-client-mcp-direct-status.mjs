@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -171,6 +172,33 @@ await inTemp(async ({ dataRoot, localStateRoot }) => {
   assert(report.agents.every((agent) => agent.client_process_chain.length === 2), "process evidence missing");
   assert(report.counts.invalid_proofs === 1, "legacy proof should remain classified without replacing fresh v2 evidence");
   assert(report.warnings.length === 0, "superseded legacy proof must not block fresh two-client parity");
+});
+
+await inTemp(async ({ dataRoot, localStateRoot }) => {
+  const now = new Date();
+  const options = {
+    challengeTime: new Date(now.getTime() - 60_000),
+    runtimeTime: now,
+  };
+  await createVerifiedProof(dataRoot, localStateRoot, "codex", options);
+  await createVerifiedProof(dataRoot, localStateRoot, "claude", options);
+  const cli = spawnSync(process.execPath, [path.join(root, "dist", "build-client-mcp-direct-status.js")], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      DINOBRAIN_DATA_DIR: dataRoot,
+      DINOBRAIN_LOCAL_STATE_DIR: localStateRoot,
+    },
+  });
+  assert(cli.status === 0, `direct MCP status CLI failed: ${cli.stderr || cli.stdout}`);
+  const output = JSON.parse(cli.stdout);
+  assert(output.release_parity_verified === true, "direct MCP status CLI omitted release parity");
+  assert(Array.isArray(output.agents) && output.agents.length === 2, "direct MCP status CLI omitted agent proofs");
+  assert(
+    output.agents.every((agent) => agent.proof_version === "client_mcp_direct_proof_v2"),
+    "direct MCP status CLI emitted incomplete proof summaries",
+  );
 });
 
 await inTemp(async ({ dataRoot, localStateRoot }) => {
