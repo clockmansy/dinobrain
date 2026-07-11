@@ -297,7 +297,10 @@ async function lifecycleAuthorizedPaths(dataRoot: string): Promise<Set<string>> 
 function classifyDrift(vaultPath: string, lifecyclePaths: Set<string>): DriftClass {
   const normalized = vaultPath.replace(/\\/g, "/");
   if (lifecyclePaths.has(normalized)) return "live_os_write";
-  if (normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`)) {
+  if (
+    normalized.startsWith(`${FULL_MEMORY_STATE_DIR}/`) ||
+    normalized.startsWith("60_Operations/public-data-safety/")
+  ) {
     return "audit_artifact";
   }
   if (

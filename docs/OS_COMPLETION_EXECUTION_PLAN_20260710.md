@@ -99,6 +99,12 @@ The first foundation slice is implemented and remains intentionally
   published as one 29-artifact generation, and the 24-client task/trace/pack/
   event plus JSON/SQLite overlap test passed three consecutive runs with no
   collisions, lost rows, active-task residue, or leaked lock.
+- Full-memory audit now classifies the canonical
+  `60_Operations/public-data-safety/` report pair as audit output. Regression
+  coverage proves those generated JSON/Markdown reports do not become false
+  content drift, while ordinary Wiki changes still fail closed. The post-fix
+  current-vault audit covers 12,202 files with zero parse errors and zero
+  unclassified drift.
 - LOOP-01 now shares one prompt classifier between the hook and MCP server.
   Title generation, ambient suggestions, internal Codex service work, and
   diagnostic probes create zero durable tasks or Context Packs. Stable
@@ -376,6 +382,15 @@ verified state. SQLite, graph, full-memory, Observatory, and public-data checks
 passed after rebuild. See `docs/TASK_LIFECYCLE_MIGRATION.md`. The 24-hour
 real-client soak remains pending, so LOOP-04 is not yet fully certified.
 
+**Maintenance evidence (2026-07-11):** later verification activity accumulated
+29 stale internal/diagnostic tasks and 39 stale tasks without terminal evidence.
+Migration `task-lifecycle-20260711130629561-f456b69e-1083-4432-9b51-94b5faef6a2f`
+closed the 29 non-user tasks and reconstructed explicit blocked traces for the
+39 evidence-free tasks. Its hash-chained ledger has 140 entries and recovery
+ref; the post-apply vault has 610 tasks, 564 traces, zero stale active tasks,
+zero missing/orphan trace bindings, zero ungrounded finishes, and zero remaining
+settlement actions. This does not replace the pending 24-hour real-client soak.
+
 ### Phase 2 - Memory Lifecycle And Knowledge Compounding (P0/P1, 5-8 engineer-days)
 
 #### MEM-01: Full node lifecycle state machine
@@ -445,6 +460,14 @@ source truth; normal context and recent-operation retrieval exclude cold paths,
 while `search_cold_memory` provides explicit lookup. The current vault has no
 records old enough for partitioning, so its live cold index is truthfully empty.
 See `docs/REVIEW_QUEUE_BACKPRESSURE.md`.
+
+**Maintenance evidence (2026-07-11):** 50 subsequently auto-compounded behavior
+rules were atomically moved to `hold` with their promotion reviews instead of
+being accepted without semantic review. The current queue has 1,661 candidate/
+review pairs, 1,494 closed items, 167 explicitly classified manual-review holds,
+zero unclassified open items, zero deterministic auto-hold candidates, and zero
+open semantic jobs. Manual review debt remains visible and is not counted as
+accepted knowledge.
 
 #### MEM-03: Correction writeback and behavior lift
 

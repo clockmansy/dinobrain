@@ -99,6 +99,26 @@ summary: Stable memory record
     );
     assert(result.report.counts.unclassified_drift === 0, "local lifecycle backup created content drift");
 
+    json(path.join(dataRoot, "60_Operations", "public-data-safety", "public-data-safety-report.json"), {
+      report_type: "dinobrain_public_data_safety",
+      status: "fail",
+      result: { blocker_count: 1 },
+    });
+    text(
+      path.join(dataRoot, "60_Operations", "public-data-safety", "public-data-safety-report.md"),
+      "# Public Data Safety\n\nStatus: fail\n",
+    );
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    const publicSafetyDrift = result.report.drift.added.filter((entry) =>
+      entry.path.startsWith("60_Operations/public-data-safety/"),
+    );
+    assert(publicSafetyDrift.length === 2, "public-data safety audit artifacts were not observed");
+    assert(
+      publicSafetyDrift.every((entry) => entry.drift_class === "audit_artifact"),
+      "public-data safety reports were treated as unclassified content drift",
+    );
+    assert(result.report.counts.unclassified_drift === 0, "public-data safety reports created content drift");
+
     text(path.join(dataRoot, "20_Wiki", "New-Decision.md"), "# New Decision\n\nThis is unclassified content drift.\n");
     result = await buildAndWriteFullMemoryAudit(dataRoot);
     assert(result.report.status === "drift_unclassified", `expected unclassified drift, got ${result.report.status}`);
