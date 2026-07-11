@@ -257,7 +257,10 @@ async function verifyHook() {
   assert(rawSession.extraction?.candidate_count === candidateFiles.length, "Raw session extraction count is inconsistent.");
 
   const candidates = candidateFiles.map((file) => readJson(path.join(tempDataRoot, "50_Instances", "candidates", file)));
-  assert(candidates.every((candidate) => candidate.status === "pending_review"), "Hook candidate bypassed review.");
+  assert(
+    candidates.every((candidate) => ["pending_review", "held"].includes(candidate.status)),
+    "Hook candidate bypassed review or hold.",
+  );
   assert(candidates.every((candidate) => candidate.auto_promote === false), "Hook candidate allowed auto promotion.");
   assert(
     candidates.every((candidate) => ["hot", "warm", "cold"].includes(candidate.temperature)),

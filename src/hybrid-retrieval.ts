@@ -741,7 +741,11 @@ function exactLexicalBonus(record: RankedRecord, query: string, queryTerms: stri
     tokenizeHybrid([record.path, record.title, record.aliases.join(" ")].join(" ")),
   );
   const rareMatches = queryTerms.filter((term) => exactTokens.has(term) && (documentFrequency.get(term) ?? 0) <= 2);
-  return Math.min(18, rareMatches.length * 6);
+  const contextualTokens = tokenSet(contextualText(record));
+  const rareContextMatches = queryTerms.filter(
+    (term) => !exactTokens.has(term) && contextualTokens.has(term) && (documentFrequency.get(term) ?? 0) <= 2,
+  );
+  return Math.min(18, rareMatches.length * 6 + rareContextMatches.length * MIN_RARE_EXACT_EVIDENCE_SCORE);
 }
 
 function isCodexSessionKnowledge(record: RankedRecord): boolean {

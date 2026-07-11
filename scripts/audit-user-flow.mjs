@@ -527,10 +527,13 @@ async function auditFlow() {
           allow_conditional: true,
           push: false,
           commit_message: "data: flow audit auto sync",
+          task_id: start.task_id,
+          allowed_paths: [review.accepted_path],
         },
       }),
     );
     assert(autoSync.ok === true && autoSync.committed === true, "auto_sync did not commit policy-approved records");
+    assert(autoSync.state === "committed" && autoSync.sync_scope === "task_scope", "auto_sync was not task-scoped");
     const installScripts = ["install.ps1", "setup.ps1", "update.ps1", "reinstall.ps1", "uninstall.ps1"].filter((file) =>
       existsSync(path.join(root, file)),
     );

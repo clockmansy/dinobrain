@@ -42,7 +42,10 @@ The app repo may read and write the data repo only through approved tools and po
 
 The MCP server exposes the approved write/read surface:
 
+- `os_begin_task`
+- `os_gate`
 - `start_task`
+- `heartbeat_task`
 - `finish_task`
 - `get_context_pack`
 - `wiki_search`
@@ -50,6 +53,7 @@ The MCP server exposes the approved write/read surface:
 - `import_session`
 - `audit_memory_use`
 - `git_sync` as dry-run only
+- `auto_sync` as task-scoped only
 - `create_candidate_instance`
 - `review_candidate`
 - `quarantine_record`
@@ -141,6 +145,32 @@ entrypoint, and policy version. Missing or mismatched runtime configuration is a
 blocking result. Pre-push scans only the commits named by Git's push update
 stream, including intermediate blobs that were later deleted, while the public
 audit scans every unique historical blob in bounded batches.
+
+## Task-Scoped Synchronization Boundary
+
+Automatic Git writes use policy `task_sync_scope_20260711_v2`. Each task owns a
+local-only scope ledger under `.dino/sync-scopes`; entries bind a relative
+regular-file path to SHA-256, Git-filtered blob id, byte size, writer identity,
+and review state. MCP
+writers register artifacts at creation or lifecycle transition. Candidate and
+growth outputs cannot become auto-syncable merely because a caller names them:
+they remain `pending_review` until the review path promotes them.
+
+`auto_sync` requires a task id and nonempty requested path set, verifies every
+entry and current file hash, re-runs the unified public-data classifier, rejects
+unrelated staged files, and invokes `git add` only for the verified
+intersection. Dirty files outside the task are observed in bounded summaries
+but left untouched. The state machine distinguishes `blocked`, `no_op`,
+`committed`, `pushed`, and `retry_required`; a remote failure after a successful
+commit preserves the commit identity for explicit retry.
+
+Scope filenames include the scope policy version. An installer/update can start
+a v2 ledger without rewriting or trusting an in-flight v1 ledger; artifacts
+must be registered again by current v2 writers before they become syncable.
+
+Durable task records store `data_root: "."` rather than a machine-local
+absolute path. Runtime responses and local diagnostics may still expose the
+resolved root, but pushed task evidence remains portable across computers.
 
 ## Review Backpressure And Cold Boundary
 

@@ -648,6 +648,13 @@ function main() {
       args: ["scripts/verify-unified-data-classifier.mjs"],
     }),
     runCheck({
+      id: "task_scoped_auto_sync",
+      description:
+        "Automatic sync must bind a nonempty allowlist to task-owned hashes and review state, preserve dirty backlog, and expose durable retry state.",
+      command: node,
+      args: ["scripts/verify-task-scoped-sync.mjs"],
+    }),
+    runCheck({
       id: "data_git_safety_hooks",
       description: "Data repo Git hooks must invoke the unified classifier and block unsafe staged files and pushed history.",
       command: node,
@@ -911,11 +918,13 @@ function main() {
       requirement: "data_push_safety_guardrails",
       ok:
         byId.unified_data_classifier.ok === true &&
+        byId.task_scoped_auto_sync.ok === true &&
         byId.data_git_safety_hooks.ok === true &&
         byId.public_data_safety.ok === true,
-      evidence: "unified_data_classifier + data_git_safety_hooks + public_data_safety",
+      evidence: "unified_data_classifier + task_scoped_auto_sync + data_git_safety_hooks + public_data_safety",
       blocker:
         byId.unified_data_classifier.ok === true &&
+        byId.task_scoped_auto_sync.ok === true &&
         byId.data_git_safety_hooks.ok === true &&
         byId.public_data_safety.ok === true
           ? null

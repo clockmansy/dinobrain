@@ -67,6 +67,7 @@ These data types are local-only unless the plan is explicitly changed:
 - `.dino/local.json`
 - `.dino/index`
 - `.dino/events`
+- `.dino/sync-scopes`
 - `.dino/migrations/behavior-recall`
 - `.dino/state/behavior_recall_evidence_migration.json`
 - `10_Conversations/raw`
@@ -87,7 +88,30 @@ It must report:
 - per-file recommended action
 - whether manual approval is required
 
-`auto_sync` is the bounded writer. Hook and `finish_task` callers must pass an `allowed_paths` scope so only artifacts created by the current task can be committed. Broad repo policy sync is reserved for explicit manual calls. `auto_sync` may commit and push only policy-approved records after sensitivity scanning and path classification. It must skip blocked local-only records and report skipped paths.
+`auto_sync` is the bounded writer. Every call must provide an active `task_id`
+and nonempty `allowed_paths`. The caller list is not authority by itself: the
+server intersects it with an atomically written, local-only task scope under
+`.dino/sync-scopes`. A scope entry binds path, SHA-256, Git-filtered blob id,
+size, producing tool, and lifecycle approval. Changed bytes downgrade any prior
+higher approval. Missing scope, out-of-scope paths, pending review,
+changed bytes, unsupported files, and classifier findings fail closed.
+
+Only the intersection can be staged. Existing staged files outside that set
+block the operation, and neighboring dirty/untracked backlog is counted but
+never staged. Broad repository sync remains a manual operation. Results use
+distinct `blocked`, `no_op`, `committed`, `pushed`, and `retry_required` states;
+a push failure after commit reports the commit SHA so recovery does not repeat
+or hide the write.
+
+Task, Context Pack, gate, and terminal trace writers register system-generated
+artifacts. Candidate, review, session-import, growth, and compounding outputs
+start as `pending_review`; accepted lifecycle records become `reviewed`.
+Conditional system records still require the explicit
+`DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` opt-in.
+
+Portable task evidence stores the vault root as `"."`; absolute install paths
+remain local diagnostics and must not be committed through the task-scoped
+writer.
 
 The installed default is public-safe: `DINOBRAIN_AUTO_SYNC=1` may evaluate and
 commit syncable reviewed artifacts, but `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=0`
@@ -118,6 +142,10 @@ Required dry-run fields:
 - `would_push: false`
 - `manual_approval_required: true`
 - `commit_allowed_by_tool: false`
+
+Run `npm run safety:task-sync:verify` to prove the scope ledger, review/hash
+binding, real isolated remote push, backlog preservation, sensitive-data block,
+no-op behavior, and retry state.
 
 ## Public Data Safety Report
 

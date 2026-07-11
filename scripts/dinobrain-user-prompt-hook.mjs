@@ -859,6 +859,7 @@ async function main() {
                 sensitivity,
                 max_candidates: hookSessionMaxCandidates(),
                 raw_retention: hookRawRetention(),
+                task_id: startResult.task_id,
               },
             }),
           );
@@ -895,8 +896,6 @@ async function main() {
           start.task_path,
           contextPack.trace_path,
           start.gate_report_path,
-          ...(Array.isArray(sessionImport?.candidate_paths) ? sessionImport.candidate_paths : []),
-          ...(Array.isArray(sessionImport?.review_paths) ? sessionImport.review_paths : []),
         ].filter((item) => typeof item === "string" && item.length > 0);
         autoSync = await withClient(async (client) =>
           parseTool(
@@ -907,6 +906,7 @@ async function main() {
                 allow_conditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", false),
                 push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", false),
                 commit_message: `data: auto sync Codex preflight ${stampForFile(new Date(startedAt))}`,
+                task_id: start.task_id,
                 allowed_paths: allowedPaths,
               },
             }),

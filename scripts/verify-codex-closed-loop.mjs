@@ -254,6 +254,8 @@ async function verifyClosedLoop() {
     hookReport.context_paths.includes("20_Wiki/Codex-Closed-Loop-Contract.md"),
     "Hook report did not record the memory path used by preflight.",
   );
+  const hookTaskRecord = readJson(path.join(dataRoot, hookReport.task_path));
+  assert(hookTaskRecord.data_root === ".", "Durable task record leaked a machine-local data root.");
   assert(hookReport.auto_sync?.committed === true, "Hook preflight did not auto-commit policy-approved records.");
   assert(hookReport.auto_sync?.pushed === true, "Hook preflight did not push policy-approved records.");
 
@@ -359,6 +361,8 @@ async function verifyClosedLoop() {
           allow_conditional: true,
           push: true,
           commit_message: "data: auto sync reviewed Codex loop memory",
+          task_id: hookReport.task_id,
+          allowed_paths: [reviewedGrowth.accepted_path],
         },
       }),
     ),

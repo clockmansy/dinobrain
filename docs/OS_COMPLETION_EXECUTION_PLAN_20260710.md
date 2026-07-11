@@ -716,6 +716,38 @@ findings must not be hidden by the passing SAFE-01 regression.
 **Acceptance:** one real safe task produces a scoped commit and remote push;
 neighboring dirty backlog remains untouched; injected sensitive data blocks it.
 
+**Implemented 2026-07-11:** policy `task_sync_scope_20260711_v2` now maintains
+one local-only, atomically written scope ledger per task under
+`.dino/sync-scopes`. Each entry binds a repository-relative regular file to its
+SHA-256, Git-filtered blob id, byte size, producing tool, and lifecycle
+approval. Changed content cannot inherit a prior higher approval. `auto_sync` requires
+both `task_id` and a nonempty `allowed_paths`; it intersects that request with
+the server-maintained scope, rejects pending review, changed bytes, sensitive
+content, unclassified paths, and any pre-staged neighboring file, then stages
+only the resulting paths. Hook, task, Context Pack, gate, finish, session
+import, candidate, and review writers register their own artifacts. Candidate,
+review, growth, and compounding outputs remain pending until reviewed, while
+system traces use the conditional opt-in policy.
+
+`npm run safety:task-sync:verify` creates an isolated repository and bare
+remote. It proves missing/empty allowlists, out-of-scope files, pending review,
+post-review tampering, sensitive injection, and unrelated staged files all
+block; a reviewed file is the only path committed and pushed; neighboring
+dirty backlog survives; a repeated call is `no_op`; and a missing remote yields
+`retry_required` with the already-created commit SHA. SAFE-02 implementation
+acceptance passes. HG-09/HG-12 remain `NOT_COMPLETE` until the legacy public
+data findings, encrypted restore, clean-machine equivalence, and final audit
+are independently cleared.
+
+Post-package regressions pass for `check`, `safety:task-sync:verify`, `smoke`,
+`flow:audit`, `hook:verify`, `session:verify`, `pre-response:gate:verify`,
+`safety:classifier:verify`, `hooks:data:verify`, `verify:v2`,
+`verify:compounding`, `verify:codex-loop`, and `completion:audit:verify`.
+`verify:os` still reports recall 1.0 but remains red only for pre-existing
+retrieval-noise cases `wiki-003`, `project-001`, and `operations-002`, each at
+noise 3 against the limit 2. That independent RAG gate is not hidden by the
+SAFE-02 acceptance result.
+
 #### SAFE-03: Encrypted local-only backup and restore
 
 **Hard gates:** HG-09, HG-11

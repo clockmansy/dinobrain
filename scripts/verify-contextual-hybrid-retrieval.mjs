@@ -163,6 +163,10 @@ async function main() {
     assert(aliasRanked[0]?.path === "20_Wiki/paid-leave.md", "rare exact alias was not stable at rank 1");
     assert(aliasRanked[0]?.score_breakdown?.exact_alias >= 42, "exact alias contribution missing");
 
+    const rareBodyRanked = hybrid.rankRecordsHybridV2(records, "checksums", { limit: 5, denseVectorIndex: null });
+    assert(rareBodyRanked[0]?.path === "20_Wiki/build-policy.md", "rare exact body token was filtered out");
+    assert(rareBodyRanked[0]?.score_breakdown?.exact_alias >= 12, "rare exact body evidence is missing");
+
     const denseTop = hybrid.denseVectorCandidates(
       { version: 2, dimensions: 2, semantic_embedding_provider: true, provider: "test", records: { a: [1, 0], b: [0.9, 0.1], c: [0, 1] }, queries: { q: [1, 0] } },
       "q",

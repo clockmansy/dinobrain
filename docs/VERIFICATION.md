@@ -411,6 +411,27 @@ explicit rules, but machine-local content, unclassified untracked files, and
 debt, not a passing safety report; SAFE-02/SAFE-03 and an explicit cleanup plan
 must resolve it before completion.
 
+### Task-Scoped Automatic Sync
+
+`npm run safety:task-sync:verify` runs the SAFE-02 regression against an
+isolated data repository and bare Git remote. It proves that `auto_sync`
+requires a task id and nonempty allowlist, then verifies that allowlist against
+the server-maintained `.dino/sync-scopes` hash and lifecycle ledger.
+
+The fixture requires all of the following:
+
+- pending-review, unregistered, post-registration modified, and sensitive files block
+- unrelated pre-staged files block instead of being swept into the commit
+- exactly one reviewed task artifact is committed and pushed
+- neighboring dirty backlog remains unchanged
+- a second invocation returns `no_op`
+- a push failure after commit returns `retry_required` with the commit SHA
+- durable task records use a portable data-root reference rather than a Windows user path
+
+The scope ledger itself is local-only and ignored by Git. A passing regression
+does not make the current real vault public-safe; `safety:public-data:check` and
+the encrypted restore evidence remain independent completion gates.
+
 ### RAG Source Anchor Seeding
 
 `npm run sources:rag:seed` records user-provided RAG methodology URLs as

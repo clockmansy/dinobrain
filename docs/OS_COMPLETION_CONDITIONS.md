@@ -91,7 +91,7 @@ strictly decoded, parsed, hashed, or mapped to the recorded audit run.
 
 `npm run completion:audit` executes the mandatory command registry and writes
 the three evidence-pack files above. The typed registry must match the command
-order in the Canonical PowerShell Runner: 74 base commands, three independent
+order in the Canonical PowerShell Runner: 75 base commands, three independent
 24-client concurrency runs, and `verify:goal` last. The audit runner is not a
 row in its own command ledger.
 
@@ -462,6 +462,7 @@ the current-vault artifacts named above.
 | Graph regression | `npm run graph:health:verify` | HG-08 regression coverage |
 | Session ingest | `npm run session:verify` | HG-03/HG-06/HG-09 ingestion safety |
 | Unified data classifier | `npm run safety:classifier:verify` | HG-09/HG-10 cross-surface parity, complete scans, and history-injected secret rejection |
+| Task-scoped sync | `npm run safety:task-sync:verify` | HG-07/HG-09/HG-12 authoritative task scope, review/hash binding, neighboring backlog isolation, real remote push, and retry-state proof |
 | Public safety | `npm run safety:public-data:check` | HG-09 requires zero blockers/warnings |
 | Data hooks | `npm run hooks:data:verify` | HG-09 push-policy enforcement |
 | OS regression | `npm run verify:os` | HG-01 through HG-09 regression coverage |
@@ -547,6 +548,7 @@ $commands = @(
   'npm run graph:health:verify',
   'npm run session:verify',
   'npm run safety:classifier:verify',
+  'npm run safety:task-sync:verify',
   'npm run safety:public-data:check',
   'npm run hooks:data:verify',
   'npm run verify:os',

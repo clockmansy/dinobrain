@@ -607,14 +607,22 @@ try {
         allow_conditional: true,
         push: false,
         commit_message: "data: smoke auto sync allowed DinoBrain records",
+        task_id: start.task_id,
+        allowed_paths: [review.accepted_path],
       },
     }),
   );
   if (autoSync.ok !== true || autoSync.committed !== true || autoSync.pushed !== false) {
     throw new Error(`auto_sync did not commit allowed records without push: ${JSON.stringify(autoSync)}`);
   }
-  if (!Array.isArray(autoSync.skipped_paths) || !autoSync.skipped_paths.some((file) => file.path === ".dino/secrets.json")) {
-    throw new Error("auto_sync did not skip blocked local-only data");
+  if (autoSync.state !== "committed" || autoSync.sync_scope !== "task_scope") {
+    throw new Error("auto_sync did not report a task-scoped committed state");
+  }
+  if (autoSync.allowed_paths?.length !== 1 || autoSync.allowed_paths[0] !== review.accepted_path) {
+    throw new Error("auto_sync committed paths outside the reviewed task scope");
+  }
+  if (Number(autoSync.out_of_scope_changed_count ?? 0) < 1) {
+    throw new Error("auto_sync did not preserve neighboring dirty backlog as out of scope");
   }
 
   console.log(

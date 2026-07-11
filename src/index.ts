@@ -57,6 +57,12 @@ import { buildReviewQueueBackpressure, writeReviewGatedBatch } from "./review-ba
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { publishSourceLineage } from "./source-lineage-publication.js";
 import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
+import {
+  TASK_SYNC_SCOPE_VERSION,
+  registerTaskSyncPaths,
+  resolveTaskSyncScope,
+  type TaskSyncScopeEntry,
+} from "./task-sync-scope.js";
 import { writeTerminalTaskAndTrace, writeTerminalTaskAndTraceUnlocked } from "./task-terminal-store.js";
 import {
   type OperationContextPackEntry,
@@ -507,6 +513,13 @@ function jsonResult(value: unknown): CallToolResult {
   };
 }
 
+function taskIdFromMemoryRecord(record: Record<string, unknown>): string {
+  const source = record.source && typeof record.source === "object"
+    ? record.source as Record<string, unknown>
+    : null;
+  return firstString(record.task_id, source?.task_id);
+}
+
 const NODE_LIFECYCLE_FIELDS = [
   "node_id",
   "lifecycle_version",
@@ -631,7 +644,10 @@ type SyncPlan = {
   ok: boolean;
   dry_run: boolean;
   data_root: string;
+  observed_changed_file_count: number;
   changed_file_count: number;
+  out_of_scope_changed_count: number;
+  out_of_scope_changed_paths: Array<{ path: string; status: string }>;
   would_commit: boolean;
   would_push: boolean;
   manual_approval_required: boolean;
@@ -680,6 +696,8 @@ async function buildSyncPlan(options: {
   allowConditionalAutoSync?: boolean;
   dryRun: boolean;
   wouldPush?: boolean;
+  candidatePaths?: Set<string>;
+  scopeEntries?: Map<string, TaskSyncScopeEntry>;
 }): Promise<SyncPlan> {
   let stdout = "";
   try {
@@ -696,7 +714,10 @@ async function buildSyncPlan(options: {
       reason: code === "ENOENT" ? "git_missing" : "data_root_not_git_repository",
       dry_run: options.dryRun,
       data_root: DATA_ROOT,
+      observed_changed_file_count: 0,
       changed_file_count: 0,
+      out_of_scope_changed_count: 0,
+      out_of_scope_changed_paths: [],
       would_commit: false,
       would_push: false,
       manual_approval_required: options.dryRun,
@@ -715,7 +736,13 @@ async function buildSyncPlan(options: {
     } as SyncPlan & { unavailable: true; reason: string };
   }
 
-  const changes = parseGitStatus(stdout);
+  const observedChanges = parseGitStatus(stdout);
+  const changes = options.candidatePaths
+    ? observedChanges.filter((change) => options.candidatePaths?.has(change.path))
+    : observedChanges;
+  const outOfScopeChanges = options.candidatePaths
+    ? observedChanges.filter((change) => !options.candidatePaths?.has(change.path))
+    : [];
   const files: SyncFileReport[] = [];
   for (const change of changes) {
     const deleted = change.status.includes("D");
@@ -753,7 +780,10 @@ async function buildSyncPlan(options: {
         scan: classification.scan,
       },
     };
-    if (!options.dryRun && isAutoSyncAllowed(file, options.allowConditionalAutoSync === true)) {
+    if (
+      !options.dryRun &&
+      isAutoSyncAllowed(file, options.allowConditionalAutoSync === true, options.scopeEntries?.get(file.path))
+    ) {
       file.action = "ready_for_auto_commit";
     }
     files.push(file);
@@ -773,7 +803,10 @@ async function buildSyncPlan(options: {
     ok: true,
     dry_run: options.dryRun,
     data_root: DATA_ROOT,
+    observed_changed_file_count: observedChanges.length,
     changed_file_count: files.length,
+    out_of_scope_changed_count: outOfScopeChanges.length,
+    out_of_scope_changed_paths: outOfScopeChanges.slice(0, 100).map((change) => ({ path: change.path, status: change.status })),
     would_commit: !options.dryRun && summary.ready_for_auto_commit > 0,
     would_push: !options.dryRun && options.wouldPush === true && summary.ready_for_auto_commit > 0,
     manual_approval_required: options.dryRun,
@@ -872,106 +905,220 @@ async function hasStagedChanges(): Promise<boolean> {
 }
 
 async function runDataAutoSync(options: {
+  taskId: string;
   includeSensitiveScan: boolean;
   allowConditional: boolean;
   push: boolean;
   commitMessage: string;
-  allowedPaths?: string[];
+  allowedPaths: string[];
 }): Promise<Record<string, unknown>> {
+  const scopeResolution = await resolveTaskSyncScope({
+    dataRoot: DATA_ROOT,
+    taskId: options.taskId,
+    requestedPaths: options.allowedPaths,
+  });
+  if (!scopeResolution.ok) {
+    return {
+      ok: false,
+      state: "blocked",
+      committed: false,
+      pushed: false,
+      reason: "task_sync_scope_blocked",
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope: scopeResolution,
+    };
+  }
+
+  const scopeEntries = new Map(scopeResolution.entries.map((entry) => [entry.path, entry]));
+  const scopedPathSet = new Set(scopeEntries.keys());
   const plan = await buildSyncPlan({
     includeSensitiveScan: options.includeSensitiveScan,
     allowConditionalAutoSync: options.allowConditional,
     dryRun: false,
     wouldPush: options.push,
+    candidatePaths: scopedPathSet,
+    scopeEntries,
   });
-  if (!plan.ok) return plan as unknown as Record<string, unknown>;
-
-  const scope = options.allowedPaths && options.allowedPaths.length > 0 ? new Set(normalizeVaultPaths(options.allowedPaths)) : null;
-  const scopedFiles = scope ? plan.files.filter((file) => scope.has(file.path)) : plan.files;
-  const outOfScopeChangedPaths = scope
-    ? plan.files
-        .filter((file) => !scope.has(file.path))
-        .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }))
-    : [];
-
-  const allowedPaths = scopedFiles
-    .filter((file) => isAutoSyncAllowed(file, options.allowConditional))
-    .map((file) => file.path);
-  const skippedPaths = scopedFiles
-    .filter((file) => !isAutoSyncAllowed(file, options.allowConditional))
-    .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }));
-
-  if (allowedPaths.length === 0) {
+  if (!plan.ok) {
     return {
       ...plan,
+      ok: false,
+      state: "retry_required",
       committed: false,
       pushed: false,
-      reason: "no_auto_sync_allowed_changes",
-      sync_scope: scope ? "allowed_paths" : "repo_policy",
-      scoped_path_count: scopedFiles.length,
-      skipped_paths: skippedPaths,
-      out_of_scope_changed_paths: outOfScopeChangedPaths,
+      reason: "task_scoped_sync_plan_unavailable",
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
     };
   }
+
+  const unresolvedPaths = plan.files
+    .filter((file) => !isAutoSyncAllowed(file, options.allowConditional, scopeEntries.get(file.path)))
+    .map((file) => ({ path: file.path, classification: file.classification, policy: file.policy }));
+  if (unresolvedPaths.length > 0) {
+    return {
+      ...plan,
+      ok: false,
+      state: "blocked",
+      committed: false,
+      pushed: false,
+      reason: "unresolved_conditional_or_blocked_paths",
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
+      requested_path_count: scopeResolution.requested_path_count,
+      scoped_path_count: scopeResolution.selected_path_count,
+      unresolved_paths: unresolvedPaths,
+    };
+  }
+
+  if (plan.files.length === 0) {
+    return {
+      ...plan,
+      ok: true,
+      state: "no_op",
+      committed: false,
+      pushed: false,
+      reason: "no_task_scoped_changes",
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
+      requested_path_count: scopeResolution.requested_path_count,
+      scoped_path_count: scopeResolution.selected_path_count,
+    };
+  }
+
+  const allowedPaths = plan.files.map((file) => file.path);
 
   const stagedBefore = (await gitOutput(["diff", "--cached", "--name-only"])).split(/\r?\n/).filter(Boolean);
   const allowedSet = new Set(allowedPaths);
   const disallowedStaged = stagedBefore.filter((stagedPath) => !allowedSet.has(stagedPath.replace(/\\/g, "/")));
-  if (disallowedStaged.length > 0) {
+  if (stagedBefore.length > 0) {
     return {
       ...plan,
+      ok: false,
+      state: "blocked",
       committed: false,
       pushed: false,
       blocked: true,
       reason: "disallowed_files_already_staged",
-      disallowed_staged_paths: disallowedStaged,
-      sync_scope: scope ? "allowed_paths" : "repo_policy",
-      scoped_path_count: scopedFiles.length,
-      skipped_paths: skippedPaths,
-      out_of_scope_changed_paths: outOfScopeChangedPaths,
+      disallowed_staged_paths: disallowedStaged.length > 0 ? disallowedStaged : stagedBefore,
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
+      scoped_path_count: scopeResolution.selected_path_count,
     };
   }
 
-  await gitRun(["add", "--", ...allowedPaths]);
-  if (!(await hasStagedChanges())) {
+  let createdCommit = "";
+  let createdBranch = "";
+  let retryStage: "stage" | "commit" | "push" = "stage";
+  try {
+    await gitRun(["add", "--", ...allowedPaths]);
+    const stagedIdentityMismatches: Array<{ path: string; expected: string | null; observed: string | null }> = [];
+    for (const allowedPath of allowedPaths) {
+      const entry = scopeEntries.get(allowedPath);
+      let observed: string | null = null;
+      try {
+        observed = (await gitOutput(["rev-parse", `:${allowedPath}`])).toLowerCase();
+      } catch {
+        observed = null;
+      }
+      if (!entry?.git_blob_oid || observed !== entry.git_blob_oid) {
+        stagedIdentityMismatches.push({
+          path: allowedPath,
+          expected: entry?.git_blob_oid ?? null,
+          observed,
+        });
+      }
+    }
+    if (stagedIdentityMismatches.length > 0) {
+      await gitRun(["reset", "--", ...allowedPaths]);
+      return {
+        ...plan,
+        ok: false,
+        state: "blocked",
+        committed: false,
+        pushed: false,
+        reason: "staged_blob_identity_mismatch",
+        staged_identity_mismatches: stagedIdentityMismatches,
+        task_id: options.taskId,
+        scope_version: TASK_SYNC_SCOPE_VERSION,
+        scope_path: scopeResolution.scope_path,
+        allowed_paths: allowedPaths,
+      };
+    }
+    if (!(await hasStagedChanges())) {
+      return {
+        ...plan,
+        ok: true,
+        state: "no_op",
+        committed: false,
+        pushed: false,
+        reason: "no_staged_changes_after_task_scope_add",
+        task_id: options.taskId,
+        scope_version: TASK_SYNC_SCOPE_VERSION,
+        scope_path: scopeResolution.scope_path,
+        allowed_paths: allowedPaths,
+        scoped_path_count: scopeResolution.selected_path_count,
+      };
+    }
+
+    const message = options.commitMessage.trim() || `data: task-scoped sync ${safeSlug(options.taskId).slice(0, 48)}`;
+    retryStage = "commit";
+    await gitRun(["commit", "-m", message]);
+    createdCommit = await gitOutput(["rev-parse", "HEAD"]);
+    createdBranch = await gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]);
+    let pushed = false;
+    let remote = "";
+    if (options.push) {
+      retryStage = "push";
+      remote = await gitOutput(["remote", "get-url", "origin"]);
+      await gitRun(["push", "origin", createdBranch]);
+      pushed = true;
+    }
+
     return {
       ...plan,
-      committed: false,
-      pushed: false,
-      reason: "no_staged_changes_after_policy_add",
+      ok: true,
+      state: pushed ? "pushed" : "committed",
+      committed: true,
+      pushed,
+      commit: createdCommit,
+      branch: createdBranch,
+      remote: remote || null,
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
       allowed_paths: allowedPaths,
-      sync_scope: scope ? "allowed_paths" : "repo_policy",
-      scoped_path_count: scopedFiles.length,
-      skipped_paths: skippedPaths,
-      out_of_scope_changed_paths: outOfScopeChangedPaths,
+      sync_scope: "task_scope",
+      scoped_path_count: scopeResolution.selected_path_count,
+    };
+  } catch (error) {
+    if (!createdCommit && (retryStage === "stage" || retryStage === "commit")) {
+      await gitRun(["reset", "--", ...allowedPaths]).catch(() => undefined);
+    }
+    return {
+      ...plan,
+      ok: false,
+      state: "retry_required",
+      committed: Boolean(createdCommit),
+      pushed: false,
+      reason: retryStage === "push" ? "push_failed_after_commit" : "git_operation_failed",
+      retry_stage: retryStage,
+      error: safeError(error),
+      commit: createdCommit || null,
+      branch: createdBranch || null,
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+      scope_path: scopeResolution.scope_path,
+      allowed_paths: allowedPaths,
+      sync_scope: "task_scope",
+      scoped_path_count: scopeResolution.selected_path_count,
     };
   }
-
-  const message = options.commitMessage.trim() || "data: auto sync DinoBrain OS loop";
-  await gitRun(["commit", "-m", message]);
-  const commit = await gitOutput(["rev-parse", "HEAD"]);
-  const branch = await gitOutput(["rev-parse", "--abbrev-ref", "HEAD"]);
-  let pushed = false;
-  let remote = "";
-  if (options.push) {
-    remote = await gitOutput(["remote", "get-url", "origin"]);
-    await gitRun(["push", "origin", branch]);
-    pushed = true;
-  }
-
-  return {
-    ...plan,
-    committed: true,
-    pushed,
-    commit,
-    branch,
-    remote: remote || null,
-    allowed_paths: allowedPaths,
-    sync_scope: scope ? "allowed_paths" : "repo_policy",
-    scoped_path_count: scopedFiles.length,
-    skipped_paths: skippedPaths,
-    out_of_scope_changed_paths: outOfScopeChangedPaths,
-  };
 }
 
 function isAutoSyncConditionalPath(normalizedPath: string): boolean {
@@ -993,8 +1140,13 @@ function isAutoSyncConditionalPath(normalizedPath: string): boolean {
   return allowedPrefixes.some((prefix) => normalizedPath.startsWith(prefix));
 }
 
-function isAutoSyncAllowed(file: SyncFileReport, allowConditional: boolean): boolean {
+function isAutoSyncAllowed(
+  file: SyncFileReport,
+  allowConditional: boolean,
+  scopeEntry?: TaskSyncScopeEntry,
+): boolean {
   if (file.classification === "blocked" || file.sensitive_patterns.length > 0) return false;
+  if (!scopeEntry || scopeEntry.approval === "pending_review") return false;
   if (file.classification === "syncable") return true;
   return allowConditional && file.classification === "conditional" && isAutoSyncConditionalPath(file.path);
 }
@@ -1923,7 +2075,7 @@ registerTool(
       contract: DINOBRAIN_OS_CONTRACT,
       created_at: createdAt,
       updated_at: createdAt,
-      data_root: DATA_ROOT,
+      data_root: ".",
       sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
       ...taskLaunchEvidence(storedRequest, metadata, eligibility),
       lease,
@@ -1933,6 +2085,13 @@ registerTool(
     const taskRelativePath = relDataPath(taskPath);
     await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId,
+      paths: [taskRelativePath],
+      source: "os_begin_task:task",
+      approval: "system_verified",
+    });
     const taskEventLog = await appendEvent({
       event: "task_started",
       task_id: taskId,
@@ -2125,6 +2284,19 @@ registerTool(
           gates,
         })
       : null;
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId,
+      paths: [
+        taskRelativePath,
+        firstString(contextPack.trace_path),
+        gateReportPath,
+        blocked?.trace_path ?? "",
+      ].filter(Boolean),
+      source: "os_begin_task:preflight",
+      approval: "system_verified",
+      terminal: Boolean(blocked),
+    });
     const response = {
       ok: !gates.fail_closed,
       os_version: DINOBRAIN_OS_VERSION,
@@ -2207,7 +2379,7 @@ registerTool(
       contract: DINOBRAIN_OS_CONTRACT,
       created_at: createdAt,
       updated_at: createdAt,
-      data_root: DATA_ROOT,
+      data_root: ".",
       sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
       ...taskLaunchEvidence(storedRequest, metadata, eligibility),
       lease,
@@ -2217,6 +2389,13 @@ registerTool(
     const taskRelativePath = relDataPath(taskPath);
     await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId,
+      paths: [taskRelativePath],
+      source: "start_task:task",
+      approval: "system_verified",
+    });
     const eventLog = await appendEvent({
       event: "task_started",
       task_id: taskId,
@@ -2279,6 +2458,13 @@ registerTool(
     const taskRelativePath = relDataPath(taskPath);
     await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, updated));
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId: task_id,
+      paths: [taskRelativePath],
+      source: "heartbeat_task:task",
+      approval: "system_verified",
+    });
     const eventLog = await appendEvent({
       event: "task_lease_heartbeat",
       task_id,
@@ -2607,17 +2793,45 @@ registerTool(
         };
       }
     }
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId: task_id,
+      paths: [taskRelativePath, traceRelativePath],
+      source: "finish_task:terminal",
+      approval: "system_verified",
+      terminal: true,
+    });
+    const growthPaths = stringList((growth as { created_paths?: unknown }).created_paths);
+    if (growthPaths.length > 0) {
+      await registerTaskSyncPaths({
+        dataRoot: DATA_ROOT,
+        taskId: task_id,
+        paths: growthPaths,
+        source: "finish_task:growth_pending_review",
+        approval: "pending_review",
+      });
+    }
+    const compoundingPaths = compoundingSyncPaths(compounding);
+    if (compoundingPaths.length > 0) {
+      await registerTaskSyncPaths({
+        dataRoot: DATA_ROOT,
+        taskId: task_id,
+        paths: compoundingPaths,
+        source: "finish_task:compounding_pending_review",
+        approval: "pending_review",
+        ignoreMissing: true,
+      });
+    }
     let autoSync: Record<string, unknown> | null = null;
     if (!traceOnly && envFlag("DINOBRAIN_AUTO_SYNC", false)) {
       try {
-        const growthPaths = stringList((growth as { created_paths?: unknown }).created_paths);
-        const compoundingPaths = compoundingSyncPaths(compounding);
         autoSync = await runDataAutoSync({
+          taskId: task_id,
           includeSensitiveScan: true,
           allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", false),
           push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", false),
           commitMessage: `data: auto sync ${safeSlug(task_id).slice(0, 48)}`,
-          allowedPaths: [taskRelativePath, traceRelativePath, ...growthPaths, ...compoundingPaths],
+          allowedPaths: [taskRelativePath, traceRelativePath],
         });
       } catch (error) {
         autoSync = {
@@ -2775,6 +2989,13 @@ registerTool(
       prompt_hash: firstString(task?.prompt_hash) || null,
       os_version: DINOBRAIN_OS_VERSION,
     });
+    await registerTaskSyncPaths({
+      dataRoot: DATA_ROOT,
+      taskId: linkedTaskId,
+      paths: [firstString(pack.trace_path)],
+      source: "get_context_pack:task_bound",
+      approval: "system_verified",
+    });
     return jsonResult({ ...pack, preflight_event_log: preflightEventLog });
   },
 );
@@ -2903,6 +3124,16 @@ registerTool(
       context_declaration_mismatch: contextEvidence.declarationMismatch,
       os_version: DINOBRAIN_OS_VERSION,
     });
+    if (task_id?.trim()) {
+      await registerTaskSyncPaths({
+        dataRoot: DATA_ROOT,
+        taskId: gateTaskId,
+        paths: [gateReportPath, contextEvidence.contextPackPath ?? ""].filter(Boolean),
+        source: "os_gate:task_bound",
+        approval: "system_verified",
+        ignoreMissing: true,
+      });
+    }
     return jsonResult({
       ok: !gates.fail_closed,
       os_version: DINOBRAIN_OS_VERSION,
@@ -3548,9 +3779,10 @@ registerTool(
       sensitivity: z.enum(["normal", "sensitive", "unknown"]).default("unknown"),
       max_candidates: z.number().int().min(1).max(50).default(12),
       raw_retention: z.enum(["metadata_only", "redacted_excerpt"]).default("redacted_excerpt"),
+      task_id: z.string().optional(),
     },
   },
-  async ({ source, project, title, transcript, messages, sensitivity, max_candidates, raw_retention }) => {
+  async ({ source, project, title, transcript, messages, sensitivity, max_candidates, raw_retention, task_id }) => {
     let plan;
     try {
       plan = buildSessionImportPlan({
@@ -3575,8 +3807,14 @@ registerTool(
     for (const candidate of plan.candidates) {
       const existingCandidate = await readJson<Record<string, unknown>>(dataPath(candidate.candidatePath));
       const existingReview = await readJson<Record<string, unknown>>(dataPath(candidate.reviewPath));
-      const candidateRecord = mergePreservingNodeLifecycle(existingCandidate, candidate.candidate);
-      const reviewRecord = mergePreservingNodeLifecycle(existingReview, candidate.review);
+      const candidateRecord = mergePreservingNodeLifecycle(existingCandidate, {
+        ...candidate.candidate,
+        task_id: task_id ?? null,
+      });
+      const reviewRecord = mergePreservingNodeLifecycle(existingReview, {
+        ...candidate.review,
+        task_id: task_id ?? null,
+      });
       reviewItems.push({
         idempotency_key: `session-candidate|${candidate.candidateId}`,
         lane: "manual_semantic" as const,
@@ -3592,7 +3830,7 @@ registerTool(
     }
     const reviewAdmission = await writeReviewGatedBatch(DATA_ROOT, {
       items: reviewItems,
-      extra_writes: [{ target_path: plan.archivePath, record: plan.archive }],
+      extra_writes: [{ target_path: plan.archivePath, record: { ...plan.archive, task_id: task_id ?? null } }],
       actor: "import_session",
       reason: `Register session ${plan.sessionId} and its review-gated candidates.`,
     });
@@ -3610,6 +3848,19 @@ registerTool(
       category_counts: plan.stats.category_counts,
       redaction_hits: plan.stats.redaction_hits,
     });
+    if (task_id) {
+      await registerTaskSyncPaths({
+        dataRoot: DATA_ROOT,
+        taskId: task_id,
+        paths: [
+          plan.archivePath,
+          ...plan.candidates.map((candidate) => candidate.candidatePath),
+          ...plan.candidates.map((candidate) => candidate.reviewPath),
+        ],
+        source: "import_session:pending_review",
+        approval: "pending_review",
+      });
+    }
 
     return jsonResult({
       ok: true,
@@ -3723,6 +3974,15 @@ registerTool(
       lifecycle_transaction: reviewAdmission.lifecycle_transaction,
       queue_admission: reviewAdmission.decisions[0],
     });
+    if (task_id) {
+      await registerTaskSyncPaths({
+        dataRoot: DATA_ROOT,
+        taskId: task_id,
+        paths: [candidateRelativePath, reviewRelativePath],
+        source: "create_candidate_instance:pending_review",
+        approval: "pending_review",
+      });
+    }
     return jsonResult({
       ok: true,
       candidate_id: candidateId,
@@ -3807,6 +4067,19 @@ registerTool(
           error: "existing_accepted_record_failed_lifecycle_gate",
           blockers: eligibility.issues,
           accepted_path: acceptedRelativePath,
+        });
+      }
+      const existingTaskId = firstString(
+        taskIdFromMemoryRecord(existingAccepted),
+        taskIdFromMemoryRecord(candidateState.record),
+      );
+      if (existingTaskId) {
+        await registerTaskSyncPaths({
+          dataRoot: DATA_ROOT,
+          taskId: existingTaskId,
+          paths: [candidateRelativePath, reviewRelativePath, acceptedRelativePath],
+          source: "review_candidate:idempotent_approved",
+          approval: "reviewed",
         });
       }
       return jsonResult({
@@ -4121,6 +4394,16 @@ registerTool(
         controlled_compounding_status_path: controlledCompoundingStatus?.path ?? null,
         lifecycle_transaction_id: lifecycleTransaction.transaction_id,
       });
+      const candidateTaskId = taskIdFromMemoryRecord(candidate);
+      if (candidateTaskId) {
+        await registerTaskSyncPaths({
+          dataRoot: DATA_ROOT,
+          taskId: candidateTaskId,
+          paths: [candidateRelativePath, reviewRelativePath, acceptedRelativePath],
+          source: "review_candidate:approved",
+          approval: "reviewed",
+        });
+      }
       return jsonResult({
         ok: true,
         candidate_id: candidateId,
@@ -4416,19 +4699,21 @@ registerTool(
   "auto_sync",
   {
     title: "Auto Sync",
-    description: "Commit and push policy-approved DinoBrain data changes while excluding blocked local-only records.",
+    description: "Commit and push only hash-bound artifacts from one registered DinoBrain task sync scope.",
     inputSchema: {
+      task_id: z.string().min(1),
       include_sensitive_scan: z.boolean().default(true),
       allow_conditional: z.boolean().default(false),
       push: z.boolean().default(true),
       commit_message: z.string().default("data: auto sync DinoBrain OS loop"),
-      allowed_paths: z.array(z.string()).default([]),
+      allowed_paths: z.array(z.string()).min(1),
     },
   },
-  async ({ include_sensitive_scan, allow_conditional, push, commit_message, allowed_paths }) => {
+  async ({ task_id, include_sensitive_scan, allow_conditional, push, commit_message, allowed_paths }) => {
     try {
       return jsonResult(
         await runDataAutoSync({
+          taskId: task_id,
           includeSensitiveScan: include_sensitive_scan,
           allowConditional: allow_conditional,
           push,
@@ -4439,10 +4724,13 @@ registerTool(
     } catch (error) {
       return jsonResult({
         ok: false,
+        state: "retry_required",
         dry_run: false,
         data_root: DATA_ROOT,
         error: safeError(error),
         policy_version: DATA_CLASSIFICATION_POLICY_VERSION,
+        scope_version: TASK_SYNC_SCOPE_VERSION,
+        task_id,
       });
     }
   },
