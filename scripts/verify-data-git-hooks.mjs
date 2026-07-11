@@ -259,6 +259,67 @@ function verifyUnsafeReviewWorklistSummaryBlocked() {
   }
 }
 
+function verifyConditionalWithoutReceiptBlocked() {
+  const repo = initRepo("conditional-without-receipt");
+  try {
+    mkdirSync(path.join(repo, "20_Wiki"), { recursive: true });
+    writeFileSync(path.join(repo, "20_Wiki", "baseline.md"), "safe root baseline\n", "utf8");
+    assert(commitAll(repo, "safe root baseline").status === 0, "safe root baseline commit failed");
+    writeJson(path.join(repo, ".dino", "tasks", "task-example.json"), {
+      task_id: "task-example",
+      request_hash: "a".repeat(64),
+      status: "started",
+    });
+    const commit = commitAll(repo, "conditional without receipt");
+    assert(commit.status !== 0, "pre-commit allowed a conditional artifact without a public approval receipt");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyForgedConditionalReceiptBlocked() {
+  const repo = initRepo("forged-conditional-receipt");
+  try {
+    mkdirSync(path.join(repo, "20_Wiki"), { recursive: true });
+    writeFileSync(path.join(repo, "20_Wiki", "baseline.md"), "safe root baseline\n", "utf8");
+    assert(commitAll(repo, "safe root baseline").status === 0, "safe root baseline commit failed");
+    writeJson(path.join(repo, ".dino", "tasks", "task-example.json"), {
+      task_id: "task-example",
+      request_hash: "a".repeat(64),
+      status: "started",
+    });
+    writeJson(
+      path.join(repo, "60_Operations", "task-sync-receipts", `task-sync-receipt-${"0".repeat(64)}.json`),
+      { version: "forged", receipt_id: "0".repeat(64), artifacts: [] },
+    );
+    const commit = commitAll(repo, "forged conditional receipt");
+    assert(commit.status !== 0, "pre-commit allowed a forged public approval receipt");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
+function verifyConditionalDeletionBlocked() {
+  const repo = initRepo("conditional-deletion");
+  try {
+    writeJson(path.join(repo, ".dino", "tasks", "task-example.json"), {
+      task_id: "task-example",
+      request_hash: "a".repeat(64),
+      status: "started",
+    });
+    assert(runGit(["add", "-A"], { cwd: repo }).status === 0, "conditional baseline add failed");
+    assert(
+      runGit(["commit", "--no-verify", "-m", "verified migration baseline"], { cwd: repo }).status === 0,
+      "conditional migration baseline commit failed",
+    );
+    rmSync(path.join(repo, ".dino", "tasks", "task-example.json"), { force: true });
+    const commit = commitAll(repo, "delete conditional task");
+    assert(commit.status !== 0, "pre-commit allowed an unreceipted conditional artifact deletion");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function verifyReviewedAcceptedAllowedAndPrePushChecked() {
   const repo = initRepo("reviewed-accepted");
   try {
@@ -289,6 +350,9 @@ verifyLocalOnlyBlocked();
 verifyLocalLifecycleBackupBlocked();
 verifyLocalAdmissionReceiptBlocked();
 verifyUnsafeReviewWorklistSummaryBlocked();
+verifyConditionalWithoutReceiptBlocked();
+verifyForgedConditionalReceiptBlocked();
+verifyConditionalDeletionBlocked();
 verifyReviewedAcceptedAllowedAndPrePushChecked();
 verifyHistoryInjectedSecretBlocked();
 
@@ -310,6 +374,9 @@ console.log(
         "local_lifecycle_backup_blocked",
         "local_review_admission_blocked",
         "unsafe_review_worklist_summary_blocked",
+        "conditional_without_receipt_blocked",
+        "forged_conditional_receipt_blocked",
+        "conditional_deletion_blocked",
         "reviewed_accepted_allowed",
         "pre_push_clean_head",
         "history_injected_secret_blocked",

@@ -320,6 +320,7 @@ function classifyDrift(vaultPath: string, lifecyclePaths: Set<string>): DriftCla
     normalized.startsWith(".dino/proofs/") ||
     normalized.startsWith(".dino/quarantine/") ||
     normalized.startsWith(".dino/review-admissions/") ||
+    normalized.startsWith(".dino/sync-scopes/") ||
     normalized.startsWith(".dino/lifecycle/") ||
     normalized.startsWith(".dino/tmp/") ||
     normalized.startsWith(".dino/locks/") ||

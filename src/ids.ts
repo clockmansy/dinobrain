@@ -1,18 +1,11 @@
-import { randomUUID } from "node:crypto";
-
-function safeIdSlug(value: string, limit: number): string {
-  const slug = value
-    .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, limit);
-  return slug || "record";
-}
+import { createHash, randomUUID } from "node:crypto";
 
 function compactTimestamp(date = new Date()): string {
   return date.toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/[.Z]/g, "");
 }
 
 export function makeUniqueId(prefix: string, description: string, slugLength = 28): string {
-  return `${prefix}-${compactTimestamp()}-${safeIdSlug(description, slugLength)}-${randomUUID()}`;
+  const opaqueLength = Math.max(8, Math.min(40, slugLength));
+  const descriptionHash = createHash("sha256").update(description).digest("hex").slice(0, opaqueLength);
+  return `${prefix}-${compactTimestamp()}-${descriptionHash}-${randomUUID()}`;
 }

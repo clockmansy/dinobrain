@@ -736,7 +736,7 @@ did not remain as an additional resident process.
 **Acceptance:** the same file receives the same decision in every surface;
 history-injected secrets and raw transcripts are blocked before commit/push.
 
-**Implemented 2026-07-11:** policy `data_classification_20260711_v1` now lives
+**Implemented 2026-07-12:** policy `data_classification_20260712_v3` now lives
 in `src/data-classification.ts` and is consumed directly by MCP sync plus the
 public-data and Git-hook CLI surfaces. Unknown paths, scans disabled by callers,
 files over 8 MiB, symlinks/submodules, unsupported/binary files, invalid UTF-8, malformed JSON/JSONL,
@@ -746,26 +746,20 @@ parity and catches a token committed and then removed before push;
 `npm run hooks:data:verify` proves the installed wrappers use the version-bound
 engine. SAFE-01 implementation acceptance passes.
 
-HG-09 remains `NOT_COMPLETE`. The current real-vault unified audit scanned 5,049
-tracked files, 4,605 untracked files, and 7,629 unique historical blob paths. It
-reported 3,039 blockers and 4,595 warnings. Every tracked path now has an
-explicit path rule (153 syncable, 4,896 conditional, zero blocked/unclassified),
-but content checks still found 990 current machine-local path findings, 116
-unclassified untracked files, and 1,910 historical risk blob paths. No OpenAI, GitHub, AWS, bearer, JWT, or
-private-key shape was found in the historical finding counts. SAFE-02/SAFE-03
-and an explicit legacy cleanup/baseline decision are still required; these
-findings must not be hidden by the passing SAFE-01 regression.
-
-**Prepared remediation evidence (2026-07-12):** the reversible public-history
+**Applied remediation evidence (2026-07-12):** the reversible public-history
 migration now uses an isolated committed snapshot, verified mirror bundle,
 per-file before/after hashes, Windows long-path checkout, unified current/staged/
 history/pre-push scans, exact SHA confirmations, `force-with-lease`, and tested
-remote rollback. The real `origin/main` baseline contained 1,907 risky historical
-file versions. Preparation changed 719 files and produced sanitized commit
-`54a72e5e7797bba021ccbe2b3670f6baccb7e7dd`; an independent scan of its 5,057
-tracked files found zero current or historical blockers. The public remote has
-not been rewritten, so HG-09 remains `NOT_COMPLETE` until that destructive
-publication is explicitly approved and existing clones are migrated. See
+remote rollback. After the first sanitized candidate, structural JSON/JSONL
+redaction, filename-reference rewriting, canary masking, and executable hook
+mode repair produced final root
+`ec9a1a5c27b082dba94de4eeecca0fe4a9238854`. The approved force-with-lease
+replacement is now the public `origin/main`; a fresh clone and the real local
+checkout both pass with 5,057 committed files, zero current/history blockers,
+zero warnings, and matching HEAD. Local realignment preserved 28,007 files and
+372,849,563 bytes with an unchanged aggregate SHA-256. SAFE-01 acceptance is
+met. HG-09 remains `NOT_COMPLETE` until SAFE-02 has one real receipted remote
+push and SAFE-03/clean-machine/final audit evidence is complete. See
 `docs/PUBLIC_DATA_HISTORY_MIGRATION.md`.
 
 #### SAFE-02: Task-scoped automatic sync
@@ -776,8 +770,9 @@ publication is explicitly approved and existing clones are migrated. See
 
 - derive the candidate commit set from the active task trace and approved
   lifecycle actions, not the whole dirty repository;
-- require a nonempty allowlist, completed sensitivity scan, reviewed state, and
-  no conditional/blocked path;
+- require a nonempty allowlist, completed sensitivity scan, reviewed state, no
+  blocked path, and a durable exact-blob approval receipt for every conditional
+  path;
 - commit with task/evidence identity and push only when app/data ref policy is
   satisfied;
 - surface no-op, blocked, committed, pushed, and retry states distinctly.
@@ -804,9 +799,24 @@ post-review tampering, sensitive injection, and unrelated staged files all
 block; a reviewed file is the only path committed and pushed; neighboring
 dirty backlog survives; a repeated call is `no_op`; and a missing remote yields
 `retry_required` with the already-created commit SHA. SAFE-02 implementation
-acceptance passes. HG-09/HG-12 remain `NOT_COMPLETE` until the legacy public
-data findings, encrypted restore, clean-machine equivalence, and final audit
-are independently cleared.
+acceptance passes.
+
+**Strengthened 2026-07-12:** conditional commits now include one public
+`task_sync_public_receipt_20260712_v1` record. It binds the task and request
+hash, task-record bytes, local scope-ledger version/revision/hash, classifier
+policy, and every selected artifact's path, SHA-256, Git-filtered blob id, size,
+producer, and approval state. Commit trailers bind the receipt path, SHA-256,
+and blob id to the resulting commit. Pre-commit independently rechecks the live
+scope ledger; pre-push and full-history scans re-read the public receipt and
+committed blobs without trusting caller declarations. A repository-wide lock
+serializes automatic Git writes. Regressions prove valid conditional push,
+missing/forged receipt rejection, task-record enforcement, post-review tamper
+rejection, and detached-trailer rejection. The one-time fully scanned root is a
+migration baseline; every later conditional commit is receipt-gated.
+
+HG-09/HG-12 remain `NOT_COMPLETE` until one real receipted data-remote push,
+encrypted restore, clean-machine equivalence, and final audit are independently
+cleared.
 
 Post-package regressions pass for `check`, `safety:task-sync:verify`, `smoke`,
 `flow:audit`, `hook:verify`, `session:verify`, `pre-response:gate:verify`,

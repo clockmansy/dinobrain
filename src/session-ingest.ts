@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { redactMachineLocalPaths } from "./data-classification.js";
+
 export type SessionRole = "user" | "assistant" | "system" | "tool" | "unknown";
 export type SessionSensitivity = "normal" | "sensitive" | "unknown";
 export type SessionRawRetention = "metadata_only" | "redacted_excerpt";
@@ -415,13 +417,12 @@ export function buildSessionImportPlan(input: SessionImportInput): SessionImport
   const drafts = extractCandidates(messages, maxCandidates);
   const createdAt = now.toISOString();
   const lastVerified = dateStamp(now);
-  const projectTag = input.project ? `project:${safeSlug(input.project).toLowerCase()}` : null;
+  const projectTag = input.project
+    ? `project:${safeSlug(redactMachineLocalPaths(input.project).text).toLowerCase()}`
+    : null;
 
   const candidates = drafts.map((draft, index) => {
-    const candidateId = `candidate-${safeSlug(draft.claim).slice(0, 36)}-${shortHash(
-      `${sessionId}:${index}:${draft.claim}`,
-      12,
-    )}`;
+    const candidateId = `candidate-${shortHash(`${sessionId}:${index}:${draft.claim}`, 32)}`;
     const candidatePath = `50_Instances/candidates/${candidateId}.json`;
     const reviewPath = `80_Review_Queue/promotion/${candidateId}.json`;
     const tags = [

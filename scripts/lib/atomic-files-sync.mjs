@@ -38,7 +38,7 @@ function renameWithRetry(source, destination) {
   throw lastError ?? new Error(`Could not replace ${destination}`);
 }
 
-export function atomicWriteTextSync(filePath, value, validate = null) {
+export function atomicWriteBytesSync(filePath, value, validate = null) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   let fd = null;
@@ -55,6 +55,10 @@ export function atomicWriteTextSync(filePath, value, validate = null) {
     if (fd !== null) closeSync(fd);
     rmSync(tempPath, { force: true });
   }
+}
+
+export function atomicWriteTextSync(filePath, value, validate = null) {
+  atomicWriteBytesSync(filePath, Buffer.from(value, "utf8"), validate);
 }
 
 export function atomicWriteJsonSync(filePath, value) {

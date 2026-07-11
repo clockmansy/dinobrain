@@ -427,7 +427,7 @@ It verifies by construction:
 Run `npm run safety:classifier:verify` first for the deterministic SAFE-01
 regression. It proves that MCP-compatible direct classification, staged Git
 classification, pre-push history classification, and full-history
-classification use policy `data_classification_20260711_v1`. The fixture covers
+classification use policy `data_classification_20260712_v3`. The fixture covers
 explicit path allowlisting, secrets, machine-local paths, raw transcripts,
 review lineage, invalid JSON, strict UTF-8 decoding, symlinks, unsupported binary files,
 the 8 MiB complete-scan limit, and a secret committed and then deleted before
@@ -444,13 +444,12 @@ It verifies:
 - app documentation does not claim the data repo is private when GitHub reports it as public
 - matched secret values are not printed in the report
 
-The July 11 SAFE-01 implementation proof passes, but the current real vault is
-not yet HG-09 clean. The current unified audit found 5,049 tracked and 4,605
-untracked files, with 3,039 blockers and 4,595 warnings. All tracked paths have
-explicit rules, but machine-local content, unclassified untracked files, and
-1,910 risky historical blob paths remain. This is legacy data
-debt, not a passing safety report; SAFE-02/SAFE-03 and an explicit cleanup plan
-must resolve it before completion.
+The July 12 SAFE-01 remediation replaced the public data history with sanitized
+root `ec9a1a5c27b082dba94de4eeecca0fe4a9238854`. A fresh clone and the real
+local checkout each report 5,057 committed files, zero current/history
+blockers, zero warnings, and public remote parity. The local history
+realignment preserved all 28,007 worktree files and 372,849,563 bytes with the
+same aggregate SHA-256 while replacing only Git HEAD/index metadata.
 
 ### Task-Scoped Automatic Sync
 
@@ -463,15 +462,21 @@ The fixture requires all of the following:
 
 - pending-review, unregistered, post-registration modified, and sensitive files block
 - unrelated pre-staged files block instead of being swept into the commit
-- exactly one reviewed task artifact is committed and pushed
+- a reviewed syncable task artifact is committed and pushed without sweeping neighboring files
+- conditional artifacts require the exact task record and one hash-bound public receipt in the same commit
+- pre-push recomputes the receipt, task binding, artifact identities, and commit trailers
+- missing, forged, changed, or trailer-detached receipts block
 - neighboring dirty backlog remains unchanged
 - a second invocation returns `no_op`
 - a push failure after commit returns `retry_required` with the commit SHA
 - durable task records use a portable data-root reference rather than a Windows user path
 
-The scope ledger itself is local-only and ignored by Git. A passing regression
-does not make the current real vault public-safe; `safety:public-data:check` and
-the encrypted restore evidence remain independent completion gates.
+The scope ledger itself is local-only and ignored by Git; the public receipt is
+the portable proof that lets another clone re-evaluate the exact authorization.
+The one-time sanitized root is treated as a fully scanned migration baseline;
+every later commit containing conditional artifacts requires a receipt.
+`safety:public-data:check` and encrypted restore evidence remain independent
+completion gates.
 
 ### Encrypted Private Backup And Restore
 

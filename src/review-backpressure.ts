@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { atomicWriteJson, withFileLock } from "./concurrency.js";
 import { dataPath, relDataPath } from "./context.js";
+import { redactMachineLocalValue } from "./data-classification.js";
 import {
   getNodeLifecycleState,
   type NodeLifecycleState,
@@ -336,7 +337,7 @@ export async function buildReviewQueueBackpressure(
     version: REVIEW_QUEUE_BACKPRESSURE_VERSION,
     status,
     generated_at: generatedAt,
-    data_root: path.resolve(dataRoot),
+    data_root: ".",
     policy: DEFAULT_REVIEW_QUEUE_POLICY,
     source_worklist_path: relDataPath(dataRoot, worklistResult.statePath),
     counts: {
@@ -538,8 +539,8 @@ export async function writeReviewGatedBatch(
       decisions.push(decision);
       receiptPaths.push(receiptPath);
 
-      const candidateRecord = applyAdmissionRecord(item.candidate_record, decision, "candidate");
-      const reviewRecord = applyAdmissionRecord(item.review_record, decision, "review");
+      const candidateRecord = applyAdmissionRecord(redactMachineLocalValue(item.candidate_record), decision, "candidate");
+      const reviewRecord = applyAdmissionRecord(redactMachineLocalValue(item.review_record), decision, "review");
       const candidateTarget = stateForDecision(candidateExisting ?? candidateRecord, item.candidate_path, decision.destination);
       const reviewTarget = stateForDecision(reviewExisting ?? reviewRecord, item.review_path, decision.destination);
       writes.push(
@@ -576,7 +577,11 @@ export async function writeReviewGatedBatch(
         expected_before_sha256: admissionValue?.hash ?? null,
       });
     }
-    const lifecycleTransaction = await writeNodeLifecycleBatch(dataRoot, writes, {
+    const sanitizedWrites = writes.map((write) => ({
+      ...write,
+      record: redactMachineLocalValue(write.record),
+    }));
+    const lifecycleTransaction = await writeNodeLifecycleBatch(dataRoot, sanitizedWrites, {
       actor: input.actor,
       reason: input.reason,
       fault_after_write_index_for_test: input.fault_after_write_index_for_test,

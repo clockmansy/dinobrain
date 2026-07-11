@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import https from "node:https";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,21 +12,23 @@ import {
   classifyDataFile,
   classifyDataPath,
 } from "../dist/data-classification.js";
-import { classifyCompleteGitHistory } from "./lib/data-classifier-git.mjs";
+import { classifyCompleteGitHistory, classifyGitTree } from "./lib/data-classifier-git.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR || path.join(appRoot, "..", "dinobrain-data"));
 const shouldWrite = process.argv.includes("--write");
-const failOnWarnings = process.argv.includes("--fail-on-warnings");
+const failOnWarnings = !process.argv.includes("--allow-warnings");
 const jsonOnly = process.argv.includes("--json");
 const maxScanBytes = PUBLIC_DATA_MAX_SCAN_BYTES;
 const generatedAt = new Date().toISOString();
 
 function git(args, cwd = dataRoot, options = {}) {
   return execFileSync("git", ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], {
-    encoding: options.encoding || "utf8",
+    encoding: Object.prototype.hasOwnProperty.call(options, "encoding") ? options.encoding : "utf8",
+    maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
 }
 
@@ -34,6 +38,14 @@ function toSlash(value) {
 
 function splitZ(value) {
   return value.split("\0").filter(Boolean);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function localPathLabel(relativePath) {
+  return `(local-path-sha256:${sha256(relativePath).slice(0, 20)})`;
 }
 
 function pathExists(relativePath) {
@@ -58,6 +70,52 @@ function readContent(relativePath) {
     size,
     fileKind,
   };
+}
+
+function modeToFileKind(mode) {
+  if (mode === "120000") return "symlink";
+  if (mode === "100644" || mode === "100755") return "file";
+  return "other";
+}
+
+function gitHeadEntries() {
+  const entries = [];
+  for (const token of splitZ(git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]))) {
+    const match = token.match(/^(\d{6})\s+(\w+)\s+([0-9a-f]+)\t([\s\S]+)$/i);
+    if (!match) throw new Error(`Unexpected git ls-tree entry: ${token.slice(0, 160)}`);
+    entries.push({
+      mode: match[1],
+      type: match[2],
+      oid: match[3],
+      path: toSlash(match[4]),
+      fileKind: modeToFileKind(match[1]),
+    });
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function readHeadEntry(entry) {
+  let size = 0;
+  try {
+    size = Number(git(["cat-file", "-s", entry.oid]).trim());
+  } catch (error) {
+    return { content: null, size: 0, fileKind: entry.fileKind, error: error.message };
+  }
+  if (entry.fileKind !== "file" || !Number.isFinite(size) || size > maxScanBytes) {
+    return { content: null, size, fileKind: entry.fileKind };
+  }
+  try {
+    return {
+      content: git(["cat-file", "blob", entry.oid], dataRoot, {
+        encoding: null,
+        maxBuffer: maxScanBytes + 1024 * 1024,
+      }),
+      size,
+      fileKind: entry.fileKind,
+    };
+  } catch (error) {
+    return { content: null, size, fileKind: entry.fileKind, error: error.message };
+  }
 }
 
 function parseGitHubRepo(remoteUrl) {
@@ -149,23 +207,33 @@ function addFinding(level, id, relativePath, detail = {}) {
   }
 }
 
-function scanFile(relativePath, tracked) {
-  const policy = classifyDataPath(relativePath);
-  if (tracked && policy.classification === "blocked") {
-    addFinding("blocker", "blocked_path_is_tracked", relativePath, { policy: policy.policy });
-  }
-  const { content, size, fileKind, missing } = readContent(relativePath);
-  if (missing) return policy;
-  const classification = classifyDataFile({ relativePath, content, sizeBytes: size, maxScanBytes, fileKind });
+function recordClassificationFindings(relativePath, classification, idPrefix = "") {
   for (const finding of classification.findings) {
-    addFinding(finding.severity === "blocker" ? "blocker" : "warning", finding.id, relativePath, {
+    addFinding(finding.severity === "blocker" ? "blocker" : "warning", `${idPrefix}${finding.id}`, relativePath, {
       category: finding.category,
       ...(finding.line ? { line: finding.line } : {}),
       ...(finding.detail ? { detail: finding.detail } : {}),
     });
   }
+}
 
+function scanCommittedEntry(entry) {
+  const relativePath = entry.path;
+  const policy = classifyDataPath(relativePath);
+  if (policy.classification === "blocked") {
+    addFinding("blocker", "blocked_path_is_committed", relativePath, { policy: policy.policy });
+  }
+  const { content, size, fileKind, error } = readHeadEntry(entry);
+  if (error) addFinding("blocker", "committed_blob_unreadable", relativePath, { detail: error });
+  const classification = classifyDataFile({ relativePath, content, sizeBytes: size, maxScanBytes, fileKind });
+  recordClassificationFindings(relativePath, classification);
   return policy;
+}
+
+function classifyWorkingFile(relativePath) {
+  const { content, size, fileKind, missing } = readContent(relativePath);
+  if (missing) return null;
+  return classifyDataFile({ relativePath, content, sizeBytes: size, maxScanBytes, fileKind });
 }
 
 function countRequiredCategories(paths) {
@@ -191,8 +259,11 @@ function countRequiredCategories(paths) {
 function checkIndexExclusions() {
   const indexPath = ".dino/index/wiki-index.json";
   if (!pathExists(indexPath)) {
-    addFinding("warning", "wiki_index_missing_for_exclusion_check", indexPath);
-    return { checked: false, reason: "missing wiki index" };
+    return {
+      checked: false,
+      status: "not_present_local_only",
+      reason: "generated Wiki index is local-only and absent from the public checkout",
+    };
   }
   try {
     const parsed = JSON.parse(readFileSync(path.join(dataRoot, indexPath), "utf8"));
@@ -215,7 +286,7 @@ function checkIndexExclusions() {
         }
       }
     }
-    return { checked: true, record_count: records.length };
+    return { checked: true, status: "checked", record_count: records.length };
   } catch (error) {
     addFinding("blocker", "wiki_index_unreadable", indexPath, { error: error.message });
     return { checked: false, reason: error.message };
@@ -253,18 +324,104 @@ function gitTrackedFiles() {
 }
 
 function gitUntrackedFiles() {
-  let output = "";
-  try {
-    output = git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  } catch {
-    return [];
-  }
+  const output = git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   const entries = splitZ(output);
   const files = [];
   for (const entry of entries) {
     if (entry.startsWith("?? ")) files.push(toSlash(entry.slice(3)));
   }
   return files.sort();
+}
+
+function gitNameList(args) {
+  return splitZ(git(args)).map(toSlash).sort();
+}
+
+function gitDirtyState() {
+  const staged = gitNameList(["diff", "--cached", "--name-only", "-z", "--diff-filter=ACDMRTUXB"]);
+  const unstaged = gitNameList(["diff", "--name-only", "-z", "--diff-filter=ACDMRTUXB"]);
+  const untracked = gitUntrackedFiles();
+  return {
+    staged,
+    unstaged,
+    untracked,
+    all: Array.from(new Set([...staged, ...unstaged, ...untracked])).sort(),
+  };
+}
+
+function buildLocalExclusions(dirty) {
+  const staged = new Set(dirty.staged);
+  const untracked = new Set(dirty.untracked);
+  const byPathClassification = { syncable: 0, conditional: 0, blocked: 0 };
+  const byContentClassification = { syncable: 0, conditional: 0, blocked: 0, deleted: 0 };
+  const contentFindingCounts = {};
+  const ledgerEntries = [];
+
+  for (const relativePath of dirty.all) {
+    const policy = classifyDataPath(relativePath);
+    byPathClassification[policy.classification] += 1;
+    const content = classifyWorkingFile(relativePath);
+    const contentClassification = content?.classification ?? "deleted";
+    byContentClassification[contentClassification] += 1;
+    const contentFindingIds = content?.findings.map((finding) => finding.id) ?? [];
+    for (const id of contentFindingIds) contentFindingCounts[id] = (contentFindingCounts[id] ?? 0) + 1;
+
+    if (!policy.explicit_allowlist) {
+      addFinding("blocker", "unclassified_local_dirty_path", localPathLabel(relativePath), { policy: policy.policy });
+    }
+    if (staged.has(relativePath)) {
+      addFinding("blocker", "staged_local_change_present", localPathLabel(relativePath), { policy: policy.policy });
+    }
+    ledgerEntries.push({
+      path: relativePath,
+      path_classification: policy.classification,
+      policy: policy.policy,
+      explicit_allowlist: policy.explicit_allowlist,
+      content_classification: contentClassification,
+      content_findings: contentFindingIds,
+      staged: staged.has(relativePath),
+      untracked: untracked.has(relativePath),
+      completion_claim: "excluded_local_dirty",
+    });
+  }
+
+  const ledgerSha256 = sha256(JSON.stringify(ledgerEntries));
+  return {
+    summary: {
+    all_paths_explicitly_classified: dirty.all.every((relativePath) => classifyDataPath(relativePath).explicit_allowlist),
+    staged_count: dirty.staged.length,
+    dirty_count: dirty.all.length,
+    by_path_classification: byPathClassification,
+    by_content_classification: byContentClassification,
+    content_finding_counts: contentFindingCounts,
+      ledger_id: `local-exclusions-${ledgerSha256.slice(0, 20)}`,
+      ledger_sha256: ledgerSha256,
+      ledger_entry_count: ledgerEntries.length,
+      raw_paths_in_public_report: false,
+    },
+    ledger: {
+      version: 1,
+      generated_at: generatedAt,
+      data_root: dataRoot,
+      ledger_sha256: ledgerSha256,
+      entries: ledgerEntries,
+    },
+  };
+}
+
+function persistLocalExclusionLedger(localExclusions) {
+  const ledgerRoot = path.resolve(
+    process.env.DINOBRAIN_PUBLIC_SAFETY_LEDGER_DIR ||
+      path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "DinoBrain", "public-safety-ledgers"),
+  );
+  mkdirSync(ledgerRoot, { recursive: true });
+  const ledgerPath = path.join(ledgerRoot, `${localExclusions.summary.ledger_id}.json`);
+  writeFileSync(ledgerPath, `${JSON.stringify(localExclusions.ledger, null, 2)}\n`, "utf8");
+  return {
+    persisted: true,
+    ledger_id: localExclusions.summary.ledger_id,
+    ledger_sha256: localExclusions.summary.ledger_sha256,
+  };
 }
 
 function remoteUrl() {
@@ -281,6 +438,38 @@ function branchState() {
   } catch (error) {
     return `unavailable: ${error.message}`;
   }
+}
+
+function revParse(ref) {
+  try {
+    return git(["rev-parse", ref]).trim();
+  } catch {
+    return null;
+  }
+}
+
+function repositoryParity() {
+  let upstreamRef = null;
+  try {
+    upstreamRef = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim() || null;
+  } catch {
+    // Repositories without an upstream can still be inspected; release parity is checked separately.
+  }
+  const head = revParse("HEAD");
+  const upstreamHead = upstreamRef ? revParse(upstreamRef) : null;
+  if (head && upstreamHead && head !== upstreamHead) {
+    addFinding("blocker", "local_head_differs_from_upstream", "(git metadata)", {
+      head,
+      upstream_ref: upstreamRef,
+      upstream_head: upstreamHead,
+    });
+  }
+  return {
+    head,
+    upstream_ref: upstreamRef,
+    upstream_head: upstreamHead,
+    head_matches_upstream: Boolean(head && upstreamHead && head === upstreamHead),
+  };
 }
 
 function summarizeFindings() {
@@ -303,8 +492,8 @@ function writeMarkdownReport(report, outputPath) {
     "",
     "## Scan Scope",
     "",
-    `- tracked files scanned: ${report.scanned.tracked_files}`,
-    `- untracked files classified: ${report.scanned.untracked_files}`,
+    `- committed HEAD files scanned: ${report.scanned.committed_files}`,
+    `- local dirty files explicitly excluded: ${report.scanned.local_exclusions.dirty_count}`,
     `- max bytes per file: ${report.scanned.max_scan_bytes}`,
     `- history blob paths scanned: ${report.scanned.git_history.history_unique_blob_paths}`,
     `- classifier policy: ${report.policy_version}`,
@@ -350,8 +539,9 @@ async function main() {
     throw new Error(`DinoBrain data root not found: ${dataRoot}`);
   }
 
-  const trackedFiles = gitTrackedFiles();
-  const untrackedFiles = gitUntrackedFiles();
+  const committedTree = classifyGitTree(dataRoot, "HEAD");
+  const trackedFiles = committedTree.results.map((entry) => entry.path).sort();
+  const dirty = gitDirtyState();
   const remote = remoteUrl();
   const repo = parseGitHubRepo(remote);
   const githubVisibility = await fetchGitHubRepoInfo(repo);
@@ -362,26 +552,28 @@ async function main() {
     unknown: 0,
   };
 
-  for (const relativePath of trackedFiles) {
-    const policy = scanFile(relativePath, true);
+  for (const entry of committedTree.results) {
+    const policy = classifyDataPath(entry.path);
+    if (policy.classification === "blocked") {
+      addFinding("blocker", "blocked_path_is_committed", entry.path, { policy: policy.policy });
+    }
+    recordClassificationFindings(entry.path, entry);
     policyCounts[policy.classification] += 1;
   }
 
-  for (const relativePath of untrackedFiles) {
-    const policy = classifyDataPath(relativePath);
-    if (policy.classification === "blocked") {
-      addFinding("warning", "local_only_untracked_present", relativePath, { policy: policy.policy });
-    } else if (policy.classification === "conditional") {
-      addFinding("warning", "conditional_untracked_present", relativePath, { policy: policy.policy });
-    }
-    if (pathExists(relativePath)) {
-      scanFile(relativePath, false);
-    }
+  const localExclusions = buildLocalExclusions(dirty);
+  let localLedgerPersistence;
+  try {
+    localLedgerPersistence = persistLocalExclusionLedger(localExclusions);
+  } catch (error) {
+    localLedgerPersistence = { persisted: false, error: error.message };
+    addFinding("blocker", "local_exclusion_ledger_write_failed", "(local-ledger)", { detail: error.message });
   }
 
   const indexExclusion = checkIndexExclusions();
   const docVisibility = checkAppDocsAgainstVisibility(githubVisibility);
-  const gitHistory = classifyCompleteGitHistory(dataRoot);
+  const parity = repositoryParity();
+  const gitHistory = classifyCompleteGitHistory(dataRoot, { revisions: ["HEAD"] });
   for (let index = 0; index < gitHistory.summary.blocked; index += 1) {
     const example = gitHistory.blocker_examples[index] ?? null;
     addFinding("blocker", "git_history_risk_detected", example?.path ?? "(historical blob)", {
@@ -406,16 +598,24 @@ async function main() {
     },
     data_repo: {
       remote,
-      branch_state: branchState(),
+      ...parity,
       github_visibility: githubVisibility,
       visibility_policy: "treat data as public when GitHub says public or visibility is unknown",
     },
     scanned: {
       tracked_files: trackedFiles.length,
-      untracked_files: untrackedFiles.length,
+      committed_files: committedTree.results.length,
+      untracked_files: dirty.untracked.length,
+      dirty_files: dirty.all.length,
       max_scan_bytes: maxScanBytes,
-      scan_completeness_policy: "fail_closed_no_partial_scan",
+      scan_completeness_policy: "fail_closed_committed_tree_and_HEAD_history_with_explicit_local_dirty_exclusions",
+      completion_claim_scope: "committed HEAD tree and history reachable from HEAD; unstaged local state is excluded only when every path is explicitly classified",
       path_policy_counts: policyCounts,
+      committed_tree: committedTree.report,
+      local_exclusions: {
+        ...localExclusions.summary,
+        ledger_persisted: localLedgerPersistence.persisted === true,
+      },
       git_history: gitHistory,
       required_category_counts: countRequiredCategories(trackedFiles),
       index_exclusion: indexExclusion,
@@ -443,8 +643,8 @@ async function main() {
     process.stdout.write(
       [
         `DinoBrain public-data safety: ${status}`,
-        `tracked_files=${trackedFiles.length}`,
-        `untracked_files=${untrackedFiles.length}`,
+        `committed_files=${committedTree.results.length}`,
+        `local_dirty_excluded=${dirty.all.length}`,
         `blockers=${blockerCount}`,
         `warnings=${warningCount}`,
         `visibility=${githubVisibility.visibility || githubVisibility.status}`,

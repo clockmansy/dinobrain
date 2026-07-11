@@ -1,10 +1,20 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 import {
   DATA_CLASSIFICATION_POLICY_VERSION,
   PUBLIC_DATA_MAX_SCAN_BYTES,
   classifyDataFile,
 } from "../../dist/data-classification.js";
+import {
+  PUBLIC_SYNC_RECEIPT_PATH_PATTERN,
+  PUBLIC_SYNC_RECEIPT_TRAILERS,
+  publicSyncReceiptRelativePath,
+  validatePublicSyncReceipt,
+} from "../../dist/public-sync-receipt.js";
+import { taskSyncScopeRelativePath } from "../../dist/task-sync-scope.js";
 
 const ZERO_SHA = /^0+$/;
 
@@ -28,6 +38,10 @@ function splitZ(value) {
 
 function normalizePath(value) {
   return value.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function blockedResult(relativePath, id, detail = null) {
@@ -122,12 +136,28 @@ function classifyGitBlob(repo, spec, relativePath) {
   }
 }
 
-export function classifyStagedGitFiles(repo) {
+export function classifyStagedGitFiles(repo, options = {}) {
   const entries = rawDiffEntries(
-    textGit(repo, ["diff", "--cached", "--raw", "--full-index", "--abbrev=40", "-z", "--no-renames", "--diff-filter=ACM"]),
+    textGit(repo, ["diff", "--cached", "--raw", "--full-index", "--abbrev=40", "-z", "--no-renames", "--diff-filter=ACMD"]),
   );
   const results = classifyBlobEntries(repo, entries);
-  return summarize("git_hook_pre_commit", results, { staged_paths: entries.length });
+  let baseCommit = "0".repeat(40);
+  try {
+    baseCommit = textGit(repo, ["rev-parse", "HEAD"]).trim();
+  } catch {
+    // A new repository has no HEAD yet. Conditional root content still requires a receipt.
+  }
+  const receiptValidation = validatePublicSyncReceiptEntries(repo, entries, results, {
+    baseCommit,
+    requireCommitTrailers: false,
+    requireLocalScope: true,
+    rootBaseline: options.allowRootBaseline === true && baseCommit === "0".repeat(40),
+  });
+  results.push(...receiptValidation.blockers);
+  return summarize("git_hook_pre_commit", results, {
+    staged_paths: entries.length,
+    public_sync_receipts: receiptValidation.summary,
+  });
 }
 
 function revListForPush(repo, localSha, remoteSha) {
@@ -135,11 +165,7 @@ function revListForPush(repo, localSha, remoteSha) {
   if (remoteSha && !ZERO_SHA.test(remoteSha)) {
     return textGit(repo, ["rev-list", "--reverse", `${remoteSha}..${localSha}`]).split(/\r?\n/).filter(Boolean);
   }
-  try {
-    return textGit(repo, ["rev-list", "--reverse", localSha, "--not", "--remotes"]).split(/\r?\n/).filter(Boolean);
-  } catch {
-    return textGit(repo, ["rev-list", "--reverse", localSha]).split(/\r?\n/).filter(Boolean);
-  }
+  return textGit(repo, ["rev-list", "--reverse", localSha]).split(/\r?\n/).filter(Boolean);
 }
 
 export function parsePrePushLines(stdinText) {
@@ -166,19 +192,254 @@ function rawDiffEntries(value) {
       hash: match[4],
       relativePath: normalizePath(relativePath),
       fileKind: modeToFileKind(match[2]),
+      status: match[5].toUpperCase(),
     });
   }
   return entries;
+}
+
+function commitParents(repo, commit) {
+  const tokens = textGit(repo, ["rev-list", "--parents", "-n", "1", commit]).trim().split(/\s+/).filter(Boolean);
+  if (tokens[0] !== commit) throw new Error(`Unable to resolve commit parents: ${commit}`);
+  return tokens.slice(1);
+}
+
+function commitDiffEntries(repo, commit) {
+  const parents = commitParents(repo, commit);
+  const args = parents.length === 0
+    ? ["diff-tree", "--root", "--no-commit-id"]
+    : ["diff-tree", "--no-commit-id"];
+  args.push("--raw", "--full-index", "--abbrev=40", "-r", "-z", "--no-renames", "--diff-filter=ACMD");
+  if (parents.length === 0) args.push(commit);
+  else args.push(parents[0], commit);
+  return { parents, entries: rawDiffEntries(textGit(repo, args)) };
+}
+
+function blobBytes(repo, hash) {
+  return git(repo, ["cat-file", "blob", hash], {
+    encoding: null,
+    maxBuffer: PUBLIC_DATA_MAX_SCAN_BYTES + 1024 * 1024,
+  });
+}
+
+function trailerValues(message, key) {
+  const pattern = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.+?)\\s*$`, "gm");
+  return Array.from(String(message).matchAll(pattern)).map((match) => match[1]);
+}
+
+function receiptBlocker(relativePath, id, detail = null) {
+  return blockedResult(relativePath || "(public-sync-receipt)", id, detail);
+}
+
+function validateLocalScope(repo, receipt) {
+  const errors = [];
+  const scopeRelative = taskSyncScopeRelativePath(receipt.task_id);
+  const scopePath = path.join(repo, scopeRelative);
+  if (!existsSync(scopePath)) return ["public_sync_local_scope_missing"];
+  let raw;
+  let scope;
+  try {
+    raw = readFileSync(scopePath);
+    scope = JSON.parse(raw.toString("utf8"));
+  } catch {
+    return ["public_sync_local_scope_unreadable"];
+  }
+  if (sha256(raw) !== receipt.scope.sha256) errors.push("public_sync_local_scope_hash_mismatch");
+  if (scope.version !== receipt.scope.version) errors.push("public_sync_local_scope_version_mismatch");
+  if (scope.revision !== receipt.scope.revision) errors.push("public_sync_local_scope_revision_mismatch");
+  if (scope.task_id !== receipt.task_id || scope.task_path !== receipt.task_record_path) {
+    errors.push("public_sync_local_scope_task_mismatch");
+  }
+  const scopeEntries = new Map((Array.isArray(scope.entries) ? scope.entries : []).map((entry) => [entry.path, entry]));
+  for (const artifact of receipt.artifacts) {
+    const entry = scopeEntries.get(artifact.path);
+    if (
+      !entry ||
+      entry.sha256 !== artifact.sha256 ||
+      entry.git_blob_oid !== artifact.git_blob_oid ||
+      entry.size_bytes !== artifact.size_bytes ||
+      entry.approval !== artifact.approval ||
+      entry.source !== artifact.source
+    ) {
+      errors.push(`public_sync_local_scope_artifact_mismatch:${artifact.path}`);
+    }
+  }
+  return errors;
+}
+
+function validatePublicSyncReceiptEntries(repo, entries, results, options) {
+  const receiptEntries = entries.filter((entry) => PUBLIC_SYNC_RECEIPT_PATH_PATTERN.test(entry.relativePath));
+  const artifactEntries = entries.filter((entry) => !PUBLIC_SYNC_RECEIPT_PATH_PATTERN.test(entry.relativePath));
+  const resultsByPath = new Map(results.map((result) => [result.path, result]));
+  const conditionalEntries = artifactEntries.filter(
+    (entry) => resultsByPath.get(entry.relativePath)?.classification === "conditional",
+  );
+  const errors = [];
+
+  if (conditionalEntries.length === 0) {
+    if (receiptEntries.length > 0) errors.push("public_sync_receipt_without_conditional_artifact");
+    return {
+      blockers: errors.map((id) => receiptBlocker(receiptEntries[0]?.relativePath, id)),
+      summary: {
+        required: false,
+        conditional_path_count: 0,
+        receipt_count: receiptEntries.length,
+        verified: errors.length === 0,
+        root_baseline_exempt: false,
+        errors,
+      },
+    };
+  }
+
+  if (options.rootBaseline === true) {
+    return {
+      blockers: [],
+      summary: {
+        required: false,
+        conditional_path_count: conditionalEntries.length,
+        receipt_count: receiptEntries.length,
+        verified: true,
+        root_baseline_exempt: true,
+        errors: [],
+      },
+    };
+  }
+
+  if (receiptEntries.length !== 1) errors.push("public_sync_receipt_count_invalid");
+  if (conditionalEntries.some((entry) => ZERO_SHA.test(entry.hash))) {
+    errors.push("public_sync_conditional_deletion_not_supported");
+  }
+  let receipt = null;
+  let receiptBytes = null;
+  const receiptEntry = receiptEntries[0] ?? null;
+  if (receiptEntry) {
+    try {
+      receiptBytes = blobBytes(repo, receiptEntry.hash);
+      const validation = validatePublicSyncReceipt(JSON.parse(receiptBytes.toString("utf8")));
+      if (!validation.ok) errors.push(...validation.errors.map((error) => `public_sync_${error}`));
+      receipt = validation.receipt;
+    } catch (error) {
+      errors.push(`public_sync_receipt_unreadable:${String(error.message).slice(0, 120)}`);
+    }
+  }
+
+  if (receipt && receiptEntry && receiptBytes) {
+    const expectedReceiptPath = publicSyncReceiptRelativePath(receipt.receipt_id);
+    if (receiptEntry.relativePath !== expectedReceiptPath) errors.push("public_sync_receipt_filename_mismatch");
+    if (receipt.base_commit !== options.baseCommit) errors.push("public_sync_receipt_base_commit_mismatch");
+    const artifactMap = new Map(receipt.artifacts.map((artifact) => [artifact.path, artifact]));
+    const expectedPaths = artifactEntries.map((entry) => entry.relativePath).sort();
+    const receiptedPaths = receipt.artifacts.map((artifact) => artifact.path).sort();
+    if (expectedPaths.join("\n") !== receiptedPaths.join("\n")) errors.push("public_sync_receipt_artifact_set_mismatch");
+    for (const entry of artifactEntries) {
+      const artifact = artifactMap.get(entry.relativePath);
+      const classification = resultsByPath.get(entry.relativePath);
+      let bytes = null;
+      try {
+        bytes = blobBytes(repo, entry.hash);
+      } catch {
+        errors.push(`public_sync_receipt_artifact_unreadable:${entry.relativePath}`);
+        continue;
+      }
+      if (
+        !artifact ||
+        artifact.git_blob_oid !== entry.hash ||
+        artifact.sha256 !== sha256(bytes) ||
+        artifact.size_bytes !== bytes.length ||
+        artifact.classification !== classification?.classification ||
+        artifact.policy !== classification?.policy
+      ) {
+        errors.push(`public_sync_receipt_artifact_identity_mismatch:${entry.relativePath}`);
+      }
+    }
+    const taskEntry = artifactEntries.find((entry) => entry.relativePath === receipt.task_record_path);
+    if (!taskEntry) {
+      errors.push("public_sync_receipt_task_record_not_committed");
+    } else {
+      try {
+        const taskBytes = blobBytes(repo, taskEntry.hash);
+        const taskRecord = JSON.parse(taskBytes.toString("utf8"));
+        if (
+          taskRecord.task_id !== receipt.task_id ||
+          taskRecord.request_hash !== receipt.task_request_hash ||
+          sha256(taskBytes) !== receipt.task_record_sha256
+        ) {
+          errors.push("public_sync_receipt_task_record_binding_mismatch");
+        }
+      } catch {
+        errors.push("public_sync_receipt_task_record_unreadable");
+      }
+    }
+    if (options.requireLocalScope) errors.push(...validateLocalScope(repo, receipt));
+    if (options.requireCommitTrailers) {
+      const message = textGit(repo, ["show", "-s", "--format=%B", options.commit]);
+      const expectedTrailers = [
+        [PUBLIC_SYNC_RECEIPT_TRAILERS.taskId, receipt.task_id],
+        [PUBLIC_SYNC_RECEIPT_TRAILERS.path, receiptEntry.relativePath],
+        [PUBLIC_SYNC_RECEIPT_TRAILERS.sha256, sha256(receiptBytes)],
+        [PUBLIC_SYNC_RECEIPT_TRAILERS.blobOid, receiptEntry.hash],
+      ];
+      for (const [key, expected] of expectedTrailers) {
+        const values = trailerValues(message, key);
+        if (values.length !== 1 || values[0] !== expected) errors.push(`public_sync_commit_trailer_invalid:${key}`);
+      }
+    }
+  }
+
+  const uniqueErrors = Array.from(new Set(errors));
+  return {
+    blockers: uniqueErrors.map((id) => receiptBlocker(receiptEntry?.relativePath ?? conditionalEntries[0]?.relativePath, id)),
+    summary: {
+      required: true,
+      conditional_path_count: conditionalEntries.length,
+      receipt_count: receiptEntries.length,
+      verified: uniqueErrors.length === 0,
+      root_baseline_exempt: false,
+      receipt_path: receiptEntry?.relativePath ?? null,
+      receipt_id: receipt?.receipt_id ?? null,
+      errors: uniqueErrors,
+    },
+  };
+}
+
+function validateCommitPublicSyncReceipt(repo, commit) {
+  const { parents, entries } = commitDiffEntries(repo, commit);
+  const results = classifyBlobEntries(repo, entries);
+  const validation = validatePublicSyncReceiptEntries(repo, entries, results, {
+    baseCommit: parents[0] ?? "0".repeat(40),
+    commit,
+    requireCommitTrailers: parents.length > 0,
+    requireLocalScope: false,
+    rootBaseline: parents.length === 0,
+  });
+  if (parents.length > 1 && validation.summary.conditional_path_count > 0) {
+    validation.summary.errors.push("public_sync_merge_commit_not_supported");
+    validation.summary.verified = false;
+    validation.blockers.push(receiptBlocker(validation.summary.receipt_path, "public_sync_merge_commit_not_supported"));
+  }
+  return { results, validation };
+}
+
+function treeEntries(value) {
+  return splitZ(value).map((token) => {
+    const match = token.match(/^(\d{6})\s+(\w+)\s+([0-9a-f]+)\t([\s\S]+)$/i);
+    if (!match) throw new Error(`Unexpected tree entry: ${token.slice(0, 160)}`);
+    return {
+      hash: match[3],
+      relativePath: normalizePath(match[4]),
+      fileKind: modeToFileKind(match[1]),
+    };
+  });
 }
 
 function classifyBlobEntries(repo, entries) {
   const results = [];
   const regular = entries.filter((entry) => entry.fileKind === "file" && !ZERO_SHA.test(entry.hash));
   for (const entry of entries) {
-    if (entry.fileKind !== "file") {
+    if (ZERO_SHA.test(entry.hash)) {
+      results.push(classifyDataFile({ relativePath: entry.relativePath, content: null, sizeBytes: 0, deleted: true }));
+    } else if (entry.fileKind !== "file") {
       results.push(classifyDataFile({ relativePath: entry.relativePath, content: null, sizeBytes: 0, fileKind: entry.fileKind }));
-    } else if (ZERO_SHA.test(entry.hash)) {
-      results.push(blockedResult(entry.relativePath, "git_blob_hash_unavailable"));
     }
   }
 
@@ -244,30 +505,21 @@ export function classifyPrePushGitHistory(repo, stdinText) {
   for (const update of effectiveUpdates) commits.push(...revListForPush(repo, update.local_sha, update.remote_sha));
   const uniqueCommits = Array.from(new Set(commits));
   const entries = [];
+  const receiptSummaries = [];
+  const receiptBlockers = [];
   for (const commit of uniqueCommits) {
-    entries.push(
-      ...rawDiffEntries(
-        textGit(repo, [
-          "diff-tree",
-          "-m",
-          "--root",
-          "--no-commit-id",
-          "--raw",
-          "--full-index",
-          "--abbrev=40",
-          "-r",
-          "-z",
-          "--no-renames",
-          "--diff-filter=ACM",
-          commit,
-        ]),
-      ),
-    );
+    const checked = validateCommitPublicSyncReceipt(repo, commit);
+    const commitEntries = commitDiffEntries(repo, commit).entries;
+    entries.push(...commitEntries);
+    receiptBlockers.push(...checked.validation.blockers);
+    receiptSummaries.push({ commit, ...checked.validation.summary });
   }
   const results = classifyBlobEntries(repo, entries);
+  results.push(...receiptBlockers);
   return summarize("git_hook_pre_push", results, {
     update_count: effectiveUpdates.length,
     commit_count: uniqueCommits.length,
+    public_sync_receipts: receiptSummaries,
   });
 }
 
@@ -320,12 +572,13 @@ function batchReadBlobs(repo, hashes, expectedBytes) {
   return blobs;
 }
 
-export function classifyCompleteGitHistory(repo) {
-  const objectPaths = parseObjectList(textGit(repo, ["rev-list", "--objects", "--all"]));
+export function classifyCompleteGitHistory(repo, options = {}) {
+  const revisions = Array.isArray(options.revisions) && options.revisions.length > 0 ? options.revisions : ["--all"];
+  const objectPaths = parseObjectList(textGit(repo, ["rev-list", "--objects", ...revisions]));
   const objectInfo = batchCheckObjects(repo, Array.from(objectPaths.keys()));
   const blobEntries = Array.from(objectInfo.entries()).filter(([, info]) => info.type === "blob");
   const results = [];
-  const historicalModes = textGit(repo, ["log", "--all", "--format=", "--raw", "--no-renames"]);
+  const historicalModes = textGit(repo, ["log", "--format=", "--raw", "--no-renames", ...revisions]);
   for (const line of historicalModes.split(/\r?\n/)) {
     const match = line.match(/^:\d{6}\s+(\d{6})\s+[0-9a-f]+\s+[0-9a-f]+\s+[A-Z]\s+(.+)$/i);
     if (!match) continue;
@@ -368,15 +621,43 @@ export function classifyCompleteGitHistory(repo) {
   }
   flush();
 
+  const historyFileVersionCount = results.length;
+  const commits = textGit(repo, ["rev-list", "--reverse", ...revisions]).split(/\r?\n/).filter(Boolean);
+  const receiptSummaries = [];
+  for (const commit of commits) {
+    const checked = validateCommitPublicSyncReceipt(repo, commit);
+    results.push(...checked.validation.blockers);
+    receiptSummaries.push({ commit, ...checked.validation.summary });
+  }
   const riskResults = results.filter((entry) => entry.findings.length > 0);
   const report = summarize("public_data_full_history", riskResults, {
+    scanned_revisions: revisions,
     history_object_count: objectPaths.size,
     history_blob_count: blobEntries.length,
-    history_unique_blob_paths: results.length,
+    history_unique_blob_paths: historyFileVersionCount,
     history_risk_blob_paths: riskResults.length,
+    public_sync_receipts: {
+      commits_checked: receiptSummaries.length,
+      required_commits: receiptSummaries.filter((entry) => entry.required).length,
+      verified_commits: receiptSummaries.filter((entry) => entry.required && entry.verified).length,
+      root_baseline_exempt_commits: receiptSummaries.filter((entry) => entry.root_baseline_exempt).length,
+      failures: receiptSummaries.filter((entry) => !entry.verified).slice(0, 25),
+    },
   });
-  report.scanned_file_versions = results.length;
+  report.scanned_file_versions = historyFileVersionCount;
   return report;
+}
+
+export function classifyGitTree(repo, revision = "HEAD") {
+  const entries = treeEntries(textGit(repo, ["ls-tree", "-r", "-z", "--full-tree", revision]));
+  const results = classifyBlobEntries(repo, entries);
+  return {
+    report: summarize("public_data_committed_tree", results, {
+      revision,
+      tree_entry_count: entries.length,
+    }),
+    results: results.map(redactedResult),
+  };
 }
 
 export { DATA_CLASSIFICATION_POLICY_VERSION };

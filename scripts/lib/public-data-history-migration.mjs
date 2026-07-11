@@ -6,9 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,12 +15,14 @@ import {
   DATA_CLASSIFICATION_POLICY_VERSION,
   PUBLIC_DATA_MAX_SCAN_BYTES,
   classifyDataFile,
+  redactMachineLocalPaths,
 } from "../../dist/data-classification.js";
 import {
   classifyCompleteGitHistory,
   classifyPrePushGitHistory,
   classifyStagedGitFiles,
 } from "./data-classifier-git.mjs";
+import { atomicWriteBytesSync, atomicWriteJsonSync } from "./atomic-files-sync.mjs";
 
 const SCHEMA = "public_data_history_migration_v1";
 const ZERO_SHA = "0".repeat(40);
@@ -57,10 +57,7 @@ function inside(root, candidate) {
 }
 
 function atomicJson(target, value) {
-  mkdirSync(path.dirname(target), { recursive: true });
-  const temporary = `${target}.tmp-${process.pid}-${randomUUID()}`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  renameSync(temporary, target);
+  atomicWriteJsonSync(target, value);
 }
 
 function filesUnder(root, current = root, result = []) {
@@ -75,25 +72,60 @@ function filesUnder(root, current = root, result = []) {
   return result;
 }
 
-function countReplacement(stats, key) {
-  stats[key] = (stats[key] ?? 0) + 1;
-  return "<machine-local-path>";
+function sanitizeMachinePaths(text, stats) {
+  const sanitized = redactMachineLocalPaths(text);
+  for (const reason of sanitized.redactions) stats[reason] = (stats[reason] ?? 0) + 1;
+  return sanitized.text;
 }
 
-function sanitizeMachinePaths(text, stats) {
-  let result = text.replace(
-    /\b[A-Z]:\\+(?:Users\\+)(?:(?!\\+["'])[^"'\s])+/g,
-    () => countReplacement(stats, "windows_user_path"),
-  );
-  result = result.replace(
-    /\b[A-Z]:\\+(?:(?!\\+["'])[^"'\s])+/g,
-    () => countReplacement(stats, "windows_drive_path"),
-  );
-  result = result.replace(/(^|[\s"'])\/(?:Users|home)\/[^"'\s]+/gm, (_match, prefix) => {
-    stats.posix_user_path = (stats.posix_user_path ?? 0) + 1;
-    return `${prefix}<machine-local-path>`;
-  });
+function buildPathRenamePlan(repo) {
+  const pathMap = new Map();
+  const stemMap = new Map();
+  for (const full of filesUnder(repo)) {
+    const relativePath = normalize(path.relative(repo, full));
+    if (!/[A-Z]-Users-[A-Za-z0-9._-]+/i.test(relativePath)) continue;
+    const extension = path.posix.extname(relativePath);
+    const directory = path.posix.dirname(relativePath);
+    const stem = path.posix.basename(relativePath, extension);
+    let replacementStem = stemMap.get(stem);
+    if (!replacementStem) {
+      const prefix = (stem.split("-")[0] || "record").replace(/[^A-Za-z0-9._-]/g, "") || "record";
+      replacementStem = `${prefix}-redacted-${sha256(stem).slice(0, 40)}`;
+      stemMap.set(stem, replacementStem);
+    }
+    const replacementPath = normalize(path.posix.join(directory === "." ? "" : directory, `${replacementStem}${extension}`));
+    pathMap.set(relativePath, replacementPath);
+  }
+  const replacements = [
+    ...Array.from(pathMap.entries()),
+    ...Array.from(stemMap.entries()),
+  ].sort((left, right) => right[0].length - left[0].length);
+  return { pathMap, stemMap, replacements };
+}
+
+function applyIdentifierReplacements(text, replacements, stats) {
+  let result = text;
+  for (const [before, after] of replacements) {
+    if (!result.includes(before)) continue;
+    const count = result.split(before).length - 1;
+    result = result.split(before).join(after);
+    stats.machine_local_identifier_reference = (stats.machine_local_identifier_reference ?? 0) + count;
+  }
   return result;
+}
+
+function sanitizeStructuredValue(value, replacements, stats) {
+  if (typeof value === "string") {
+    return sanitizeMachinePaths(applyIdentifierReplacements(value, replacements, stats), stats);
+  }
+  if (Array.isArray(value)) return value.map((entry) => sanitizeStructuredValue(entry, replacements, stats));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      sanitizeMachinePaths(applyIdentifierReplacements(key, replacements, stats), stats),
+      sanitizeStructuredValue(child, replacements, stats),
+    ]),
+  );
 }
 
 function redactReviewWorklistValue(value, stats) {
@@ -120,16 +152,29 @@ function redactReviewWorklistValue(value, stats) {
   return output;
 }
 
-function sanitizeFile(relativePath, bytes) {
+function sanitizeFile(relativePath, bytes, replacements = []) {
   const base = path.posix.basename(relativePath);
   const extension = path.posix.extname(relativePath).toLowerCase();
   if (!TEXT_NAMES.has(base) && !TEXT_EXTENSIONS.has(extension)) return { bytes, changed: false, reasons: {} };
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const reasons = {};
-  let next = sanitizeMachinePaths(text, reasons);
-  if (/^60_Operations\/review-worklists\/.+\.json$/.test(relativePath)) {
-    const parsed = JSON.parse(next);
-    next = `${JSON.stringify(redactReviewWorklistValue(parsed, reasons), null, 2)}\n`;
+  let next = text;
+  if (extension === ".json") {
+    let parsed = sanitizeStructuredValue(JSON.parse(text), replacements, reasons);
+    if (/^60_Operations\/review-worklists\/.+\.json$/.test(relativePath)) {
+      parsed = redactReviewWorklistValue(parsed, reasons);
+    }
+    if (Object.keys(reasons).length > 0) next = `${JSON.stringify(parsed, null, 2)}\n`;
+  } else if (extension === ".jsonl") {
+    const lines = text.split(/\r?\n/);
+    const sanitizedLines = lines.map((line) => {
+      if (!line.trim()) return "";
+      return JSON.stringify(sanitizeStructuredValue(JSON.parse(line), replacements, reasons));
+    });
+    if (Object.keys(reasons).length > 0) next = sanitizedLines.join("\n").replace(/\n*$/, "\n");
+  } else {
+    next = applyIdentifierReplacements(text, replacements, reasons);
+    next = sanitizeMachinePaths(next, reasons);
   }
   if (relativePath === ".gitignore" && !next.split(/\r?\n/).includes(".dino/generations/")) {
     next = `${next.replace(/\s*$/, "")}\n.dino/generations/\n`;
@@ -218,15 +263,26 @@ export function preparePublicDataHistoryMigration(options = {}) {
 
   const changes = [];
   const reasonCounts = {};
+  const renamePlan = buildPathRenamePlan(sanitizedRepo);
   for (const full of filesUnder(sanitizedRepo)) {
     const relativePath = normalize(path.relative(sanitizedRepo, full));
+    const targetRelativePath = renamePlan.pathMap.get(relativePath) ?? relativePath;
     const before = readFileSync(full);
-    const result = sanitizeFile(relativePath, before);
-    if (!result.changed) continue;
-    writeFileSync(full, result.bytes);
+    const result = sanitizeFile(relativePath, before, renamePlan.replacements);
+    const renamed = targetRelativePath !== relativePath;
+    if (!result.changed && !renamed) continue;
+    const target = inside(sanitizedRepo, path.join(sanitizedRepo, ...targetRelativePath.split("/")));
+    if (renamed && existsSync(target)) throw new Error(`sanitized_path_collision:${targetRelativePath}`);
+    mkdirSync(path.dirname(target), { recursive: true });
+    atomicWriteBytesSync(target, result.bytes);
+    if (renamed) {
+      rmSync(full, { force: false });
+      result.reasons.machine_local_identifier_path = 1;
+    }
     for (const [reason, count] of Object.entries(result.reasons)) reasonCounts[reason] = (reasonCounts[reason] ?? 0) + count;
     changes.push({
-      path: relativePath,
+      source_path: relativePath,
+      path: targetRelativePath,
       before_sha256: sha256(before),
       after_sha256: sha256(result.bytes),
       before_bytes: before.length,
@@ -241,7 +297,11 @@ export function preparePublicDataHistoryMigration(options = {}) {
   git(sanitizedRepo, ["config", "user.name", "DinoBrain Public Data Migration"]);
   git(sanitizedRepo, ["config", "user.email", "dinobrain-migration@example.invalid"]);
   git(sanitizedRepo, ["add", "-A"]);
-  const staged = classifyStagedGitFiles(sanitizedRepo);
+  const executableHooks = [".githooks/pre-commit", ".githooks/pre-push"].filter((relativePath) =>
+    existsSync(path.join(sanitizedRepo, ...relativePath.split("/"))),
+  );
+  if (executableHooks.length > 0) git(sanitizedRepo, ["update-index", "--chmod=+x", "--", ...executableHooks]);
+  const staged = classifyStagedGitFiles(sanitizedRepo, { allowRootBaseline: true });
   if (!staged.ok) throw new Error(`sanitized_staged_tree_blocked:${JSON.stringify(staged.blocker_examples)}`);
   git(sanitizedRepo, ["commit", "-m", `chore: establish public-safe data baseline from ${sourceHead.slice(0, 12)}`]);
   const sanitizedHead = String(git(sanitizedRepo, ["rev-parse", "HEAD"])).trim();

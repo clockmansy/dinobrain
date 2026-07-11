@@ -130,7 +130,7 @@ Raw archives, candidates, and review records are excluded from default retrieval
 ## Unified Public Data Classification Boundary
 
 `src/data-classification.ts` is the only public-data classifier. Policy version
-`data_classification_20260711_v1` classifies every path through an explicit
+`data_classification_20260712_v3` classifies every path through an explicit
 allowlist and performs a complete scan of supported regular files before they
 can be treated as syncable. It fails closed on unclassified paths, symlinks,
 submodules, unsupported or binary file types, files over the complete-scan limit, invalid UTF-8, malformed
@@ -163,6 +163,16 @@ intersection. Dirty files outside the task are observed in bounded summaries
 but left untouched. The state machine distinguishes `blocked`, `no_op`,
 `committed`, `pushed`, and `retry_required`; a remote failure after a successful
 commit preserves the commit identity for explicit retry.
+
+Conditional artifacts require an additional public receipt under
+`60_Operations/task-sync-receipts`. The receipt binds the task record, task
+request hash, local scope-ledger hash and revision, classifier policy, and every
+selected artifact's SHA-256, Git-filtered blob id, size, path, producer, and
+approval state. It is committed with the artifacts, and commit trailers bind
+the receipt path, file hash, and blob id to the commit. Pre-commit rechecks the
+live local scope ledger; pre-push and full-history scans independently recheck
+the public receipt and committed blobs. A repository-wide Git lock serializes
+automatic stage/commit/push operations.
 
 Scope filenames include the scope policy version. An installer/update can start
 a v2 ledger without rewriting or trusting an in-flight v1 ledger; artifacts

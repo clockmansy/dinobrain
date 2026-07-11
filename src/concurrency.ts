@@ -143,6 +143,27 @@ export async function atomicWriteBytes(
   }
 }
 
+export async function atomicCreateBytes(filePath: string, value: Uint8Array, mode = 0o600): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  try {
+    handle = await fs.open(tempPath, "wx", mode);
+    await handle.writeFile(value);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.link(tempPath, filePath);
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  }
+}
+
+export async function atomicCreateText(filePath: string, value: string, mode = 0o600): Promise<void> {
+  await atomicCreateBytes(filePath, Buffer.from(value, "utf8"), mode);
+}
+
 export async function atomicWriteText(
   filePath: string,
   value: string,

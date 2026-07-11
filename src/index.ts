@@ -17,7 +17,7 @@ import {
 } from "./behavior-recall.js";
 import { ClientMcpProofRuntime } from "./client-mcp-proof.js";
 import { applyColdPartitions, searchColdPartitions } from "./cold-partitions.js";
-import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
+import { appendFileWithLock, atomicWriteJson, withFileLock } from "./concurrency.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
 import {
   buildAndWriteControlledCompoundingStatus,
@@ -29,6 +29,8 @@ import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
 import {
   DATA_CLASSIFICATION_POLICY_VERSION,
   classifyDataFileAtPath,
+  redactMachineLocalPaths,
+  redactMachineLocalValue,
   type DataFileClassification,
 } from "./data-classification.js";
 import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
@@ -53,6 +55,7 @@ import {
   type LifecycleBatchWrite,
 } from "./node-lifecycle-store.js";
 import { classifyPromptLaunch } from "./prompt-eligibility.js";
+import { publicSyncReceiptCommitMessage, writePublicSyncReceipt } from "./public-sync-receipt.js";
 import { buildReviewQueueBackpressure, writeReviewGatedBatch } from "./review-backpressure.js";
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
 import { publishSourceLineage } from "./source-lineage-publication.js";
@@ -156,7 +159,16 @@ function relDataPath(filePath: string): string {
 }
 
 function normalizeVaultPath(value: string): string {
-  const normalized = value.replace(/\\/g, "/").replace(/^\/+/, "");
+  const trimmed = value.trim();
+  if (
+    path.win32.isAbsolute(trimmed) ||
+    path.posix.isAbsolute(trimmed) ||
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    /^\\\\/.test(trimmed)
+  ) {
+    throw new Error("Vault paths must be relative to the DinoBrain data root");
+  }
+  const normalized = trimmed.replace(/\\/g, "/");
   dataPath(normalized);
   return normalized;
 }
@@ -207,6 +219,24 @@ type TaskLaunchMetadata = {
   owner_id?: string;
   lease_seconds?: number;
 };
+
+function sanitizeOptionalMetadata(value: string | undefined): string | undefined {
+  if (!value) return value;
+  const sanitized = redactSensitiveText(value);
+  return sanitized.redactions.length > 0 ? `metadata:${sha256(value).slice(0, 32)}` : sanitized.text;
+}
+
+function sanitizeTaskLaunchMetadata(metadata: TaskLaunchMetadata): TaskLaunchMetadata {
+  return {
+    ...metadata,
+    launch_kind: sanitizeOptionalMetadata(metadata.launch_kind),
+    prompt_surface: sanitizeOptionalMetadata(metadata.prompt_surface),
+    task_type: sanitizeOptionalMetadata(metadata.task_type),
+    launch_source: sanitizeOptionalMetadata(metadata.launch_source),
+    hook_run_id: sanitizeOptionalMetadata(metadata.hook_run_id),
+    owner_id: sanitizeOptionalMetadata(metadata.owner_id),
+  };
+}
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -904,7 +934,7 @@ async function hasStagedChanges(): Promise<boolean> {
   }
 }
 
-async function runDataAutoSync(options: {
+async function runDataAutoSyncUnlocked(options: {
   taskId: string;
   includeSensitiveScan: boolean;
   allowConditional: boolean;
@@ -1014,6 +1044,8 @@ async function runDataAutoSync(options: {
 
   let createdCommit = "";
   let createdBranch = "";
+  let generatedReceiptPath = "";
+  let generatedReceipt: Record<string, unknown> | null = null;
   let retryStage: "stage" | "commit" | "push" = "stage";
   try {
     await gitRun(["add", "--", ...allowedPaths]);
@@ -1066,7 +1098,117 @@ async function runDataAutoSync(options: {
       };
     }
 
-    const message = options.commitMessage.trim() || `data: task-scoped sync ${safeSlug(options.taskId).slice(0, 48)}`;
+    const baseMessage = options.commitMessage.trim() || `data: task-scoped sync ${safeSlug(options.taskId).slice(0, 48)}`;
+    const conditionalFiles = plan.files.filter((file) => file.classification === "conditional");
+    let message = baseMessage;
+    if (conditionalFiles.length > 0) {
+      if (!scopeResolution.task_path || !scopeResolution.scope_sha256 || !scopeResolution.scope_revision) {
+        await gitRun(["reset", "--", ...allowedPaths]);
+        return {
+          ...plan,
+          ok: false,
+          state: "blocked",
+          committed: false,
+          pushed: false,
+          reason: "public_sync_receipt_scope_evidence_missing",
+          task_id: options.taskId,
+          scope_version: TASK_SYNC_SCOPE_VERSION,
+          scope_path: scopeResolution.scope_path,
+          allowed_paths: allowedPaths,
+        };
+      }
+      if (!allowedSet.has(scopeResolution.task_path)) {
+        await gitRun(["reset", "--", ...allowedPaths]);
+        return {
+          ...plan,
+          ok: false,
+          state: "blocked",
+          committed: false,
+          pushed: false,
+          reason: "conditional_sync_requires_task_record",
+          required_task_path: scopeResolution.task_path,
+          task_id: options.taskId,
+          scope_version: TASK_SYNC_SCOPE_VERSION,
+          scope_path: scopeResolution.scope_path,
+          allowed_paths: allowedPaths,
+        };
+      }
+      const baseCommit = await gitOutput(["rev-parse", "HEAD"]);
+      const receipt = await writePublicSyncReceipt({
+        dataRoot: DATA_ROOT,
+        taskId: options.taskId,
+        taskPath: scopeResolution.task_path,
+        baseCommit,
+        classifierPolicyVersion: DATA_CLASSIFICATION_POLICY_VERSION,
+        scopeVersion: TASK_SYNC_SCOPE_VERSION,
+        scopeRevision: scopeResolution.scope_revision,
+        scopeSha256: scopeResolution.scope_sha256,
+        entries: plan.files.map((file) => ({
+          scope: scopeEntries.get(file.path)!,
+          classification: file.classification as "syncable" | "conditional",
+          policy: file.policy,
+        })),
+      });
+      generatedReceiptPath = receipt.receipt_path;
+      const receiptClassification = await classifyDataFileAtPath({
+        root: DATA_ROOT,
+        relativePath: generatedReceiptPath,
+        scanContent: true,
+      });
+      if (
+        receiptClassification.classification !== "syncable" ||
+        !receiptClassification.scan.complete ||
+        receiptClassification.findings.length > 0
+      ) {
+        await fs.rm(dataPath(generatedReceiptPath), { force: true });
+        await gitRun(["reset", "--", ...allowedPaths]);
+        return {
+          ...plan,
+          ok: false,
+          state: "blocked",
+          committed: false,
+          pushed: false,
+          reason: "public_sync_receipt_classification_failed",
+          receipt_classification: receiptClassification,
+          task_id: options.taskId,
+          scope_version: TASK_SYNC_SCOPE_VERSION,
+          scope_path: scopeResolution.scope_path,
+          allowed_paths: allowedPaths,
+        };
+      }
+      await gitRun(["add", "--", generatedReceiptPath]);
+      const observedReceiptBlob = (await gitOutput(["rev-parse", `:${generatedReceiptPath}`])).toLowerCase();
+      if (observedReceiptBlob !== receipt.receipt_git_blob_oid) {
+        await gitRun(["reset", "--", generatedReceiptPath, ...allowedPaths]);
+        await fs.rm(dataPath(generatedReceiptPath), { force: true });
+        return {
+          ...plan,
+          ok: false,
+          state: "blocked",
+          committed: false,
+          pushed: false,
+          reason: "public_sync_receipt_staged_identity_mismatch",
+          task_id: options.taskId,
+          scope_version: TASK_SYNC_SCOPE_VERSION,
+          scope_path: scopeResolution.scope_path,
+          allowed_paths: allowedPaths,
+        };
+      }
+      message = publicSyncReceiptCommitMessage({
+        message: baseMessage,
+        taskId: options.taskId,
+        receiptPath: generatedReceiptPath,
+        receiptSha256: receipt.receipt_sha256,
+        receiptGitBlobOid: receipt.receipt_git_blob_oid,
+      });
+      generatedReceipt = {
+        path: generatedReceiptPath,
+        receipt_id: receipt.receipt.receipt_id,
+        sha256: receipt.receipt_sha256,
+        git_blob_oid: receipt.receipt_git_blob_oid,
+        conditional_path_count: receipt.receipt.conditional_paths.length,
+      };
+    }
     retryStage = "commit";
     await gitRun(["commit", "-m", message]);
     createdCommit = await gitOutput(["rev-parse", "HEAD"]);
@@ -1093,12 +1235,15 @@ async function runDataAutoSync(options: {
       scope_version: TASK_SYNC_SCOPE_VERSION,
       scope_path: scopeResolution.scope_path,
       allowed_paths: allowedPaths,
+      public_sync_receipt: generatedReceipt,
       sync_scope: "task_scope",
       scoped_path_count: scopeResolution.selected_path_count,
     };
   } catch (error) {
     if (!createdCommit && (retryStage === "stage" || retryStage === "commit")) {
-      await gitRun(["reset", "--", ...allowedPaths]).catch(() => undefined);
+      const resetPaths = generatedReceiptPath ? [generatedReceiptPath, ...allowedPaths] : allowedPaths;
+      await gitRun(["reset", "--", ...resetPaths]).catch(() => undefined);
+      if (generatedReceiptPath) await fs.rm(dataPath(generatedReceiptPath), { force: true }).catch(() => undefined);
     }
     return {
       ...plan,
@@ -1115,10 +1260,26 @@ async function runDataAutoSync(options: {
       scope_version: TASK_SYNC_SCOPE_VERSION,
       scope_path: scopeResolution.scope_path,
       allowed_paths: allowedPaths,
+      public_sync_receipt: generatedReceipt,
       sync_scope: "task_scope",
       scoped_path_count: scopeResolution.selected_path_count,
     };
   }
+}
+
+async function runDataAutoSync(options: {
+  taskId: string;
+  includeSensitiveScan: boolean;
+  allowConditional: boolean;
+  push: boolean;
+  commitMessage: string;
+  allowedPaths: string[];
+}): Promise<Record<string, unknown>> {
+  return withFileLock(
+    dataPath(".dino", "locks", "auto-sync-git.lock"),
+    () => runDataAutoSyncUnlocked(options),
+    { timeoutMs: 60_000, staleMs: 10 * 60_000 },
+  );
 }
 
 function isAutoSyncConditionalPath(normalizedPath: string): boolean {
@@ -1184,6 +1345,10 @@ function redactSensitiveText(value: string): { text: string; redactions: string[
     return `${key}: [REDACTED]`;
   });
 
+  const machineLocal = redactMachineLocalPaths(text);
+  text = machineLocal.text;
+  redactions.push(...machineLocal.redactions);
+
   const maxChars = Math.max(2000, Math.min(128000, Number(process.env.DINOBRAIN_SOURCE_CHUNK_MAX_CHARS ?? 24000)));
   const truncated = text.length > maxChars;
   if (truncated) text = `${text.slice(0, maxChars)}\n[truncated by DinoBrain source chunk guard]`;
@@ -1244,7 +1409,7 @@ type TaskPreflightEvidence = {
 };
 
 function makeSourceChunkId(sourceTitle: string, sourceUri: string): string {
-  return `sourcechunk-${safeSlug(sourceTitle).slice(0, 36)}-${sha256(sourceUri).slice(0, 12)}`;
+  return `sourcechunk-${sha256(`${sourceTitle}\n${sourceUri}`).slice(0, 40)}`;
 }
 
 function makeFeedbackId(feedback: string): string {
@@ -1830,6 +1995,7 @@ async function buildContextPackRecord(
   const packId = makePackId(question);
   const createdAt = nowIso();
   const packPath = dataPath(".dino", "context-packs", `${packId}.json`);
+  const persistedQuestion = sanitizeTaskRequest(question).request;
   const items = ranked.map(({
     path: recordPath,
     kind,
@@ -1849,7 +2015,7 @@ async function buildContextPackRecord(
     aliases,
     contextual_chunk,
     modified_at_ms,
-  }) => ({
+  }) => redactMachineLocalValue({
     path: recordPath,
     kind,
     title,
@@ -1876,7 +2042,7 @@ async function buildContextPackRecord(
     task_id: linkage.taskId ?? null,
     hook_run_id: linkage.hookRunId ?? null,
     prompt_hash: linkage.promptHash ?? null,
-    question,
+    question: persistedQuestion,
     created_at: createdAt,
     ranking_inputs: standardRankingInputsForMode(stats.retrieval_mode),
     source_roots: SEARCH_ROOTS,
@@ -1918,7 +2084,7 @@ async function buildContextPackRecord(
     pack_id: packId,
     pack_type: "standard",
     os_version: DINOBRAIN_OS_VERSION,
-    question,
+    question: persistedQuestion,
     created_at: createdAt,
     data_root: DATA_ROOT,
     trace_path: packRelativePath,
@@ -2031,9 +2197,10 @@ registerTool(
     },
   },
   async ({ request, project, mode, sensitivity, limit, ...launchMetadata }) => {
-    const metadata = launchMetadata as TaskLaunchMetadata;
+    const metadata = sanitizeTaskLaunchMetadata(launchMetadata as TaskLaunchMetadata);
     const sanitized = sanitizeTaskRequest(request);
     const storedRequest = sanitized.request;
+    const storedProject = project ? redactSensitiveText(project).text : null;
     const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
     const filtered = await filteredTaskLaunch(storedRequest, metadata, "os_begin_task");
     if (filtered) return jsonResult(filtered);
@@ -2065,7 +2232,7 @@ registerTool(
       request_hash: sanitized.request_hash,
       request_redactions: sanitized.redactions,
       request_truncated: sanitized.truncated,
-      project: project ?? null,
+      project: storedProject,
       mode,
       sensitivity: sensitivityEvidence.sensitivity,
       reported_sensitivity: sensitivityEvidence.reported,
@@ -2337,9 +2504,10 @@ registerTool(
     },
   },
   async ({ request, project, mode, sensitivity, ...launchMetadata }) => {
-    const metadata = launchMetadata as TaskLaunchMetadata;
+    const metadata = sanitizeTaskLaunchMetadata(launchMetadata as TaskLaunchMetadata);
     const sanitized = sanitizeTaskRequest(request);
     const storedRequest = sanitized.request;
+    const storedProject = project ? redactSensitiveText(project).text : null;
     const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
     const filtered = await filteredTaskLaunch(storedRequest, metadata, "start_task");
     if (filtered) return jsonResult(filtered);
@@ -2369,7 +2537,7 @@ registerTool(
       request_hash: sanitized.request_hash,
       request_redactions: sanitized.redactions,
       request_truncated: sanitized.truncated,
-      project: project ?? null,
+      project: storedProject,
       mode,
       sensitivity: sensitivityEvidence.sensitivity,
       reported_sensitivity: sensitivityEvidence.reported,
@@ -2546,7 +2714,8 @@ async function finishTaskTerminalWrite(params: {
     ) {
       throw new Error(`Task lease expired; renew it with heartbeat_task before finishing: ${params.taskId}`);
     }
-    const terminalOwnerId = firstString(params.terminalOwnerId, existingLease?.owner_id, "legacy-unleased-owner");
+    const sanitizedTerminalOwnerId = sanitizeOptionalMetadata(params.terminalOwnerId);
+    const terminalOwnerId = firstString(sanitizedTerminalOwnerId, existingLease?.owner_id, "legacy-unleased-owner");
     const existingTerminalOwner = firstString(existing.terminal_owner_id);
     if (existingTerminalOwner && existingTerminalOwner !== terminalOwnerId) {
       throw new Error(`Task terminal owner mismatch: ${params.taskId}`);
@@ -2565,24 +2734,36 @@ async function finishTaskTerminalWrite(params: {
       };
     }
     const finishedAt = nowIso();
+    const outputRedactions = new Set<string>();
+    const sanitizeOutput = (value: string): string => {
+      const sanitized = redactSensitiveText(value);
+      for (const redaction of sanitized.redactions) outputRedactions.add(redaction);
+      return sanitized.text;
+    };
+    const sanitizedSummary = sanitizeOutput(params.summary);
+    const sanitizedChangedFiles = params.changedFiles.map(sanitizeOutput);
+    const sanitizedDecisions = params.decisions.map(sanitizeOutput);
+    const sanitizedNextSteps = params.nextSteps.map(sanitizeOutput);
+    const sanitizedSearchQueries = params.searchQueries.map(sanitizeOutput);
     const normalizedUsedMemoryPaths = normalizeVaultPaths(params.usedMemoryPaths);
     const normalizedContextPackPaths = normalizeVaultPaths(params.contextPackPaths);
     const normalizedSessionArchivePaths = normalizeVaultPaths(params.sessionArchivePaths);
     const normalizedCandidatePaths = normalizeVaultPaths(params.candidatePaths);
-    const normalizedSearchQueries = normalizeTextList(params.searchQueries);
+    const normalizedSearchQueries = normalizeTextList(sanitizedSearchQueries);
     const trace = {
       task_id: params.taskId,
       outcome: params.outcome,
-      summary: params.summary,
+      summary: sanitizedSummary,
       growth_policy: params.growthPolicy,
-      changed_files: params.changedFiles,
-      decisions: params.decisions,
-      next_steps: params.nextSteps,
+      changed_files: sanitizedChangedFiles,
+      decisions: sanitizedDecisions,
+      next_steps: sanitizedNextSteps,
       used_memory_paths: normalizedUsedMemoryPaths,
       context_pack_paths: normalizedContextPackPaths,
       session_archive_paths: normalizedSessionArchivePaths,
       candidate_paths: normalizedCandidatePaths,
       search_queries: normalizedSearchQueries,
+      output_redactions: Array.from(outputRedactions).sort(),
       lease_id: expectedLeaseId || null,
       terminal_owner_id: terminalOwnerId,
       memory_use: {
@@ -3409,19 +3590,21 @@ registerTool(
     source_content_length,
     source_content_scope,
   }) => {
+    const sanitizedSourceTitle = redactSensitiveText(source_title).text;
+    const sanitizedSourceUri = redactSensitiveText(source_uri).text;
     const chunkId = makeSourceChunkId(source_title, source_uri);
     const createdAt = nowIso();
     const normalizedClaimPaths = normalizeVaultPaths(claim_paths);
     const sanitizedChunk = redactSensitiveText(chunk_text);
     const publication = await publishSourceLineage(DATA_ROOT, {
       source_chunk_id: chunkId,
-      source_title,
-      source_uri,
+      source_title: sanitizedSourceTitle,
+      source_uri: sanitizedSourceUri,
       chunk_type,
       chunk_text: sanitizedChunk.text,
       claim_paths: normalizedClaimPaths,
       evidence_paths: normalizeVaultPaths(evidence_paths),
-      tags,
+      tags: redactMachineLocalValue(tags),
       verification_status,
       last_verified,
       fetched_at,
@@ -4013,6 +4196,8 @@ registerTool(
     },
   },
   async ({ candidate_id, decision, reviewer, notes, correction_resolution, compounding_scope_approved }) => {
+    reviewer = redactSensitiveText(reviewer).text;
+    notes = redactSensitiveText(notes).text;
     const candidateId = safeSlug(candidate_id);
     const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
     const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);

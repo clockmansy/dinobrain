@@ -14,11 +14,14 @@ import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { scanDataText } from "../dist/data-classification.js";
+import { validatePublicSyncReceipt } from "../dist/public-sync-receipt.js";
 import {
   TASK_SYNC_SCOPE_VERSION,
   registerTaskSyncPaths,
   taskSyncScopeRelativePath,
 } from "../dist/task-sync-scope.js";
+import { classifyPrePushGitHistory } from "./lib/data-classifier-git.mjs";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +46,15 @@ function gitInit(args) {
   }).trim();
 }
 
+function gitWithInput(cwd, args, input) {
+  return execFileSync("git", ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], {
+    input,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  }).trim();
+}
+
 function write(relativePath, value) {
   const target = path.join(dataRoot, relativePath);
   mkdirSync(path.dirname(target), { recursive: true });
@@ -53,6 +65,13 @@ function parseTool(result) {
   const text = result.content?.find((part) => part.type === "text")?.text;
   if (!text) throw new Error("MCP tool did not return JSON text");
   return JSON.parse(text);
+}
+
+function assertNoMachineLocalPath(relativePath) {
+  const text = readFileSync(path.join(dataRoot, relativePath), "utf8");
+  const findings = scanDataText(text).filter((finding) => finding.category === "machine_local");
+  assert.deepEqual(findings, [], `${relativePath} retained machine-local path material`);
+  assert.equal(text.includes("sample-user"), false, `${relativePath} retained the fixture user name`);
 }
 
 async function callAutoSync(client, taskId, allowedPaths, options = {}) {
@@ -116,18 +135,29 @@ const transport = new StdioClientTransport({
 
 try {
   await client.connect(transport);
+  const machineLocalPath = "C:\\Users\\sample-user\\private\\notes.md";
   const task = parseTool(
     await client.callTool({
-      name: "start_task",
+      name: "os_begin_task",
       arguments: {
-        request: "Verify SAFE-02 task-scoped automatic synchronization",
-        project: "dinobrain",
+        request: `Verify SAFE-02 task-scoped automatic synchronization using ${machineLocalPath}`,
+        project: machineLocalPath,
         mode: "standard",
         sensitivity: "normal",
+        launch_kind: "verification_fixture",
+        prompt_surface: machineLocalPath,
+        task_type: machineLocalPath,
+        launch_source: machineLocalPath,
+        owner_id: machineLocalPath,
       },
     }),
   );
-  assert(task.task_id, "start_task did not return a task id");
+  assert(task.task_id, "os_begin_task did not return a task id");
+  assert.equal(task.task_id.includes("sample-user"), false, "task id leaked request path material");
+  assert.equal(task.context_pack.pack_id.includes("sample-user"), false, "Context Pack id leaked question path material");
+  assertNoMachineLocalPath(task.task_path);
+  assertNoMachineLocalPath(task.context_pack.trace_path);
+  assertNoMachineLocalPath(task.gate_report_path);
   const scopePath = taskSyncScopeRelativePath(task.task_id);
   assert(existsSync(path.join(dataRoot, scopePath)), "start_task did not create an authoritative task scope");
   assert.equal(git(dataRoot, ["check-ignore", scopePath]), scopePath, "task scope is not local-only/ignored");
@@ -245,6 +275,98 @@ try {
   assert(git(remoteRoot, ["show", "main:20_Wiki/success.md"]).includes("Only this reviewed artifact"));
   assert(git(dataRoot, ["status", "--short", "--", "20_Wiki/neighbor.md"]).startsWith("M "));
 
+  const conditionalPath = ".dino/proofs/task-scoped-public-receipt.json";
+  write(conditionalPath, `${JSON.stringify({ status: "verified", proof: "conditional artifact receipt" }, null, 2)}\n`);
+  await registerTaskSyncPaths({
+    dataRoot,
+    taskId: task.task_id,
+    paths: [conditionalPath],
+    source: "safe02-verifier:system-proof",
+    approval: "system_verified",
+  });
+  const receipted = await callAutoSync(client, task.task_id, [task.task_path, conditionalPath], {
+    push: true,
+    message: "data: verify conditional receipt",
+  });
+  assert.equal(receipted.ok, true, JSON.stringify(receipted));
+  assert.equal(receipted.state, "pushed");
+  assert.equal(receipted.public_sync_receipt?.conditional_path_count, 2);
+  const receiptPath = receipted.public_sync_receipt?.path;
+  assert.match(receiptPath ?? "", /^60_Operations\/task-sync-receipts\/task-sync-receipt-[a-f0-9]{64}\.json$/);
+  const receiptText = git(remoteRoot, ["show", `main:${receiptPath}`]);
+  const receiptValidation = validatePublicSyncReceipt(JSON.parse(receiptText));
+  assert.equal(receiptValidation.ok, true, receiptValidation.errors.join(","));
+  assert.deepEqual(receiptValidation.receipt.conditional_paths, [conditionalPath, task.task_path].sort());
+  const receiptedCommitPaths = git(dataRoot, ["diff-tree", "--no-commit-id", "--name-only", "-r", receipted.commit])
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .sort();
+  assert.deepEqual(receiptedCommitPaths, [conditionalPath, task.task_path, receiptPath].sort());
+  const receiptedMessage = git(dataRoot, ["show", "-s", "--format=%B", receipted.commit]);
+  assert(receiptedMessage.includes(`DinoBrain-Task-Id: ${task.task_id}`));
+  assert(receiptedMessage.includes(`DinoBrain-Sync-Receipt: ${receiptPath}`));
+  const prePushReceiptProof = classifyPrePushGitHistory(
+    dataRoot,
+    `refs/heads/main ${receipted.commit} refs/heads/main ${pushed.commit}\n`,
+  );
+  assert.equal(prePushReceiptProof.ok, true, JSON.stringify(prePushReceiptProof.blocker_examples));
+  assert.equal(prePushReceiptProof.public_sync_receipts[0]?.verified, true);
+  const receiptedTree = git(dataRoot, ["rev-parse", `${receipted.commit}^{tree}`]);
+  const receiptedParent = git(dataRoot, ["rev-parse", `${receipted.commit}^`]);
+  const missingTrailerCommit = gitWithInput(
+    dataRoot,
+    ["commit-tree", receiptedTree, "-p", receiptedParent],
+    "data: tampered commit without receipt trailers\n",
+  );
+  const missingTrailerProof = classifyPrePushGitHistory(
+    dataRoot,
+    `refs/heads/tampered ${missingTrailerCommit} refs/heads/tampered ${receiptedParent}\n`,
+  );
+  assert.equal(missingTrailerProof.ok, false);
+  assert(
+    missingTrailerProof.blocker_examples.some((entry) =>
+      entry.findings.some((finding) => finding.id.startsWith("public_sync_commit_trailer_invalid")),
+    ),
+  );
+
+  const rejectedAbsoluteVaultPath = await client.callTool({
+    name: "finish_task",
+    arguments: {
+      task_id: task.task_id,
+      lease_id: task.lease.lease_id,
+      summary: "Reject absolute vault path input before terminal persistence.",
+      outcome: "completed",
+      growth_policy: "trace_only",
+      used_memory_paths: ["/home/sample-user/private/memory.json"],
+    },
+  });
+  assert.equal(rejectedAbsoluteVaultPath.isError, true, "absolute vault path was normalized into a relative trace path");
+
+  const finish = parseTool(
+    await client.callTool({
+      name: "finish_task",
+      arguments: {
+        task_id: task.task_id,
+        lease_id: task.lease.lease_id,
+        terminal_owner_id: machineLocalPath,
+        summary: `Verified scoped sync from ${machineLocalPath}`,
+        outcome: "completed",
+        growth_policy: "trace_only",
+        changed_files: [machineLocalPath],
+        decisions: [`Do not publish ${machineLocalPath}`],
+        next_steps: ["Keep /home/sample-user/private/next.md local."],
+        context_pack_paths: [task.context_pack.trace_path],
+        used_memory_paths: [],
+        search_queries: [`Find ${machineLocalPath}`],
+      },
+    }),
+  );
+  assert.equal(finish.ok, true);
+  assertNoMachineLocalPath(finish.trace_path);
+  const finishTrace = JSON.parse(readFileSync(path.join(dataRoot, finish.trace_path), "utf8"));
+  assert(finishTrace.output_redactions.includes("windows_user_path"));
+  assert(finishTrace.output_redactions.includes("posix_user_path"));
+
   const noOp = await callAutoSync(client, task.task_id, ["20_Wiki/success.md"], { push: true });
   assert.equal(noOp.ok, true);
   assert.equal(noOp.state, "no_op");
@@ -295,9 +417,16 @@ try {
           "sensitive_content_blocked",
           "preexisting_staged_file_blocked",
           "single_scoped_file_committed_and_pushed",
+          "conditional_artifacts_bound_to_public_receipt",
+          "task_record_committed_with_conditional_artifacts",
+          "receipt_commit_trailers_verified",
+          "pre_push_receipt_reverification",
+          "missing_receipt_trailers_blocked",
           "neighboring_backlog_preserved",
           "no_op_state",
           "push_failure_returns_retry_with_commit",
+          "task_context_gate_machine_paths_redacted",
+          "finish_trace_machine_paths_redacted",
         ],
       },
       null,

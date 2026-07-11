@@ -104,14 +104,29 @@ async function main() {
 
     const failClosedRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-review-pressure-closed-"));
     roots.push(failClosedRoot);
+    const machinePathItem = gatedItem("missing-state");
+    machinePathItem.candidate_record.claim = "Read C:\\Users\\sample-user\\private\\notes.md";
+    machinePathItem.review_record.notes = "/home/sample-user/private/review.md";
     const failClosed = await writeReviewGatedBatch(failClosedRoot, {
-      items: [gatedItem("missing-state")],
+      items: [machinePathItem],
+      extra_writes: [
+        {
+          target_path: ".dino/state/extra-write.json",
+          record: { evidence: "C:\\Users\\sample-user\\private\\extra.json" },
+          expected_before_sha256: null,
+        },
+      ],
       actor: "verification",
       reason: "Prove missing admission state fails closed.",
     });
     assert(failClosed.decisions[0].destination === "cold_hold", "missing state did not fail closed");
     const held = JSON.parse(readFileSync(path.join(failClosedRoot, "50_Instances", "candidates", "missing-state.json"), "utf8"));
     assert(held.status === "held" && held.temperature === "cold", "fail-closed candidate was not cold-held");
+    const heldReview = JSON.parse(readFileSync(path.join(failClosedRoot, "80_Review_Queue", "promotion", "missing-state.json"), "utf8"));
+    assert(!JSON.stringify(held).includes("sample-user"), "candidate persisted a machine-local path");
+    assert(!JSON.stringify(heldReview).includes("sample-user"), "review persisted a machine-local path");
+    const extraWrite = JSON.parse(readFileSync(path.join(failClosedRoot, ".dino", "state", "extra-write.json"), "utf8"));
+    assert(!JSON.stringify(extraWrite).includes("sample-user"), "extra lifecycle write persisted a machine-local path");
 
     const concurrentRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-review-pressure-concurrent-"));
     roots.push(concurrentRoot);
@@ -164,6 +179,7 @@ async function main() {
         simulation_cold: simulation.cold_held,
         parallel_writers: 24,
         fault_rollback: true,
+        machine_local_redaction: true,
       }),
     );
   } finally {

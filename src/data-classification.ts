@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const DATA_CLASSIFICATION_POLICY_VERSION = "data_classification_20260711_v1";
+export const DATA_CLASSIFICATION_POLICY_VERSION = "data_classification_20260712_v3";
 export const PUBLIC_DATA_MAX_SCAN_BYTES = 8 * 1024 * 1024;
+export const MACHINE_LOCAL_PATH_REDACTION = "[REDACTED_MACHINE_LOCAL_PATH]";
 
 export type DataPathClassification = "syncable" | "conditional" | "blocked";
 
@@ -48,8 +49,8 @@ type PathRule = {
 };
 
 const EVALUATION_CANARY_PATH =
-  /^\.dino\/(?:evaluations\/(?:answer-quality-golden|rag-golden)|state\/(?:answer_quality_status|rag_eval_status))\.json$/;
-const EVALUATION_CANARY_FIELDS = new Set(["forbidden_terms", "forbidden_answer_terms"]);
+  /^\.dino\/(?:evaluations\/(?:answer-quality-golden|behavior-golden|rag-golden)|state\/(?:answer_quality_status|rag_eval_status))\.json$/;
+const EVALUATION_CANARY_FIELDS = new Set(["forbidden_terms", "forbidden_answer_terms", "forbidden_context_terms"]);
 
 const BLOCKED_PATH_RULES: PathRule[] = [
   { id: "raw_conversation_path", pattern: /^10_Conversations\/raw\// },
@@ -58,6 +59,7 @@ const BLOCKED_PATH_RULES: PathRule[] = [
   { id: "attachment_path", pattern: /^attachments\// },
   { id: "secret_dino_path", pattern: /^\.dino\/(?:secrets|local)\.json$/ },
   { id: "cache_path", pattern: /^\.dino\/(?:cache|tmp|locks|local-backups|review-admissions)\// },
+  { id: "generation_runtime_path", pattern: /^\.dino\/generations\// },
   { id: "task_sync_scope_path", pattern: /^\.dino\/sync-scopes\// },
   { id: "private_restore_runtime_path", pattern: /^\.dino\/(?:restore-receipts|restore-staging)\// },
   { id: "generated_index_path", pattern: /^\.dino\/index\// },
@@ -92,6 +94,7 @@ const CONDITIONAL_PATH_RULES: PathRule[] = [
 ];
 
 const SYNCABLE_PATH_RULES: PathRule[] = [
+  { id: "task_sync_public_receipt_path", pattern: /^60_Operations\/task-sync-receipts\/task-sync-receipt-[a-f0-9]{64}\.json$/ },
   { id: "home_path", pattern: /^00_Home\// },
   { id: "wiki_path", pattern: /^20_Wiki\// },
   { id: "source_path", pattern: /^30_Sources\// },
@@ -142,10 +145,46 @@ const RAW_TRANSCRIPT_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
 ];
 
 const MACHINE_LOCAL_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
-  { id: "windows_user_path", pattern: /\b[A-Z]:\\Users\\[^"'\s]+/ },
-  { id: "windows_drive_path", pattern: /\b[A-Z]:\\(?!Users\\)[^"'\s]+/ },
+  { id: "windows_user_path", pattern: /\b[A-Z]:(?:\\+|\/)Users(?:\\+|\/)[^"'\s]+/i },
+  { id: "windows_drive_path", pattern: /\b[A-Z]:(?:\\+|\/)(?!Users(?:\\+|\/))[^"'\s]+/i },
+  { id: "windows_unc_path", pattern: /\\{2,}[^\\/"'\s]+(?:\\+|\/)[^"'\s]+/ },
   { id: "posix_user_path", pattern: /(?:^|[\s"'])\/(?:Users|home)\/[^"'\s]+/m },
+  { id: "slugged_windows_user_path", pattern: /\b[A-Z]-Users-[A-Za-z0-9._-]+/i },
 ];
+
+function globalPattern(pattern: RegExp): RegExp {
+  return new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+}
+
+export function redactMachineLocalPaths(value: string): {
+  text: string;
+  redactions: string[];
+} {
+  const redactions: string[] = [];
+  let text = value;
+  for (const entry of MACHINE_LOCAL_PATTERNS) {
+    text = text.replace(globalPattern(entry.pattern), (match) => {
+      redactions.push(entry.id);
+      if (entry.id === "posix_user_path" && !match.startsWith("/")) {
+        return `${match.slice(0, 1)}${MACHINE_LOCAL_PATH_REDACTION}`;
+      }
+      return MACHINE_LOCAL_PATH_REDACTION;
+    });
+  }
+  return {
+    text,
+    redactions: Array.from(new Set(redactions)),
+  };
+}
+
+export function redactMachineLocalValue<T>(value: T): T {
+  if (typeof value === "string") return redactMachineLocalPaths(value).text as T;
+  if (Array.isArray(value)) return value.map((entry) => redactMachineLocalValue(entry)) as T;
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, redactMachineLocalValue(entry)]),
+  ) as T;
+}
 
 function normalizePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -232,6 +271,7 @@ function structuredContentFindings(relativePath: string, text: string): {
   findings: DataClassificationFinding[];
   parseStatus: DataFileClassification["scan"]["parse_status"];
   contentScanText: string;
+  machineScanText: string;
 } {
   const findings: DataClassificationFinding[] = [];
   const normalized = normalizePath(relativePath);
@@ -239,12 +279,26 @@ function structuredContentFindings(relativePath: string, text: string): {
   let parseStatus: DataFileClassification["scan"]["parse_status"] = "not_applicable";
   let parsed: Record<string, unknown> | null = null;
   let contentScanText = text;
+  const decodedStrings: string[] = [];
+  const collectDecodedStrings = (entry: unknown): void => {
+    if (typeof entry === "string") {
+      decodedStrings.push(entry);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      for (const child of entry) collectDecodedStrings(child);
+      return;
+    }
+    if (!entry || typeof entry !== "object") return;
+    for (const child of Object.values(entry as Record<string, unknown>)) collectDecodedStrings(child);
+  };
 
   if (extension === ".json") {
     try {
       const value = JSON.parse(text) as unknown;
       parsed = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
       parseStatus = "ok";
+      let decodedScanValue: unknown = parsed ?? value;
       if (parsed && EVALUATION_CANARY_PATH.test(normalized)) {
         const maskCanaries = (entry: unknown): unknown => {
           if (Array.isArray(entry)) return entry.map(maskCanaries);
@@ -256,8 +310,10 @@ function structuredContentFindings(relativePath: string, text: string): {
             ]),
           );
         };
-        contentScanText = JSON.stringify(maskCanaries(parsed));
+        decodedScanValue = maskCanaries(parsed);
+        contentScanText = JSON.stringify(decodedScanValue);
       }
+      collectDecodedStrings(decodedScanValue);
     } catch {
       parseStatus = "invalid";
       findings.push({ id: "invalid_json", category: "parse", severity: "blocker" });
@@ -268,7 +324,8 @@ function structuredContentFindings(relativePath: string, text: string): {
     for (let index = 0; index < lines.length; index += 1) {
       if (!lines[index].trim()) continue;
       try {
-        JSON.parse(lines[index]);
+        const value = JSON.parse(lines[index]);
+        collectDecodedStrings(value);
       } catch {
         parseStatus = "invalid";
         findings.push({ id: "invalid_jsonl", category: "parse", severity: "blocker", line: index + 1 });
@@ -276,6 +333,9 @@ function structuredContentFindings(relativePath: string, text: string): {
       }
     }
   }
+
+  const machineScanText = decodedStrings.length > 0 ? decodedStrings.join("\n") : contentScanText;
+  if (decodedStrings.length > 0) contentScanText = `${contentScanText}\n${decodedStrings.join("\n")}`;
 
   if (/^50_Instances\/accepted\/.+\.json$/.test(normalized) && parsed?.auto_generated === true && !hasReviewLineage(parsed)) {
     findings.push({ id: "auto_generated_accepted_without_review_lineage", category: "review", severity: "blocker" });
@@ -299,7 +359,7 @@ function structuredContentFindings(relativePath: string, text: string): {
     }
   }
 
-  return { findings, parseStatus, contentScanText };
+  return { findings, parseStatus, contentScanText, machineScanText };
 }
 
 function fileType(relativePath: string): { supported: boolean; value: string } {
@@ -338,6 +398,7 @@ export function classifyDataFile(input: {
   if (!pathDecision.explicit_allowlist) {
     findings.push({ id: "unclassified_path", category: "path", severity: "blocker" });
   }
+  findings.push(...firstPatternFinding(normalized, MACHINE_LOCAL_PATTERNS, "machine_local"));
 
   if (!deleted && !scanEnabled) {
     findings.push({ id: "content_scan_required", category: "decode", severity: "blocker" });
@@ -361,7 +422,11 @@ export function classifyDataFile(input: {
       decodeStatus = "utf8";
       const structured = structuredContentFindings(normalized, text);
       parseStatus = structured.parseStatus;
-      findings.push(...scanDataText(structured.contentScanText), ...structured.findings);
+      findings.push(
+        ...scanDataText(structured.contentScanText).filter((finding) => finding.category !== "machine_local"),
+        ...scanDataText(structured.machineScanText).filter((finding) => finding.category === "machine_local"),
+        ...structured.findings,
+      );
       complete = true;
     } catch {
       decodeStatus = "undecodable";

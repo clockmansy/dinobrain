@@ -23,7 +23,7 @@ import {
   sha256Text,
   type ClientMcpAgent,
 } from "./client-mcp-proof.js";
-import { atomicWriteJson, withFileLock } from "./concurrency.js";
+import { atomicCreateText, atomicWriteJson, withFileLock } from "./concurrency.js";
 import { findClientLivePreResponseProof, type LivePreResponseProof } from "./live-pre-response-proof.js";
 import { DINOBRAIN_DATA_CONTRACT_VERSION, DINOBRAIN_VERSION } from "./version.js";
 
@@ -497,7 +497,7 @@ async function loadOrCreateAttestationKey(localStateRoot: string): Promise<{
     } catch {
       const pair = generateKeyPairSync("ed25519");
       const pem = pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString();
-      await fs.writeFile(filePath, pem, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      await atomicCreateText(filePath, pem, 0o600);
     }
   });
   const privateKey = createPrivateKey(await fs.readFile(filePath, "utf8"));

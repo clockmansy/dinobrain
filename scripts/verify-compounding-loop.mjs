@@ -422,6 +422,7 @@ try {
     ...Array.from({ length: 5 }, (_, index) => ({
       path: `50_Instances/accepted/release-rule-${index}.json`,
       kind: "curated_record",
+      retrieval_lane: "accepted_behavior",
       title: `Release rule ${index}`,
       summary: "Reviewed controlled release behavior rule.",
       tags: ["behavior-rule", "controlled-compounding", "topic:release"],
@@ -432,6 +433,7 @@ try {
     ...Array.from({ length: 3 }, (_, index) => ({
       path: `50_Instances/accepted/memory-rule-${index}.json`,
       kind: "curated_record",
+      retrieval_lane: "accepted_behavior",
       title: `Memory rule ${index}`,
       summary: "Reviewed controlled memory behavior rule.",
       tags: ["behavior-rule", "controlled-compounding", "topic:memory"],
@@ -442,6 +444,7 @@ try {
     {
       path: "20_Wiki/release.md",
       kind: "curated_record",
+      retrieval_lane: "wiki",
       title: "Release Wiki",
       summary: "Normal curated context remains available.",
       tags: ["release"],

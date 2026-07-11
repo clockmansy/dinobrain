@@ -38,6 +38,9 @@ export type TaskSyncScopeResolution = {
   state: "verified" | "blocked";
   task_id: string;
   scope_path: string;
+  scope_revision: number | null;
+  scope_sha256: string | null;
+  task_path: string | null;
   requested_path_count: number;
   selected_path_count: number;
   entries: TaskSyncScopeEntry[];
@@ -255,9 +258,12 @@ export async function resolveTaskSyncScope(input: {
   if (requested.length === 0) reasonCodes.push("nonempty_allowlist_required");
 
   let scope: TaskSyncScopeRecord | null = null;
+  let scopeSha256: string | null = null;
   try {
     await verifyTaskRecord(input.dataRoot, input.taskId);
-    scope = JSON.parse(await fs.readFile(absoluteFromRelative(input.dataRoot, scopeRelative), "utf8")) as TaskSyncScopeRecord;
+    const scopeRaw = await fs.readFile(absoluteFromRelative(input.dataRoot, scopeRelative), "utf8");
+    scopeSha256 = createHash("sha256").update(scopeRaw).digest("hex");
+    scope = JSON.parse(scopeRaw) as TaskSyncScopeRecord;
   } catch (error) {
     reasonCodes.push("task_sync_scope_unavailable");
     rejected.push({ path: scopeRelative, reason: String((error as Error).message).slice(0, 240) });
@@ -313,6 +319,9 @@ export async function resolveTaskSyncScope(input: {
     state: uniqueReasons.length === 0 && selected.length > 0 ? "verified" : "blocked",
     task_id: input.taskId,
     scope_path: scopeRelative,
+    scope_revision: scope?.revision ?? null,
+    scope_sha256: scopeSha256,
+    task_path: scope?.task_path ?? null,
     requested_path_count: requested.length,
     selected_path_count: selected.length,
     entries: selected,

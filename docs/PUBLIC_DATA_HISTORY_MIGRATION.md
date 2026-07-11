@@ -26,9 +26,9 @@ The preparation path:
 
 The prepared repository is eligible for push only when every blocking count is
 zero. Evaluation fixtures may contain forbidden-output canaries; only the
-known `forbidden_terms` and `forbidden_answer_terms` fields in known evaluation
-artifacts are omitted from content scanning. The same text anywhere else still
-blocks.
+known `forbidden_terms`, `forbidden_answer_terms`, and
+`forbidden_context_terms` fields in known evaluation artifacts are omitted from
+content scanning. The same text anywhere else still blocks.
 
 ## Commands
 
@@ -72,16 +72,19 @@ recovery.
 - the exact remote branch can be replaced and restored;
 - the source worktree remains byte- and ref-untouched.
 
-## Current Prepared Evidence
+## Applied Evidence
 
 The 2026-07-12 preparation used source commit
 `42af157fc65092d278385f5f65f0341cb71db258`. It found 1,907 risky historical
-file versions, changed 719 files, and produced sanitized commit
-`54a72e5e7797bba021ccbe2b3670f6baccb7e7dd` with zero current or historical
-blockers. Independent public-data verification scanned 5,057 tracked files and
-reported zero blockers and one expected warning because generated local indexes
-are intentionally absent from the public snapshot.
+file versions and produced the first sanitized candidate
+`54a72e5e7797bba021ccbe2b3670f6baccb7e7dd`. A second structural pass redacted
+decoded JSON/JSONL strings, rewrote unsafe filename references, masked all
+known evaluation canary fields, and restored executable Git-hook modes. The
+final root is `ec9a1a5c27b082dba94de4eeecca0fe4a9238854`.
 
-The remote branch has not been replaced. Applying the prepared history is a
-separate destructive publication decision because existing clones must be
-re-cloned or explicitly migrated afterward.
+The approved `--force-with-lease` replacement is applied to public
+`origin/main`. A fresh clone and the migrated local checkout each report 5,057
+committed files, zero current or historical blockers, zero warnings, and the
+same HEAD. Local migration retained an external recovery ref and exact index
+backup and preserved all 28,007 worktree files, 372,849,563 bytes, and the
+aggregate worktree SHA-256.

@@ -8,6 +8,8 @@ import {
   DATA_CLASSIFICATION_POLICY_VERSION,
   PUBLIC_DATA_MAX_SCAN_BYTES,
   classifyDataFile,
+  redactMachineLocalPaths,
+  redactMachineLocalValue,
 } from "../dist/data-classification.js";
 import {
   classifyCompleteGitHistory,
@@ -83,6 +85,33 @@ assert(hasFinding(secret, "github_token_shape"));
 const machineLocal = classify("20_Wiki/local.md", `${localPath}\n`);
 assert.equal(machineLocal.classification, "blocked");
 assert(hasFinding(machineLocal, "windows_user_path"));
+const redactedMachineLocal = redactMachineLocalPaths(`Use ${localPath} and /home/sample-user/private/notes.md.`);
+assert.deepEqual(redactedMachineLocal.redactions.sort(), ["posix_user_path", "windows_user_path"]);
+assert.equal(redactedMachineLocal.text.includes("sample-user"), false);
+assert.equal(classify("20_Wiki/redacted-local.md", redactedMachineLocal.text).classification, "syncable");
+const deepRedacted = redactMachineLocalValue({
+  summary: `Read ${localPath}`,
+  nested: [{ evidence: "/Users/sample-user/private/evidence.json" }],
+});
+assert.equal(JSON.stringify(deepRedacted).includes("sample-user"), false);
+assert.equal(classify("20_Wiki/deep-redacted.json", JSON.stringify(deepRedacted)).classification, "syncable");
+for (const [label, value, finding] of [
+  ["forward slash drive", "c:/Users/sample-user/private/notes.md", "windows_user_path"],
+  ["UNC", "\\\\sample-server\\private-share\\notes.md", "windows_unc_path"],
+  ["nested JSON escape", JSON.stringify({ nested: { path: "C:\\\\Users\\\\sample-user\\\\private\\\\notes.md" } }), "windows_user_path"],
+]) {
+  const result = classify(`20_Wiki/${String(label).replace(/\s+/g, "-")}.json`, JSON.stringify({ value }));
+  assert.equal(result.classification, "blocked", `${label} machine path was not blocked`);
+  assert(hasFinding(result, finding), `${label} did not report ${finding}`);
+  const redacted = redactMachineLocalPaths(String(value));
+  assert.equal(redacted.text.includes("sample-user"), false, `${label} was not redacted`);
+}
+const unicodeEscapedPath = classify(
+  "20_Wiki/unicode-escaped.json",
+  '{"path":"C:\\u005cUsers\\u005csample-user\\u005cprivate\\u005cnotes.md"}',
+);
+assert.equal(unicodeEscapedPath.classification, "blocked");
+assert(hasFinding(unicodeEscapedPath, "windows_user_path"));
 
 const transcript = classify("20_Wiki/transcript.json", rawTranscript);
 assert.equal(transcript.classification, "blocked");
@@ -141,6 +170,12 @@ const evaluationCanary = classify(
 );
 assert.equal(evaluationCanary.classification, "conditional");
 assert.equal(hasFinding(evaluationCanary, "message_content_true"), false);
+const behaviorCanary = classify(
+  ".dino/evaluations/behavior-golden.json",
+  JSON.stringify({ cases: [{ forbidden_context_terms: ['message_content_stored": true'] }] }),
+);
+assert.equal(behaviorCanary.classification, "conditional");
+assert.equal(hasFinding(behaviorCanary, "message_content_true"), false);
 const sameTextOutsideEvaluation = classify(
   "20_Wiki/not-a-canary.json",
   JSON.stringify({ forbidden_terms: ["message_content_stored: true"] }),
@@ -184,6 +219,14 @@ try {
   const fullHistory = classifyCompleteGitHistory(repo);
   assert.equal(fullHistory.ok, false);
   assert(fullHistory.blocker_examples.some((entry) => entry.findings.some((finding) => finding.id === "github_token_shape")));
+
+  git(repo, ["checkout", "--orphan", "sanitized"]);
+  write(repo, "20_Wiki/history.md", "sanitized root history\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-m", "sanitized root"]);
+  const headOnlyHistory = classifyCompleteGitHistory(repo, { revisions: ["HEAD"] });
+  assert.equal(headOnlyHistory.ok, true);
+  assert.deepEqual(headOnlyHistory.scanned_revisions, ["HEAD"]);
 } finally {
   rmSync(repo, { recursive: true, force: true });
 }
@@ -200,6 +243,8 @@ console.log(
         "conditional_path_consistency",
         "secret_detection",
         "machine_local_detection",
+        "machine_local_redaction",
+        "nested_machine_local_redaction",
         "raw_transcript_detection",
         "private_restore_runtime_paths_blocked",
         "large_file_fail_closed",
@@ -213,6 +258,7 @@ console.log(
         "staged_surface_parity",
         "history_injected_secret_after_removal",
         "complete_history_scan",
+        "published_ref_history_scope",
       ],
     },
     null,

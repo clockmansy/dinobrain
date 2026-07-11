@@ -40,6 +40,8 @@ try {
   git(seed, ["config", "user.email", "public-history@example.invalid"]);
   write(seed, ".gitignore", ".dino/index/\n");
   write(seed, ".gitattributes", "*.json text eol=lf\n");
+  write(seed, ".githooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  write(seed, ".githooks/pre-push", "#!/bin/sh\nexit 0\n");
   write(seed, "20_Wiki/history.md", "github_pat_SAFE01_abcdefghijklmnopqrstuvwxyz0123456789\n");
   write(
     seed,
@@ -50,6 +52,17 @@ try {
     seed,
     ".dino/context-packs/nested-prompt.json",
     `${JSON.stringify({ question: JSON.stringify({ cwd: "C:\\Users\\sample-user\\Documents\\dinobrain" }) }, null, 2)}\n`,
+  );
+  const unsafeTaskId = "task-20260707-113448-Repo-C-Users-sample-user-Documents";
+  write(
+    seed,
+    `.dino/tasks/${unsafeTaskId}.json`,
+    `${JSON.stringify({ task_id: unsafeTaskId, request: "Use c:/Users/sample-user/private/file.md", trace_path: `.dino/traces/${unsafeTaskId}.json` }, null, 2)}\n`,
+  );
+  write(
+    seed,
+    `.dino/traces/${unsafeTaskId}.json`,
+    `${JSON.stringify({ task_id: unsafeTaskId, summary: "Read \\\\sample-server\\private-share\\file.md" }, null, 2)}\n`,
   );
   write(
     seed,
@@ -83,12 +96,22 @@ try {
   assert.equal(manifest.sanitized.history.summary.blocked, 0);
   assert.equal(manifest.sanitized.pre_push.summary.blocked, 0);
   assert.equal(git(manifest.sanitized.repository, ["rev-list", "--count", "HEAD"]), "1");
+  assert.match(git(manifest.sanitized.repository, ["ls-tree", "HEAD", ".githooks/pre-commit"]), /^100755\s/);
+  assert.match(git(manifest.sanitized.repository, ["ls-tree", "HEAD", ".githooks/pre-push"]), /^100755\s/);
   assert.equal(git(source, ["rev-parse", "HEAD"]), originalHead);
   assert(!readFileSync(path.join(manifest.sanitized.repository, "20_Wiki", "history.md"), "utf8").includes("C:\\"));
   const nestedPrompt = JSON.parse(
     readFileSync(path.join(manifest.sanitized.repository, ".dino", "context-packs", "nested-prompt.json"), "utf8"),
   );
-  assert(JSON.parse(nestedPrompt.question).cwd.includes("<machine-local-path>"));
+  assert(!JSON.parse(nestedPrompt.question).cwd.includes("sample-user"));
+  const sanitizedPaths = git(manifest.sanitized.repository, ["ls-tree", "-r", "--name-only", "HEAD"]).split(/\r?\n/);
+  assert(!sanitizedPaths.some((relativePath) => /C-Users-sample-user/i.test(relativePath)));
+  const sanitizedSnapshotText = sanitizedPaths
+    .filter((relativePath) => /\.(?:json|jsonl|md|txt)$/i.test(relativePath))
+    .map((relativePath) => readFileSync(path.join(manifest.sanitized.repository, relativePath), "utf8"))
+    .join("\n");
+  assert(!sanitizedSnapshotText.includes("sample-user"));
+  assert(!sanitizedSnapshotText.includes("sample-server"));
   assert(readFileSync(path.join(manifest.sanitized.repository, ".gitignore"), "utf8").includes(".dino/generations/"));
   assert.throws(
     () => applyPublicDataHistoryMigration(prepared.manifestPath, "0".repeat(40)),

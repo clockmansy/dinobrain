@@ -67,6 +67,21 @@ summary: Stable memory record
     assert(result.report.drift.by_class.live_os_write > 0, "live OS drift class missing");
     assert(result.report.drift.by_class.audit_artifact > 0, "audit artifact drift class missing");
 
+    json(path.join(dataRoot, ".dino", "sync-scopes", "task-sync-example.json"), {
+      version: "task_sync_scope_20260711_v2",
+      task_id: "task-example",
+      entries: [],
+    });
+    result = await buildAndWriteFullMemoryAudit(dataRoot);
+    assert(result.report.status === "drift_classified", `expected sync-scope drift classification, got ${result.report.status}`);
+    assert(
+      result.report.drift.added.some(
+        (entry) => entry.path === ".dino/sync-scopes/task-sync-example.json" && entry.drift_class === "live_os_write",
+      ),
+      "task sync scope was not classified as live OS drift",
+    );
+    assert(result.report.counts.unclassified_drift === 0, "task sync scope created content drift");
+
     json(path.join(dataRoot, ".dino", "evaluations", "rag-golden.json"), {
       version: 1,
       cases: [],

@@ -465,14 +465,15 @@ async function verifyCompoundingLoop() {
         "finish_task did not preserve structured used_memory_paths",
       );
 
+      const privateMachinePath = "C:\\Users\\sample-user\\private\\candidate.md";
       const candidate = parseTool(
         await client.callTool({
           name: "create_candidate_instance",
           arguments: {
-            claim: "Codex compounds knowledge when accepted instances are retrieved in future Context Packs.",
+            claim: `Codex compounds knowledge when accepted instances are retrieved in future Context Packs. ${privateMachinePath}`,
             evidence_snippet:
               "The verifier starts and finishes a task, promotes an evidence-backed instance, and asks a later Context Pack for the same lesson.",
-            evidence_source: "scripts/verify-dinobrain-os.mjs",
+            evidence_source: privateMachinePath,
             confidence: "high",
             last_verified: "2026-07-01",
             source_status: "internal",
@@ -482,6 +483,7 @@ async function verifyCompoundingLoop() {
           },
         }),
       );
+      assert(!candidate.candidate_id.includes("sample-user"), "candidate id leaked machine-local path material");
 
       const review = parseTool(
         await client.callTool({
@@ -489,12 +491,14 @@ async function verifyCompoundingLoop() {
           arguments: {
             candidate_id: candidate.candidate_id,
             decision: "approve",
-            reviewer: "verify-os",
-            notes: "Evidence, confidence, and last_verified are present.",
+            reviewer: privateMachinePath,
+            notes: "Evidence is present at /home/sample-user/private/review.md.",
           },
         }),
       );
       assert(review.accepted_path, "Approved candidate did not produce an accepted instance");
+      const acceptedText = readFileSync(path.join(tempDataRoot, review.accepted_path), "utf8");
+      assert(!acceptedText.includes("sample-user"), "accepted candidate leaked machine-local path material");
 
       const pack = parseTool(
         await client.callTool({
