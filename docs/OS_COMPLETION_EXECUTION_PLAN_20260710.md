@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.11` for this release) and
+  drift from the current authoritative version (`2.2.12` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -148,6 +148,11 @@ The first foundation slice is implemented and remains intentionally
   three observed MCP processes predate the rebuilt server. A restarted client,
   fresh trusted Codex task, and matching ordered delivery proof are still
   required; synthetic fixtures are not substituted for that evidence.
+- The 2026-07-12 verifier hardening sets the live-evidence floor to the later of
+  the requested window and the current `dist/index.js` build time, requires the
+  authoritative OS version on the task/context/preflight/report chain, and
+  selects the newest complete valid proof rather than the first matching event.
+  An isolated regression rejects both pre-build and newer wrong-version chains.
 
 FND-01 is not fully closed until a full current-vault audit, fresh external
 proof imports, final-generation publication, and release-candidate evidence all

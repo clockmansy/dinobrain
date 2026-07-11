@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.11",
+  "version": "2.2.12",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -150,6 +150,7 @@
     "verify:os": "node scripts/verify-dinobrain-os.mjs",
     "verify:codex-live": "node scripts/verify-codex-live-preflight.mjs",
     "verify:codex-live:recent": "node scripts/verify-codex-live-preflight.mjs --require-snippet=false",
+    "verify:codex-live:selection": "node scripts/verify-codex-live-proof-selection.mjs",
     "verify:codex-mcp-preflight": "node scripts/verify-codex-mcp-preflight-proof.mjs",
     "verify:codex-loop": "node scripts/verify-codex-closed-loop.mjs",
     "verify:goal": "node scripts/verify-closed-loop-goal.mjs",
