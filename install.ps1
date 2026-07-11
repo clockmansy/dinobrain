@@ -418,6 +418,768 @@ function Sync-DinoBrainRepo {
   Checkout-DinoBrainRef -Name $Name -TargetDir $TargetDir -Ref $Ref
 }
 
+function Write-DinoBrainAtomicJson {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)]$Value
+  )
+
+  $full = Get-FullPath $Path
+  $parent = Split-Path -Parent $full
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  $temp = "$full.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+  $backup = "$full.$PID.$([guid]::NewGuid().ToString('N')).replace-backup"
+  $json = $Value | ConvertTo-Json -Depth 20
+  [System.IO.File]::WriteAllText($temp, ($json + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+  try {
+    if (Test-Path -LiteralPath $full) {
+      [System.IO.File]::Replace($temp, $full, $backup, $true)
+    } else {
+      [System.IO.File]::Move($temp, $full)
+    }
+  } finally {
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Test-DinoBrainPathUnderRoot {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [Parameter(Mandatory = $true)][string]$AllowedRoot
+  )
+
+  $target = Get-FullPath $TargetPath
+  $root = (Get-FullPath $AllowedRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+  return $target.StartsWith(($root + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-DinoBrainTransactionalSiblingPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$CandidatePath,
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [Parameter(Mandatory = $true)][ValidateSet("stage", "rollback")][string]$Kind
+  )
+
+  $candidate = Get-FullPath $CandidatePath
+  $target = Get-FullPath $TargetPath
+  $candidateParent = Get-FullPath (Split-Path -Parent $candidate)
+  $targetParent = Get-FullPath (Split-Path -Parent $target)
+  $expectedPrefix = ".dino-$Kind-"
+  if ($candidateParent -ne $targetParent -or -not (Split-Path -Leaf $candidate).StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Unsafe DinoBrain transaction path: $candidate"
+  }
+  return $candidate
+}
+
+function Remove-DinoBrainTransactionalSiblingPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$CandidatePath,
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [Parameter(Mandatory = $true)][ValidateSet("stage", "rollback")][string]$Kind
+  )
+
+  $safe = Assert-DinoBrainTransactionalSiblingPath -CandidatePath $CandidatePath -TargetPath $TargetPath -Kind $Kind
+  if (Test-Path -LiteralPath $safe) {
+    Remove-Item -LiteralPath $safe -Recurse -Force
+  }
+}
+
+function Copy-DinoBrainDirectoryTree {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourcePath,
+    [Parameter(Mandatory = $true)][string]$DestinationPath
+  )
+
+  $source = Get-FullPath $SourcePath
+  $destination = Get-FullPath $DestinationPath
+  if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+    throw "Directory copy source is missing: $source"
+  }
+  New-Item -ItemType Directory -Force -Path $destination | Out-Null
+  if (Test-Command "robocopy") {
+    & robocopy $source $destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+    $code = $LASTEXITCODE
+    if ($code -ge 8) {
+      throw "robocopy failed with exit code $code while staging $source"
+    }
+    return
+  }
+  Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destination $_.Name) -Recurse -Force
+  }
+}
+
+function Get-DinoBrainInstallerLauncherNames {
+  return @(
+    "DinoBrain Observatory.cmd",
+    "DinoBrain Hook Diagnose.cmd",
+    "DinoBrain Codex Hook Approval.cmd",
+    "DinoBrain Codex Managed Hook Admin.cmd",
+    "DinoBrain Codex Live Proof.cmd",
+    "DinoBrain Codex MCP Proof.cmd",
+    "DinoBrain Claude MCP Proof.cmd",
+    "DinoBrain Private Backup.cmd",
+    "DinoBrain Private Restore.cmd",
+    "DinoBrain Uninstall Everything.cmd"
+  )
+}
+
+function Add-DinoBrainInstallerLocalExcludes {
+  param([Parameter(Mandatory = $true)][string]$AppPath)
+  $gitDir = Join-Path (Get-FullPath $AppPath) ".git"
+  if (-not (Test-Path -LiteralPath $gitDir -PathType Container)) { return }
+  $excludePath = Join-Path $gitDir "info\exclude"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $excludePath) | Out-Null
+  $existing = if (Test-Path -LiteralPath $excludePath) { [System.IO.File]::ReadAllText($excludePath) } else { "" }
+  $lines = New-Object System.Collections.Generic.List[string]
+  foreach ($launcherName in Get-DinoBrainInstallerLauncherNames) {
+    $line = "/$launcherName"
+    if ($existing -notmatch "(?m)^$([regex]::Escape($line))\r?$") { $lines.Add($line) }
+  }
+  if ($lines.Count -gt 0) {
+    $prefix = if ([string]::IsNullOrEmpty($existing) -or $existing.EndsWith("`n")) { "" } else { "`r`n" }
+    [System.IO.File]::AppendAllText($excludePath, ($prefix + ($lines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+  }
+}
+
+function Get-DinoBrainBlockingDirtyEntries {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$RepoPath
+  )
+  $dirty = Invoke-NativeCommandResult -FilePath "git" -ArgumentList @("-C", $RepoPath, "status", "--porcelain=v1", "--untracked-files=all") -WorkingDirectory $RepoPath
+  $entries = @($dirty.Output -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  if ($Name -ne "dinobrain") { return $entries }
+  $managed = @(Get-DinoBrainInstallerLauncherNames)
+  return @($entries | Where-Object {
+    $line = [string]$_
+    $relative = if ($line.Length -gt 3) { $line.Substring(3).Trim().Trim('"') } else { $line.Trim() }
+    $managed -notcontains $relative.Replace('/', '\')
+  })
+}
+
+function Remove-DinoBrainInstallerManagedLaunchersFromStage {
+  param([Parameter(Mandatory = $true)][string]$AppPath)
+  foreach ($launcherName in Get-DinoBrainInstallerLauncherNames) {
+    $launcherPath = Join-Path $AppPath $launcherName
+    if (Test-Path -LiteralPath $launcherPath -PathType Leaf) { Remove-Item -LiteralPath $launcherPath -Force }
+  }
+}
+
+function Resolve-DinoBrainImmutableRef {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$RepoUrl,
+    [Parameter(Mandatory = $true)][string]$Ref,
+    [string]$Token = "",
+    [switch]$AllowNoGit
+  )
+
+  if (Test-Command "git") {
+    $resolver = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-ref-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $resolver | Out-Null
+    try {
+      Invoke-NativeCommand -FilePath "git" -ArgumentList @("init", "--quiet", $resolver) -WorkingDirectory (Split-Path -Parent $resolver)
+      Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $resolver, "config", "core.longpaths", "true") -WorkingDirectory $resolver
+      Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $resolver, "fetch", "--depth=1", $RepoUrl, $Ref) -WorkingDirectory $resolver
+      $commit = Get-DinoBrainGitText -TargetDir $resolver -ArgumentList @("rev-parse", "FETCH_HEAD^{commit}")
+      if ($commit -notmatch "^[0-9a-fA-F]{40}$") {
+        throw "$Name immutable ref did not resolve to a full commit: $commit"
+      }
+      return [pscustomobject]@{
+        name = $Name
+        requested_ref = $Ref
+        resolved_commit = $commit.ToLowerInvariant()
+        resolution = "git_fetch"
+        full_equivalence = $true
+        resolved_at = [DateTime]::UtcNow.ToString("o")
+      }
+    } finally {
+      Remove-Item -LiteralPath $resolver -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  if (-not $AllowNoGit) {
+    throw "Git is required to resolve immutable refs for $Name."
+  }
+  $repo = Get-GitHubRepoParts -RepoUrl $RepoUrl
+  $headers = @{
+    "Accept" = "application/vnd.github+json"
+    "User-Agent" = "DinoBrainInstaller"
+    "X-GitHub-Api-Version" = "2022-11-28"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Token)) { $headers["Authorization"] = "Bearer $Token" }
+  $encodedRef = [System.Uri]::EscapeDataString($Ref)
+  $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$($repo.Owner)/$($repo.Repo)/commits/$encodedRef" -Headers $headers
+  $commit = [string]$response.sha
+  if ($commit -notmatch "^[0-9a-fA-F]{40}$") {
+    throw "$Name GitHub API ref did not resolve to a full commit."
+  }
+  return [pscustomobject]@{
+    name = $Name
+    requested_ref = $Ref
+    resolved_commit = $commit.ToLowerInvariant()
+    resolution = "github_api_archive"
+    full_equivalence = $false
+    resolved_at = [DateTime]::UtcNow.ToString("o")
+  }
+}
+
+function Enter-DinoBrainInstallLock {
+  param([Parameter(Mandatory = $true)][string]$InstallRoot)
+
+  $stateRoot = Join-Path (Get-FullPath $InstallRoot) ".dinobrain-installer"
+  New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+  $lockPath = Join-Path $stateRoot "install.lock"
+  try {
+    return [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  } catch {
+    throw "Another DinoBrain installer is active for '$InstallRoot', or its install lock cannot be opened: $lockPath"
+  }
+}
+
+function Exit-DinoBrainInstallLock {
+  param($LockHandle)
+  if ($null -ne $LockHandle) { $LockHandle.Dispose() }
+}
+
+function ConvertFrom-DinoBrainInstallTransactionRecord {
+  param(
+    [Parameter(Mandatory = $true)]$Record,
+    [Parameter(Mandatory = $true)][string]$TransactionRoot,
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$ExpectedAppPath,
+    [Parameter(Mandatory = $true)][string]$ExpectedDataPath,
+    [Parameter(Mandatory = $true)][string[]]$AllowedSnapshotPaths
+  )
+
+  if ([string]$Record.version -ne "dinobrain_install_transaction_v1") {
+    throw "Unsupported interrupted installer journal version in $TransactionRoot"
+  }
+  $id = [string]$Record.transaction_id
+  if ([string]::IsNullOrWhiteSpace($id) -or (Split-Path -Leaf $TransactionRoot) -ne $id) {
+    throw "Interrupted installer journal identity does not match its transaction directory: $TransactionRoot"
+  }
+
+  $appPath = Get-FullPath ([string]$Record.app.target_path)
+  $dataPath = Get-FullPath ([string]$Record.data.target_path)
+  if ($appPath -ne (Get-FullPath $ExpectedAppPath) -or $dataPath -ne (Get-FullPath $ExpectedDataPath)) {
+    throw "Interrupted transaction $id targets a different app/data path. Rerun the installer with the original paths before changing InstallRoot arguments."
+  }
+
+  $stageAppPath = Get-FullPath ([string]$Record.app.stage_path)
+  $stageDataPath = Get-FullPath ([string]$Record.data.stage_path)
+  $backupAppPath = Get-FullPath ([string]$Record.app.rollback_path)
+  $backupDataPath = Get-FullPath ([string]$Record.data.rollback_path)
+  Assert-DinoBrainTransactionalSiblingPath -CandidatePath $stageAppPath -TargetPath $appPath -Kind "stage" | Out-Null
+  Assert-DinoBrainTransactionalSiblingPath -CandidatePath $stageDataPath -TargetPath $dataPath -Kind "stage" | Out-Null
+  Assert-DinoBrainTransactionalSiblingPath -CandidatePath $backupAppPath -TargetPath $appPath -Kind "rollback" | Out-Null
+  Assert-DinoBrainTransactionalSiblingPath -CandidatePath $backupDataPath -TargetPath $dataPath -Kind "rollback" | Out-Null
+
+  $allowedTargets = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($path in $AllowedSnapshotPaths) {
+    if (-not [string]::IsNullOrWhiteSpace($path)) { [void]$allowedTargets.Add((Get-FullPath $path)) }
+  }
+  $snapshots = New-Object System.Collections.ArrayList
+  foreach ($snapshot in @($Record.snapshots)) {
+    $targetPath = Get-FullPath ([string]$snapshot.target_path)
+    $snapshotPath = Get-FullPath ([string]$snapshot.snapshot_path)
+    if (-not $allowedTargets.Contains($targetPath)) {
+      throw "Interrupted transaction $id contains an unexpected snapshot target: $targetPath"
+    }
+    if (-not (Test-DinoBrainPathUnderRoot -TargetPath $snapshotPath -AllowedRoot $TransactionRoot)) {
+      throw "Interrupted transaction $id contains an out-of-root snapshot path: $snapshotPath"
+    }
+    [void]$snapshots.Add([pscustomobject]@{
+      target_path = $targetPath
+      snapshot_path = $snapshotPath
+      existed = [bool]$snapshot.existed
+      is_directory = [bool]$snapshot.is_directory
+    })
+  }
+
+  return @{
+    Id = $id
+    Root = (Get-FullPath $TransactionRoot)
+    JournalPath = (Join-Path (Get-FullPath $TransactionRoot) "journal.json")
+    ResultPath = (Join-Path (Get-FullPath $InstallRoot) "dinobrain-install-result.json")
+    AppPath = $appPath
+    DataPath = $dataPath
+    StageAppPath = $stageAppPath
+    StageDataPath = $stageDataPath
+    BackupAppPath = $backupAppPath
+    BackupDataPath = $backupDataPath
+    AppResolution = [pscustomobject]@{
+      requested_ref = [string]$Record.app.requested_ref
+      resolved_commit = [string]$Record.app.resolved_commit
+      resolution = [string]$Record.app.resolution
+      full_equivalence = ([string]$Record.app.resolution -eq "git_fetch")
+    }
+    DataResolution = [pscustomobject]@{
+      requested_ref = [string]$Record.data.requested_ref
+      resolved_commit = [string]$Record.data.resolved_commit
+      resolution = [string]$Record.data.resolution
+      full_equivalence = ([string]$Record.data.resolution -eq "git_fetch")
+    }
+    OriginalAppExists = [bool]$Record.app.original_existed
+    OriginalDataExists = [bool]$Record.data.original_existed
+    AppPromoted = [bool]$Record.app.promoted
+    DataPromoted = [bool]$Record.data.promoted
+    Snapshots = $snapshots
+    StageVerified = [bool]$Record.stage_verified
+    VerificationSkipped = [bool]$Record.verification_skipped
+    RecoveredFromInterrupt = $true
+    RecoveryQuarantinePaths = (New-Object System.Collections.ArrayList)
+    Status = [string]$Record.status
+    StartedAt = [string]$Record.started_at
+    FinishedAt = $null
+    Error = [string]$Record.error
+  }
+}
+
+function Recover-DinoBrainInterruptedInstallTransactions {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$ExpectedAppPath,
+    [Parameter(Mandatory = $true)][string]$ExpectedDataPath,
+    [Parameter(Mandatory = $true)][string[]]$AllowedSnapshotPaths
+  )
+
+  $transactionsRoot = Join-Path (Get-FullPath $InstallRoot) ".dinobrain-installer\transactions"
+  if (-not (Test-Path -LiteralPath $transactionsRoot -PathType Container)) { return }
+  foreach ($directory in @(Get-ChildItem -LiteralPath $transactionsRoot -Directory -ErrorAction Stop | Sort-Object Name)) {
+    $journalPath = Join-Path $directory.FullName "journal.json"
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) { continue }
+    $record = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+    if ([string]$record.status -in @("complete", "rolled_back")) { continue }
+    Write-Warning "Recovering interrupted DinoBrain install transaction $($record.transaction_id) from status '$($record.status)'."
+    $transaction = ConvertFrom-DinoBrainInstallTransactionRecord -Record $record -TransactionRoot $directory.FullName -InstallRoot $InstallRoot -ExpectedAppPath $ExpectedAppPath -ExpectedDataPath $ExpectedDataPath -AllowedSnapshotPaths $AllowedSnapshotPaths
+    Rollback-DinoBrainInstallTransaction -Transaction $transaction -ErrorRecord "recovered interrupted transaction from status '$($record.status)'"
+  }
+}
+
+function New-DinoBrainInstallTransaction {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [Parameter(Mandatory = $true)]$AppResolution,
+    [Parameter(Mandatory = $true)]$DataResolution
+  )
+
+  $id = "install-$([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmssfff'))-$([guid]::NewGuid().ToString('N'))"
+  $shortId = [guid]::NewGuid().ToString("N").Substring(0, 12)
+  $root = Join-Path (Get-FullPath $InstallRoot) ".dinobrain-installer\transactions\$id"
+  New-Item -ItemType Directory -Force -Path $root | Out-Null
+  $transaction = @{
+    Id = $id
+    Root = $root
+    JournalPath = (Join-Path $root "journal.json")
+    ResultPath = (Join-Path (Get-FullPath $InstallRoot) "dinobrain-install-result.json")
+    AppPath = (Get-FullPath $AppPath)
+    DataPath = (Get-FullPath $VaultPath)
+    StageAppPath = (Join-Path (Split-Path -Parent (Get-FullPath $AppPath)) (".dino-stage-app-$shortId"))
+    StageDataPath = (Join-Path (Split-Path -Parent (Get-FullPath $VaultPath)) (".dino-stage-data-$shortId"))
+    BackupAppPath = (Join-Path (Split-Path -Parent (Get-FullPath $AppPath)) (".dino-rollback-app-$shortId"))
+    BackupDataPath = (Join-Path (Split-Path -Parent (Get-FullPath $VaultPath)) (".dino-rollback-data-$shortId"))
+    AppResolution = $AppResolution
+    DataResolution = $DataResolution
+    OriginalAppExists = (Test-Path -LiteralPath $AppPath)
+    OriginalDataExists = (Test-Path -LiteralPath $VaultPath)
+    AppPromoted = $false
+    DataPromoted = $false
+    Snapshots = (New-Object System.Collections.ArrayList)
+    StageVerified = $false
+    VerificationSkipped = $false
+    RecoveredFromInterrupt = $false
+    RecoveryQuarantinePaths = (New-Object System.Collections.ArrayList)
+    Status = "preparing"
+    StartedAt = [DateTime]::UtcNow.ToString("o")
+    FinishedAt = $null
+    Error = $null
+  }
+  Update-DinoBrainInstallTransactionJournal -Transaction $transaction
+  return $transaction
+}
+
+function Get-DinoBrainInstallTransactionRecord {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+  return [ordered]@{
+    version = "dinobrain_install_transaction_v1"
+    transaction_id = $Transaction.Id
+    status = $Transaction.Status
+    started_at = $Transaction.StartedAt
+    finished_at = $Transaction.FinishedAt
+    app = [ordered]@{
+      requested_ref = $Transaction.AppResolution.requested_ref
+      resolved_commit = $Transaction.AppResolution.resolved_commit
+      resolution = $Transaction.AppResolution.resolution
+      target_path = $Transaction.AppPath
+      original_existed = $Transaction.OriginalAppExists
+      promoted = $Transaction.AppPromoted
+      stage_path = $Transaction.StageAppPath
+      rollback_path = $Transaction.BackupAppPath
+    }
+    data = [ordered]@{
+      requested_ref = $Transaction.DataResolution.requested_ref
+      resolved_commit = $Transaction.DataResolution.resolved_commit
+      resolution = $Transaction.DataResolution.resolution
+      target_path = $Transaction.DataPath
+      original_existed = $Transaction.OriginalDataExists
+      promoted = $Transaction.DataPromoted
+      stage_path = $Transaction.StageDataPath
+      rollback_path = $Transaction.BackupDataPath
+    }
+    stage_verified = $Transaction.StageVerified
+    verification_skipped = $Transaction.VerificationSkipped
+    full_equivalence = ($Transaction.AppResolution.full_equivalence -and $Transaction.DataResolution.full_equivalence -and $Transaction.StageVerified -and -not $Transaction.VerificationSkipped)
+    snapshot_count = $Transaction.Snapshots.Count
+    snapshots = @($Transaction.Snapshots | ForEach-Object {
+      [ordered]@{
+        target_path = $_.target_path
+        snapshot_path = $_.snapshot_path
+        existed = $_.existed
+        is_directory = $_.is_directory
+      }
+    })
+    recovered_from_interrupt = $Transaction.RecoveredFromInterrupt
+    recovery_quarantine_paths = @($Transaction.RecoveryQuarantinePaths)
+    error = $Transaction.Error
+  }
+}
+
+function Update-DinoBrainInstallTransactionJournal {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+  Write-DinoBrainAtomicJson -Path $Transaction.JournalPath -Value (Get-DinoBrainInstallTransactionRecord -Transaction $Transaction)
+}
+
+function Write-DinoBrainInstallTransactionResult {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+  $record = Get-DinoBrainInstallTransactionRecord -Transaction $Transaction
+  Write-DinoBrainAtomicJson -Path $Transaction.ResultPath -Value $record
+  Write-Host ("DinoBrain install transaction: " + ($record | ConvertTo-Json -Depth 10 -Compress))
+}
+
+function Save-DinoBrainInstallSnapshot {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$Transaction,
+    [Parameter(Mandatory = $true)][string]$TargetPath,
+    [switch]$AllowDirectory
+  )
+
+  $target = Get-FullPath $TargetPath
+  $exists = Test-Path -LiteralPath $target
+  $isDirectory = $exists -and (Test-Path -LiteralPath $target -PathType Container)
+  if ($isDirectory -and -not $AllowDirectory) {
+    throw "Directory snapshot requires explicit approval: $target"
+  }
+  if ($isDirectory -and (Split-Path -Leaf $target) -ne "DinoBrainHooks") {
+    throw "Refusing to snapshot unexpected installer-managed directory: $target"
+  }
+  $index = $Transaction.Snapshots.Count
+  $snapshot = Join-Path $Transaction.Root "snapshots\$index"
+  if ($exists) {
+    if ($isDirectory) {
+      Copy-DinoBrainDirectoryTree -SourcePath $target -DestinationPath $snapshot
+    } else {
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $snapshot) | Out-Null
+      Copy-Item -LiteralPath $target -Destination $snapshot -Force
+    }
+  }
+  [void]$Transaction.Snapshots.Add([pscustomobject]@{
+    target_path = $target
+    snapshot_path = $snapshot
+    existed = $exists
+    is_directory = $isDirectory
+  })
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+}
+
+function Restore-DinoBrainInstallSnapshots {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+
+  $rollbackCurrentRoot = Join-Path $Transaction.Root "rollback-current"
+  for ($index = $Transaction.Snapshots.Count - 1; $index -ge 0; $index -= 1) {
+    $entry = $Transaction.Snapshots[$index]
+    $target = [string]$entry.target_path
+    if (Test-Path -LiteralPath $target) {
+      $quarantine = Join-Path $rollbackCurrentRoot ([string]$index)
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $quarantine) | Out-Null
+      Move-Item -LiteralPath $target -Destination $quarantine -Force
+    }
+    if ($entry.existed) {
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+      if ($entry.is_directory) {
+        Copy-DinoBrainDirectoryTree -SourcePath $entry.snapshot_path -DestinationPath $target
+      } else {
+        Copy-Item -LiteralPath $entry.snapshot_path -Destination $target -Force
+      }
+    }
+  }
+}
+
+function New-DinoBrainStagedFileFromCurrent {
+  param(
+    [Parameter(Mandatory = $true)][string]$CurrentPath,
+    [Parameter(Mandatory = $true)][string]$StagedPath
+  )
+
+  $current = Get-FullPath $CurrentPath
+  $staged = Get-FullPath $StagedPath
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $staged) | Out-Null
+  if (Test-Path -LiteralPath $current -PathType Leaf) {
+    Copy-Item -LiteralPath $current -Destination $staged -Force
+  } elseif (Test-Path -LiteralPath $staged) {
+    Remove-Item -LiteralPath $staged -Force
+  }
+  return $staged
+}
+
+function Publish-DinoBrainStagedFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$StagedPath,
+    [Parameter(Mandatory = $true)][string]$TargetPath
+  )
+
+  $staged = Get-FullPath $StagedPath
+  $target = Get-FullPath $TargetPath
+  if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) {
+    throw "Staged installer file is missing: $staged"
+  }
+  $parent = Split-Path -Parent $target
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  $temp = "$target.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+  $backup = "$target.$PID.$([guid]::NewGuid().ToString('N')).replace-backup"
+  Copy-Item -LiteralPath $staged -Destination $temp -Force
+  try {
+    Assert-DinoBrainNoBareCarriageReturnFile -Path $temp
+    if (Test-Path -LiteralPath $target) {
+      [System.IO.File]::Replace($temp, $target, $backup, $true)
+    } else {
+      [System.IO.File]::Move($temp, $target)
+    }
+  } finally {
+    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Checkout-DinoBrainResolvedRef {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$RequestedRef,
+    [Parameter(Mandatory = $true)][string]$ResolvedCommit
+  )
+
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "fetch", "origin", "--prune", "--tags") -WorkingDirectory $TargetDir
+  $commitCheck = Invoke-NativeCommandResult -FilePath "git" -ArgumentList @("-C", $TargetDir, "cat-file", "-e", "$ResolvedCommit^{commit}") -WorkingDirectory $TargetDir
+  if ($commitCheck.ExitCode -ne 0) {
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "fetch", "origin", $ResolvedCommit) -WorkingDirectory $TargetDir
+  }
+  if (Test-DinoBrainRemoteBranch -TargetDir $TargetDir -Ref $RequestedRef) {
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "checkout", "-B", $RequestedRef, $ResolvedCommit) -WorkingDirectory $TargetDir
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "branch", "--set-upstream-to", "origin/$RequestedRef", $RequestedRef) -WorkingDirectory $TargetDir
+  } else {
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $TargetDir, "checkout", "--detach", $ResolvedCommit) -WorkingDirectory $TargetDir
+  }
+  $head = Get-DinoBrainGitText -TargetDir $TargetDir -ArgumentList @("rev-parse", "HEAD")
+  if ($head -ne $ResolvedCommit) {
+    throw "$Name staged HEAD $head does not match resolved commit $ResolvedCommit."
+  }
+}
+
+function Prepare-DinoBrainRepoStage {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$RepoUrl,
+    [Parameter(Mandatory = $true)][string]$TargetDir,
+    [Parameter(Mandatory = $true)][string]$StageDir,
+    [Parameter(Mandatory = $true)][string]$RequestedRef,
+    [Parameter(Mandatory = $true)][string]$ResolvedCommit,
+    [string]$Token = "",
+    [switch]$AllowOriginChange,
+    [switch]$AllowNoGit
+  )
+
+  Remove-DinoBrainTransactionalSiblingPath -CandidatePath $StageDir -TargetPath $TargetDir -Kind "stage"
+  if (-not (Test-Command "git")) {
+    if (-not $AllowNoGit) { throw "Git is required to stage $Name." }
+    if (Test-Path -LiteralPath $TargetDir) {
+      throw "Git is required to update an existing $Name target. The degraded immutable-archive path is fresh-install only: $TargetDir"
+    }
+    Install-GitHubArchive -Name $Name -RepoUrl $RepoUrl -Ref $ResolvedCommit -TargetDir $StageDir -Token $Token
+    return
+  }
+
+  if (Test-Path -LiteralPath $TargetDir) {
+    if (-not (Test-Path -LiteralPath (Join-Path $TargetDir ".git"))) {
+      throw "$Name target exists but is not a git repository: $TargetDir"
+    }
+    Copy-DinoBrainDirectoryTree -SourcePath $TargetDir -DestinationPath $StageDir
+  } else {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StageDir) | Out-Null
+    Invoke-NativeCommand -FilePath "git" -ArgumentList @("-c", "core.longpaths=true", "clone", $RepoUrl, $StageDir) -WorkingDirectory (Split-Path -Parent $StageDir)
+  }
+
+  Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $StageDir, "config", "core.longpaths", "true") -WorkingDirectory $StageDir
+
+  $currentOrigin = (& git -C $StageDir remote get-url origin 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw "$Name staged repository has no origin remote: $StageDir" }
+  if ($currentOrigin -ne $RepoUrl) {
+    if ($AllowOriginChange) {
+      Invoke-NativeCommand -FilePath "git" -ArgumentList @("-C", $StageDir, "remote", "set-url", "origin", $RepoUrl) -WorkingDirectory $StageDir
+    } else {
+      throw "$Name origin is '$currentOrigin', expected '$RepoUrl'. Pass -Force to replace the origin URL."
+    }
+  }
+  $head = Get-DinoBrainGitText -TargetDir $StageDir -ArgumentList @("rev-parse", "HEAD")
+  if ($head -ne $ResolvedCommit) {
+    $blockingDirty = @(Get-DinoBrainBlockingDirtyEntries -Name $Name -RepoPath $StageDir)
+    if ($blockingDirty.Count -gt 0) {
+      $count = $blockingDirty.Count
+      $examples = @($blockingDirty | Select-Object -First 10) -join "; "
+      throw "$Name has $count local change(s) and cannot move from HEAD $head to immutable ref $ResolvedCommit without data loss. Blocking entries: $examples. Sync or back up those changes first."
+    }
+    if ($Name -eq "dinobrain") { Remove-DinoBrainInstallerManagedLaunchersFromStage -AppPath $StageDir }
+  }
+  Checkout-DinoBrainResolvedRef -Name $Name -TargetDir $StageDir -RequestedRef $RequestedRef -ResolvedCommit $ResolvedCommit
+  if ($Name -eq "dinobrain") { Add-DinoBrainInstallerLocalExcludes -AppPath $StageDir }
+}
+
+function Move-DinoBrainPathWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourcePath,
+    [Parameter(Mandatory = $true)][string]$DestinationPath
+  )
+
+  $lastError = $null
+  for ($attempt = 0; $attempt -lt 12; $attempt += 1) {
+    try {
+      Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
+      return
+    } catch {
+      $lastError = $_
+      Start-Sleep -Milliseconds (100 * ($attempt + 1))
+    }
+  }
+  throw $lastError
+}
+
+function Promote-DinoBrainInstallTransaction {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+
+  $Transaction.Status = "promoting"
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+  foreach ($kind in @("App", "Data")) {
+    $target = [string]$Transaction["${kind}Path"]
+    $stage = [string]$Transaction["Stage${kind}Path"]
+    $backup = [string]$Transaction["Backup${kind}Path"]
+    Assert-DinoBrainTransactionalSiblingPath -CandidatePath $stage -TargetPath $target -Kind "stage" | Out-Null
+    Assert-DinoBrainTransactionalSiblingPath -CandidatePath $backup -TargetPath $target -Kind "rollback" | Out-Null
+    if (-not (Test-Path -LiteralPath $stage)) { throw "$kind stage is missing: $stage" }
+    if (Test-Path -LiteralPath $backup) { Remove-DinoBrainTransactionalSiblingPath -CandidatePath $backup -TargetPath $target -Kind "rollback" }
+    if (Test-Path -LiteralPath $target) { Move-DinoBrainPathWithRetry -SourcePath $target -DestinationPath $backup }
+    Move-DinoBrainPathWithRetry -SourcePath $stage -DestinationPath $target
+    $Transaction["${kind}Promoted"] = $true
+    Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+  }
+  $Transaction.Status = "promoted"
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+}
+
+function Rollback-DinoBrainInstallTransaction {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$Transaction,
+    [Parameter(Mandatory = $true)]$ErrorRecord
+  )
+
+  $Transaction.Status = "rolling_back"
+  $Transaction.Error = [string]$ErrorRecord
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+  foreach ($kind in @("Data", "App")) {
+    $target = [string]$Transaction["${kind}Path"]
+    $stage = [string]$Transaction["Stage${kind}Path"]
+    $backup = [string]$Transaction["Backup${kind}Path"]
+    $originalExisted = [bool]$Transaction["Original${kind}Exists"]
+    $quarantine = Join-Path $Transaction.Root "rollback-current\$($kind.ToLowerInvariant())"
+    if (Test-Path -LiteralPath $backup) {
+      if (Test-Path -LiteralPath $target) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $quarantine) | Out-Null
+        if (Test-Path -LiteralPath $quarantine) { Remove-Item -LiteralPath $quarantine -Recurse -Force }
+        Move-DinoBrainPathWithRetry -SourcePath $target -DestinationPath $quarantine
+        if ($Transaction.RecoveredFromInterrupt) { [void]$Transaction.RecoveryQuarantinePaths.Add($quarantine) }
+      }
+      Move-DinoBrainPathWithRetry -SourcePath $backup -DestinationPath $target
+    } elseif (-not $originalExisted -and (Test-Path -LiteralPath $target)) {
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $quarantine) | Out-Null
+      if (Test-Path -LiteralPath $quarantine) { Remove-Item -LiteralPath $quarantine -Recurse -Force }
+      Move-DinoBrainPathWithRetry -SourcePath $target -DestinationPath $quarantine
+      if ($Transaction.RecoveredFromInterrupt) { [void]$Transaction.RecoveryQuarantinePaths.Add($quarantine) }
+    } elseif ($originalExisted -and -not (Test-Path -LiteralPath $target)) {
+      throw "Cannot roll back $kind because the original target and rollback copy are both missing: $target"
+    }
+    if (Test-Path -LiteralPath $stage) {
+      Remove-DinoBrainTransactionalSiblingPath -CandidatePath $stage -TargetPath $target -Kind "stage"
+    }
+    $Transaction["${kind}Promoted"] = $false
+  }
+  Restore-DinoBrainInstallSnapshots -Transaction $Transaction
+  $rollbackCurrentRoot = Join-Path $Transaction.Root "rollback-current"
+  if ($Transaction.RecoveredFromInterrupt -and (Test-Path -LiteralPath $rollbackCurrentRoot) -and -not $Transaction.RecoveryQuarantinePaths.Contains($rollbackCurrentRoot)) {
+    [void]$Transaction.RecoveryQuarantinePaths.Add($rollbackCurrentRoot)
+  }
+  $cleanupPaths = @(
+    (Join-Path $Transaction.Root "snapshots"),
+    (Join-Path $Transaction.Root "verify-config"),
+    (Join-Path $Transaction.Root "promotion-config")
+  )
+  if (-not $Transaction.RecoveredFromInterrupt) { $cleanupPaths += (Join-Path $Transaction.Root "rollback-current") }
+  foreach ($internalPath in $cleanupPaths) {
+    if ((Test-Path -LiteralPath $internalPath) -and (Test-DinoBrainPathUnderRoot -TargetPath $internalPath -AllowedRoot $Transaction.Root)) {
+      Remove-Item -LiteralPath $internalPath -Recurse -Force
+    }
+  }
+  $Transaction.Status = "rolled_back"
+  $Transaction.FinishedAt = [DateTime]::UtcNow.ToString("o")
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+  Write-DinoBrainInstallTransactionResult -Transaction $Transaction
+}
+
+function Complete-DinoBrainInstallTransaction {
+  param([Parameter(Mandatory = $true)][hashtable]$Transaction)
+
+  foreach ($kind in @("App", "Data")) {
+    $target = [string]$Transaction["${kind}Path"]
+    $backup = [string]$Transaction["Backup${kind}Path"]
+    if (Test-Path -LiteralPath $backup) {
+      Remove-DinoBrainTransactionalSiblingPath -CandidatePath $backup -TargetPath $target -Kind "rollback"
+    }
+  }
+  foreach ($internalPath in @(
+    (Join-Path $Transaction.Root "snapshots"),
+    (Join-Path $Transaction.Root "verify-config"),
+    (Join-Path $Transaction.Root "promotion-config"),
+    (Join-Path $Transaction.Root "rollback-current")
+  )) {
+    if ((Test-Path -LiteralPath $internalPath) -and (Test-DinoBrainPathUnderRoot -TargetPath $internalPath -AllowedRoot $Transaction.Root)) {
+      Remove-Item -LiteralPath $internalPath -Recurse -Force
+    }
+  }
+  $Transaction.Status = "complete"
+  $Transaction.FinishedAt = [DateTime]::UtcNow.ToString("o")
+  Update-DinoBrainInstallTransactionJournal -Transaction $Transaction
+  Write-DinoBrainInstallTransactionResult -Transaction $Transaction
+}
+
+function Invoke-DinoBrainInstallFailurePoint {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  if ($env:DINOBRAIN_INSTALL_TEST_FAILURE_POINT -eq $Name) {
+    throw "Injected DinoBrain installer failure at $Name"
+  }
+}
+
 function Install-PortableNode {
   param(
     [Parameter(Mandatory = $true)][string]$Version,
@@ -1508,46 +2270,120 @@ Write-Host "Data ref: $DataRef"
 
 $gitAvailable = Test-Command "git"
 $archiveToken = Get-DinoBrainGitHubToken -ExplicitToken $GitHubToken
-if (-not $gitAvailable) {
-  Write-Warning "Git was not found on PATH. DinoBrain will use GitHub ZIP fallback for fresh installs. Install Git later for repo updates and git_sync backup workflows."
-}
-
-Sync-DinoBrainRepo -Name "dinobrain" -RepoUrl $AppRepo -TargetDir $AppDir -Ref $AppRef -Token $archiveToken -AllowOriginChange:$Force
-Sync-DinoBrainRepo -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir -Ref $DataRef -Token $archiveToken -AllowOriginChange:$Force
-if ($gitAvailable) {
-  Assert-DinoBrainRepoAligned -Name "dinobrain" -TargetDir $AppDir -Ref $AppRef
-  Assert-DinoBrainRepoAligned -Name "dinobrain-data" -TargetDir $DataDir -Ref $DataRef
-  Enable-DinoBrainDataGitHooks -DataDir $DataDir
-}
-
-$nodeRoot = Install-PortableNode -Version $NodeVersion -DestinationRoot $ToolsDir
-$nodeExe = Join-Path $nodeRoot "node.exe"
-$npmCmd = Join-Path $nodeRoot "npm.cmd"
-
-Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("install") -WorkingDirectory $AppDir
-Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "build") -WorkingDirectory $AppDir
-$oldDataRoot = $env:DINOBRAIN_DATA_DIR
-$env:DINOBRAIN_DATA_DIR = $DataDir
+$transaction = $null
+$nodeRoot = $null
+$expectedNodeRoot = $null
+$nodeRootExisted = $false
+$installLock = Enter-DinoBrainInstallLock -InstallRoot $InstallRoot
 try {
-  Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "index:sqlite") -WorkingDirectory $AppDir
-  if (-not $SkipSemanticRagPrewarm) {
-    Invoke-DinoBrainSemanticRagPrewarm -NodeRoot $nodeRoot -AppPath $AppDir -VaultPath $DataDir
+  $allowedSnapshotPaths = @(
+    $CodexConfigPath,
+    $CodexHooksPath,
+    $CodexRequirementsPath,
+    $CodexManagedHookDir,
+    $ClaudeSettingsPath,
+    (Join-Path $HOME ".claude.json")
+  )
+  $allowedSnapshotPaths += @(Get-DinoBrainInstallerLauncherNames | ForEach-Object { Join-Path $InstallRoot $_ })
+  Recover-DinoBrainInterruptedInstallTransactions -InstallRoot $InstallRoot -ExpectedAppPath $AppDir -ExpectedDataPath $DataDir -AllowedSnapshotPaths $allowedSnapshotPaths
+
+  if (-not $gitAvailable) {
+    Write-Warning "Git was not found on PATH. DinoBrain will use immutable GitHub archives, but this degraded path does not count as clean-machine equivalence."
   }
+
+  $appResolution = Resolve-DinoBrainImmutableRef -Name "dinobrain" -RepoUrl $AppRepo -Ref $AppRef -Token $archiveToken -AllowNoGit:(-not $gitAvailable)
+  $dataResolution = Resolve-DinoBrainImmutableRef -Name "dinobrain-data" -RepoUrl $DataRepo -Ref $DataRef -Token $archiveToken -AllowNoGit:(-not $gitAvailable)
+  Write-Host "Resolved app ref: $AppRef -> $($appResolution.resolved_commit)"
+  Write-Host "Resolved data ref: $DataRef -> $($dataResolution.resolved_commit)"
+
+  $transaction = New-DinoBrainInstallTransaction -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -AppResolution $appResolution -DataResolution $dataResolution
+  Prepare-DinoBrainRepoStage -Name "dinobrain" -RepoUrl $AppRepo -TargetDir $AppDir -StageDir $transaction.StageAppPath -RequestedRef $AppRef -ResolvedCommit $appResolution.resolved_commit -Token $archiveToken -AllowOriginChange:$Force -AllowNoGit:(-not $gitAvailable)
+  Prepare-DinoBrainRepoStage -Name "dinobrain-data" -RepoUrl $DataRepo -TargetDir $DataDir -StageDir $transaction.StageDataPath -RequestedRef $DataRef -ResolvedCommit $dataResolution.resolved_commit -Token $archiveToken -AllowOriginChange:$Force -AllowNoGit:(-not $gitAvailable)
   if ($gitAvailable) {
-    Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "hooks:data:verify") -WorkingDirectory $AppDir
+    Enable-DinoBrainDataGitHooks -DataDir $transaction.StageDataPath
   }
-} finally {
-  if ($null -eq $oldDataRoot) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldDataRoot }
-}
 
-if (-not $SkipCodexConfig) {
-  Set-DinoBrainCodexConfig -ConfigPath $CodexConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -EnableHooks:(-not $SkipCodexHookConfig)
-}
+  $expectedNodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
+  $nodeRootExisted = Test-Path -LiteralPath $expectedNodeRoot
+  $nodeRoot = Install-PortableNode -Version $NodeVersion -DestinationRoot $ToolsDir
+  $nodeExe = Join-Path $nodeRoot "node.exe"
+  $npmCmd = Join-Path $nodeRoot "npm.cmd"
 
-if (-not $SkipCodexHookConfig) {
-  Set-DinoBrainCodexUserHook -HooksPath $CodexHooksPath -AppPath $AppDir -VaultPath $DataDir
-  Invoke-DinoBrainCodexHookHandshake -AppPath $AppDir -VaultPath $DataDir -NodeExe $nodeExe
-}
+  Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("install") -WorkingDirectory $transaction.StageAppPath
+  Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "build") -WorkingDirectory $transaction.StageAppPath
+  $oldDataRoot = $env:DINOBRAIN_DATA_DIR
+  $env:DINOBRAIN_DATA_DIR = $transaction.StageDataPath
+  try {
+    Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "index:sqlite") -WorkingDirectory $transaction.StageAppPath
+    if (-not $SkipSemanticRagPrewarm) {
+      Invoke-DinoBrainSemanticRagPrewarm -NodeRoot $nodeRoot -AppPath $transaction.StageAppPath -VaultPath $transaction.StageDataPath
+    }
+    if ($gitAvailable) {
+      Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "hooks:data:verify") -WorkingDirectory $transaction.StageAppPath
+    }
+  } finally {
+    if ($null -eq $oldDataRoot) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldDataRoot }
+  }
+
+  $verifyRoot = Join-Path $transaction.Root "verify-config"
+  $verifyConfigPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $CodexConfigPath -StagedPath (Join-Path $verifyRoot "config.toml")
+  $verifyHooksPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $CodexHooksPath -StagedPath (Join-Path $verifyRoot "hooks.json")
+  $verifyRequirementsPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $CodexRequirementsPath -StagedPath (Join-Path $verifyRoot "requirements.toml")
+  $verifyClaudeSettingsPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $ClaudeSettingsPath -StagedPath (Join-Path $verifyRoot "claude-settings.json")
+  if (-not $SkipCodexConfig) {
+    Set-DinoBrainCodexConfig -ConfigPath $verifyConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $transaction.StageAppPath "dist\index.js") -VaultPath $transaction.StageDataPath -EnableHooks:(-not $SkipCodexHookConfig)
+  }
+  if (-not $SkipCodexHookConfig) {
+    Set-DinoBrainCodexUserHook -HooksPath $verifyHooksPath -AppPath $transaction.StageAppPath -VaultPath $transaction.StageDataPath
+    Invoke-DinoBrainCodexHookHandshake -AppPath $transaction.StageAppPath -VaultPath $transaction.StageDataPath -NodeExe $nodeExe
+  }
+  if (-not $SkipClaudeCodeConfig) {
+    Set-DinoBrainClaudeUserHook -SettingsPath $verifyClaudeSettingsPath -AppPath $transaction.StageAppPath -VaultPath $transaction.StageDataPath
+  }
+  if (-not $SkipVerify) {
+    Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $transaction.StageAppPath -ConfigPath $verifyConfigPath -HooksPath $verifyHooksPath -RequirementsPath $verifyRequirementsPath -VaultPath $transaction.StageDataPath -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $verifyClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireClaudePromptHook:(-not $SkipClaudeCodeConfig) -AllowNoGit:(-not $gitAvailable)
+    $transaction.StageVerified = $true
+  } else {
+    $transaction.VerificationSkipped = $true
+  }
+  Update-DinoBrainInstallTransactionJournal -Transaction $transaction
+
+  $promotionRoot = Join-Path $transaction.Root "promotion-config"
+  $promotionConfigPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $CodexConfigPath -StagedPath (Join-Path $promotionRoot "config.toml")
+  $promotionHooksPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $CodexHooksPath -StagedPath (Join-Path $promotionRoot "hooks.json")
+  $promotionClaudeSettingsPath = New-DinoBrainStagedFileFromCurrent -CurrentPath $ClaudeSettingsPath -StagedPath (Join-Path $promotionRoot "claude-settings.json")
+  if (-not $SkipCodexConfig) {
+    Set-DinoBrainCodexConfig -ConfigPath $promotionConfigPath -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -EnableHooks:(-not $SkipCodexHookConfig)
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath $CodexConfigPath
+  }
+  if (-not $SkipCodexHookConfig) {
+    Set-DinoBrainCodexUserHook -HooksPath $promotionHooksPath -AppPath $AppDir -VaultPath $DataDir
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath $CodexHooksPath
+  }
+  if (-not $SkipClaudeCodeConfig) {
+    Set-DinoBrainClaudeUserHook -SettingsPath $promotionClaudeSettingsPath -AppPath $AppDir -VaultPath $DataDir
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath $ClaudeSettingsPath
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath (Join-Path $HOME ".claude.json")
+  }
+  if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig) {
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath $CodexRequirementsPath
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath $CodexManagedHookDir -AllowDirectory
+  }
+  foreach ($launcherName in Get-DinoBrainInstallerLauncherNames) {
+    Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath (Join-Path $InstallRoot $launcherName)
+  }
+
+  Invoke-DinoBrainInstallFailurePoint -Name "after_stage_build"
+  Promote-DinoBrainInstallTransaction -Transaction $transaction
+  if ($gitAvailable) { Enable-DinoBrainDataGitHooks -DataDir $DataDir }
+  Invoke-DinoBrainInstallFailurePoint -Name "after_promote"
+
+  if (-not $SkipCodexConfig) { Publish-DinoBrainStagedFile -StagedPath $promotionConfigPath -TargetPath $CodexConfigPath }
+  if (-not $SkipCodexHookConfig) {
+    Publish-DinoBrainStagedFile -StagedPath $promotionHooksPath -TargetPath $CodexHooksPath
+    Invoke-DinoBrainCodexHookHandshake -AppPath $AppDir -VaultPath $DataDir -NodeExe $nodeExe
+  }
+  if (-not $SkipClaudeCodeConfig) { Publish-DinoBrainStagedFile -StagedPath $promotionClaudeSettingsPath -TargetPath $ClaudeSettingsPath }
 
 $codexManagedHookConfigured = $false
 if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig) {
@@ -1572,13 +2408,44 @@ $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -
 $claudeCodeConfigured = $false
 $claudePromptHookConfigured = $false
 if (-not $SkipClaudeCodeConfig) {
-  Set-DinoBrainClaudeUserHook -SettingsPath $ClaudeSettingsPath -AppPath $AppDir -VaultPath $DataDir
   $claudePromptHookConfigured = $true
   $claudeCodeConfigured = Set-DinoBrainClaudeCodeConfig -ClaudeCommand $ClaudeCommand -Scope $ClaudeScope -NodeExe $nodeExe -ServerEntry (Join-Path $AppDir "dist\index.js") -VaultPath $DataDir -WorkingDirectory $AppDir
 }
 
+Invoke-DinoBrainInstallFailurePoint -Name "after_config"
 if (-not $SkipVerify) {
   Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $ClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireCodexManagedHook:$codexManagedHookConfigured -RequireClaudeCode:$claudeCodeConfigured -RequireClaudePromptHook:$claudePromptHookConfigured -AllowNoGit:(-not $gitAvailable)
+}
+
+Complete-DinoBrainInstallTransaction -Transaction $transaction
+} catch {
+  $originalError = $_
+  if ($null -ne $transaction) {
+    try {
+      Rollback-DinoBrainInstallTransaction -Transaction $transaction -ErrorRecord $originalError
+    } catch {
+      $rollbackError = $_
+      $transaction.Status = "rollback_failed"
+      $transaction.Error = "install_error=$originalError; rollback_error=$rollbackError"
+      $transaction.FinishedAt = [DateTime]::UtcNow.ToString("o")
+      try {
+        Update-DinoBrainInstallTransactionJournal -Transaction $transaction
+        Write-DinoBrainInstallTransactionResult -Transaction $transaction
+      } catch {
+        Write-Warning "Could not persist rollback failure result: $_"
+      }
+      Write-Warning "DinoBrain installer rollback failed: $rollbackError"
+    }
+  }
+  if (-not $nodeRootExisted -and -not [string]::IsNullOrWhiteSpace([string]$expectedNodeRoot) -and (Test-Path -LiteralPath $expectedNodeRoot)) {
+    $safeNodeRoot = Get-FullPath $expectedNodeRoot
+    if ((Test-DinoBrainPathUnderRoot -TargetPath $safeNodeRoot -AllowedRoot $ToolsDir) -and (Split-Path -Leaf $safeNodeRoot) -eq "node-v$NodeVersion-win-x64") {
+      Remove-Item -LiteralPath $safeNodeRoot -Recurse -Force
+    }
+  }
+  throw $originalError
+} finally {
+  Exit-DinoBrainInstallLock -LockHandle $installLock
 }
 
 if (-not $SkipCodexHookConfig -and -not $SkipCodexRestartFlow) {

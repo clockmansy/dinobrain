@@ -7,6 +7,8 @@ param(
   [string]$NodeVersion = "24.18.0",
   [string]$ToolsDir = "",
   [string]$IdentityDir = "",
+  [string]$PrivateBackupDir = "",
+  [string]$RecoveryKeyPath = "",
   [string]$CodexConfigPath = "",
   [string]$CodexHooksPath = "",
   [string]$CodexRequirementsPath = "",
@@ -345,7 +347,9 @@ function Confirm-DinoBrainPurge {
     [Parameter(Mandatory = $true)][string]$AppPath,
     [Parameter(Mandatory = $true)][string]$DataPath,
     [Parameter(Mandatory = $true)][string]$NodePath,
-    [Parameter(Mandatory = $true)][string]$IdentityPath
+    [Parameter(Mandatory = $true)][string]$IdentityPath,
+    [Parameter(Mandatory = $true)][string]$PrivateBackupPath,
+    [Parameter(Mandatory = $true)][string]$RecoveryKeyFile
   )
 
   if ($Yes) { return }
@@ -356,7 +360,9 @@ function Confirm-DinoBrainPurge {
   Write-Host "- Data vault: $DataPath"
   Write-Host "- Portable Node: $NodePath"
   Write-Host "- Local proof identity: $IdentityPath"
-  Write-Host "- DinoBrain launchers and DinoBrain config backups"
+  Write-Host "- Encrypted private backups: $PrivateBackupPath"
+  Write-Host "- Private-backup recovery key: $RecoveryKeyFile"
+  Write-Host "- DinoBrain launchers, config backups, and installer transaction journals"
   Write-Host ""
   Write-Host "Codex/Claude registrations will be removed first. This cannot be undone from this machine unless your data repo has been pushed/backed up."
   $answer = Read-Host "Type DELETE DINOBRAIN to continue"
@@ -368,6 +374,8 @@ function Confirm-DinoBrainPurge {
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) { $InstallRoot = Get-DefaultInstallRoot }
 if ([string]::IsNullOrWhiteSpace($ToolsDir)) { $ToolsDir = Get-DefaultToolsDir }
 if ([string]::IsNullOrWhiteSpace($IdentityDir)) { $IdentityDir = Get-DefaultIdentityDir }
+if ([string]::IsNullOrWhiteSpace($PrivateBackupDir)) { $PrivateBackupDir = Join-Path (Get-DefaultInstallRoot) "DinoBrain Backups" }
+if ([string]::IsNullOrWhiteSpace($RecoveryKeyPath)) { $RecoveryKeyPath = Join-Path (Get-DefaultInstallRoot) "DinoBrain Recovery Key.txt" }
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) { $CodexConfigPath = Join-Path $HOME ".codex\config.toml" }
 if ([string]::IsNullOrWhiteSpace($CodexHooksPath)) { $CodexHooksPath = Join-Path $HOME ".codex\hooks.json" }
 if ([string]::IsNullOrWhiteSpace($CodexRequirementsPath)) { $CodexRequirementsPath = Join-Path (Get-DefaultProgramData) "OpenAI\Codex\requirements.toml" }
@@ -380,11 +388,15 @@ $AppDir = Get-FullPath $AppDir
 $DataDir = Get-FullPath $DataDir
 $ToolsDir = Get-FullPath $ToolsDir
 $IdentityDir = Get-FullPath $IdentityDir
+$PrivateBackupDir = Get-FullPath $PrivateBackupDir
+$RecoveryKeyPath = Get-FullPath $RecoveryKeyPath
 $CodexConfigPath = Get-FullPath $CodexConfigPath
 $CodexHooksPath = Get-FullPath $CodexHooksPath
 $CodexRequirementsPath = Get-FullPath $CodexRequirementsPath
 $CodexManagedHookDir = Get-FullPath $CodexManagedHookDir
 $nodeRoot = Join-Path $ToolsDir "node-v$NodeVersion-win-x64"
+$installerStateRoot = Join-Path $InstallRoot ".dinobrain-installer"
+$installerResultPath = Join-Path $InstallRoot "dinobrain-install-result.json"
 
 if ($Purge) {
   $RemoveAppRepo = $true
@@ -411,7 +423,7 @@ if (($RemoveAppRepo -or $RemoveDataRepo -or $RemovePortableNode -or $RemoveLaunc
 }
 
 if ($Purge) {
-  Confirm-DinoBrainPurge -AppPath $AppDir -DataPath $DataDir -NodePath $nodeRoot -IdentityPath $IdentityDir
+  Confirm-DinoBrainPurge -AppPath $AppDir -DataPath $DataDir -NodePath $nodeRoot -IdentityPath $IdentityDir -PrivateBackupPath $PrivateBackupDir -RecoveryKeyFile $RecoveryKeyPath
 }
 
 if ($RemoveLaunchers) { Remove-DinoBrainLaunchers -InstallRootPath $InstallRoot -AppPath $AppDir }
@@ -421,6 +433,10 @@ if ($RemoveDataRepo) { Remove-InstallPath -TargetPath $DataDir -Label "DinoBrain
 if ($RemovePortableNode) { Remove-InstallPath -TargetPath $nodeRoot -Label "DinoBrain portable Node" }
 if ($RemovePortableNode) { Remove-EmptyDirectory -TargetPath $ToolsDir -Label "DinoBrain tools folder" }
 if ($Purge) { Remove-InstallPath -TargetPath $IdentityDir -Label "DinoBrain local proof identity" }
+if ($Purge) { Remove-InstallPath -TargetPath $PrivateBackupDir -Label "DinoBrain encrypted private backups" }
+if ($Purge) { Remove-InstallPath -TargetPath $RecoveryKeyPath -Label "DinoBrain private-backup recovery key" }
+if ($Purge) { Remove-InstallPath -TargetPath $installerStateRoot -Label "DinoBrain installer transaction state" }
+if ($Purge) { Remove-InstallPath -TargetPath $installerResultPath -Label "DinoBrain installer result" }
 if ($Purge) { Remove-EmptyDirectory -TargetPath (Split-Path -Parent $ToolsDir) -Label "DinoBrain local app folder" }
 if ($Purge) { Remove-EmptyDirectory -TargetPath $InstallRoot -Label "DinoBrain install root" }
 

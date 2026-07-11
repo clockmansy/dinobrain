@@ -91,6 +91,12 @@ try {
   if ($probeText -notmatch "Enable-DinoBrainDataGitHooks" -or $probeText -notmatch "hooks:data:verify") {
     throw "Extracted install.ps1 did not include DinoBrain data safety hook setup and verification"
   }
+  if ($probeText -notmatch "dinobrain_install_transaction_v1" -or
+      $probeText -notmatch "Resolve-DinoBrainImmutableRef" -or
+      $probeText -notmatch "Promote-DinoBrainInstallTransaction" -or
+      $probeText -notmatch "Rollback-DinoBrainInstallTransaction") {
+    throw "Extracted install.ps1 did not include immutable transactional installation and rollback"
+  }
 } finally {
   Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 }

@@ -456,6 +456,8 @@ function isGuidanceRecord(record: RankedRecord): boolean {
   return ["behavior_guidance", "accepted_memory", "verified_claim_support"].includes(record.knowledge_role);
 }
 
+const MAX_REVIEWED_GUIDANCE_ITEMS = 2;
+
 async function generateBehavior(
   dataRoot: string,
   request: string,
@@ -478,7 +480,7 @@ async function generateBehavior(
   }
 
   const guidance: GeneratedBehavior["guidance"] = [];
-  for (const record of ranked.filter(isGuidanceRecord).slice(0, 1)) {
+  for (const record of ranked.filter(isGuidanceRecord).slice(0, MAX_REVIEWED_GUIDANCE_ITEMS)) {
     const rawText = (await readGuidance(dataRoot, record)).replace(/\s+/g, " ").trim().slice(0, 700);
     const text = removeBlockedGuidance(rawText, blockedSet);
     if (!text) continue;

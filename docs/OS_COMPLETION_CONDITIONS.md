@@ -485,6 +485,11 @@ the current-vault artifacts named above.
 | Observatory launcher | `npm run installer:verify:launchers` | HG-08/HG-11 launcher evidence |
 | Managed hook | `npm run installer:verify:managed-hook` | HG-01/HG-11 managed hook evidence |
 | Semantic install | `npm run installer:verify:semantic-rag` | HG-04/HG-11 semantic setup evidence |
+| User hook merge | `npm run installer:verify:hooks` | HG-01/HG-11 idempotent coexistence with existing hooks |
+| Claude install | `npm run installer:verify:claude` | HG-02/HG-11 Claude settings and MCP registration fixture |
+| Native/result contract | `npm run installer:verify:native-result` | HG-11 child exit capture and GUI transaction-result enforcement |
+| Installer transaction | `npm run installer:verify:transaction` | HG-10/HG-11 immutable refs, rollback, interruption recovery, and install locking |
+| Isolated install matrix | `npm run installer:verify:matrix` | HG-11 clean/reinstall/update/failure/uninstall fixture; external both-client proof still required |
 | Uninstall | `npm run uninstall:verify` | HG-11 uninstall/purge evidence |
 | Final aggregate | `npm run verify:goal` | HG-12; run last and only after all rows above pass |
 
@@ -575,6 +580,11 @@ $commands = @(
   'npm run installer:verify:launchers',
   'npm run installer:verify:managed-hook',
   'npm run installer:verify:semantic-rag',
+  'npm run installer:verify:hooks',
+  'npm run installer:verify:claude',
+  'npm run installer:verify:native-result',
+  'npm run installer:verify:transaction',
+  'npm run installer:verify:matrix',
   'npm run uninstall:verify'
 )
 

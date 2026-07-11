@@ -829,7 +829,7 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
   const controlledTopicCounts = new Map<string, number>();
   const maxRecentTasks = allowsRecentTaskContext(query) ? Math.min(1, limit) : 0;
   const laneCounts = new Map<RankedRecord["retrieval_lane"], number>();
-  let supplementalLaneCount = 0;
+  let supplementalRecordCount = 0;
   const intentPrefixes = rootIntentsForQuery(query);
   const intentLanes = new Set(
     intentPrefixes.map((prefix) =>
@@ -859,6 +859,12 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
     acceptedBehaviorAvailable && (intentLanes.size === 0 || intentLanes.has("accepted_behavior"))
       ? Math.min(2, limit)
       : limit;
+  const primaryLanes = intentLanes.size > 0
+    ? intentLanes
+    : acceptedBehaviorAvailable
+      ? new Set<RankedRecord["retrieval_lane"]>(["accepted_behavior"])
+      : new Set<RankedRecord["retrieval_lane"]>();
+  const maxSupplementalRecords = primaryLanes.size > 0 ? Math.min(2, limit) : limit;
   for (const record of records) {
     if (record.kind === "recent_task" || record.path.startsWith(".dino/tasks/")) {
       if (recentTaskCount >= maxRecentTasks) continue;
@@ -876,9 +882,10 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
     }
     const lane = record.retrieval_lane;
     if ((laneCounts.get(lane) ?? 0) >= laneLimit(lane)) continue;
-    if (lane !== "accepted_behavior" && supplementalLaneCount >= maxSupplementalLanes) continue;
+    const supplemental = lane !== "recent_task" && !primaryLanes.has(lane);
+    if (supplemental && supplementalRecordCount >= Math.min(maxSupplementalLanes, maxSupplementalRecords)) continue;
     laneCounts.set(lane, (laneCounts.get(lane) ?? 0) + 1);
-    if (lane !== "accepted_behavior") supplementalLaneCount += 1;
+    if (supplemental) supplementalRecordCount += 1;
     selected.push(record);
     if (selected.length >= limit) break;
   }

@@ -107,6 +107,7 @@ const definitions = [
     calibrate: true,
   },
 ];
+const exactDistractorPath = "50_Instances/accepted/000-aq-fixture-exact-distractor.json";
 
 const requiredCategories = definitions.map((item) => item.category);
 const judgeIds = ["fixture-judge-a", "fixture-judge-b", "fixture-judge-c"];
@@ -251,6 +252,31 @@ async function seedVault(dataRoot) {
     });
   }
 
+  const exactDistractor = {
+    ...definitions[0],
+    id: "000-aq-fixture-exact-distractor",
+    category: "generic_execution",
+    actions: ["implement", "push"],
+    claim: "Implement and push an explicitly authorized delivery request.",
+  };
+  const exactDistractorCandidate = `50_Instances/candidates/${exactDistractor.id}.json`;
+  const exactDistractorReview = `50_Instances/reviews/${exactDistractor.id}.json`;
+  denseRecords[exactDistractorPath] = [1, 0];
+  json(path.join(dataRoot, ...exactDistractorCandidate.split("/")), {
+    candidate_id: exactDistractor.id,
+    status: "reviewed",
+    source_paths: ["30_Sources/chunks/answer-source.json"],
+  });
+  json(path.join(dataRoot, ...exactDistractorReview.split("/")), {
+    status: "approved",
+    candidate_path: exactDistractorCandidate,
+    accepted_path: exactDistractorPath,
+  });
+  json(
+    path.join(dataRoot, ...exactDistractorPath.split("/")),
+    acceptedRecord(exactDistractor, exactDistractorPath, exactDistractorCandidate, exactDistractorReview),
+  );
+
   json(path.join(dataRoot, "50_Instances", "accepted", "held-answer.json"), {
     title: "Held answer rule",
     aliases: [definitions.find((item) => item.category === "quarantine").request],
@@ -392,6 +418,9 @@ async function main() {
     assert(result.report.counts.forbidden_returned_paths === 0, "held memory leaked into answer evaluation");
     assert(result.report.coverage.missing_categories.length === 0, "answer category coverage is incomplete");
     assert(result.report.coverage.missing_languages.length === 0, "answer language coverage is incomplete");
+    const exact = result.report.results.find((item) => item.id === "aq-fixture-exact");
+    assert(exact?.memory_on.citations.includes(exactDistractorPath), "adversarial top-ranked guidance was not present");
+    assert(exact?.memory_on.citations.includes(recordPath(definitions[0])), "second reviewed guidance was not synthesized");
     const negative = result.report.results.find((item) => item.category === "negative");
     assert(negative?.returned_paths.length === 0, "judge/task text leaked into the negative answer case");
     assert(

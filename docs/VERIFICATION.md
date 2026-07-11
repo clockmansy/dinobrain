@@ -72,6 +72,11 @@ npm run verify:compounding
 npm run installer:verify:approval
 npm run installer:verify:launchers
 npm run installer:verify:managed-hook
+npm run installer:verify:hooks
+npm run installer:verify:claude
+npm run installer:verify:native-result
+npm run installer:verify:transaction
+npm run installer:verify:matrix
 npm run codex:hooks:managed
 npm run installer:win
 npm run release:win -- -ReplaceAsset
@@ -86,7 +91,7 @@ derive from or match that authority. `npm run build` and `npm run check` invoke
 this verification before TypeScript work.
 
 `npm run completion:audit` is the evidence-producing wrapper around the
-normative command table. The current registry expands to 67 mandatory command
+normative command table. The current registry expands to 72 mandatory command
 instances; the plan-only output is the exact authority when the registry
 changes. It writes only bounded command metadata and stdout/stderr
 hashes, not raw command output, under:
@@ -208,6 +213,18 @@ Use `npm run release:win -- -SkipUpload` to verify local ZIP/SHA packaging witho
 `npm run installer:verify:launchers` verifies the generated Observatory, hook diagnose, hook approval, Codex live proof, Codex/Claude direct MCP proof, and purge uninstall launchers without touching the real install paths.
 
 `npm run installer:verify:managed-hook` verifies the ProgramData managed-hook writer on temporary files: it preserves existing requirements content, installs DinoBrain exactly once, keeps an existing managed hook directory when present, and writes the wrapper script expected by Codex.
+
+`npm run installer:verify:hooks`, `installer:verify:claude`, and
+`installer:verify:native-result` cover idempotent Codex hook merging, Claude
+settings/MCP wiring, native stderr/exit-code capture, and GUI consumption of the
+immutable transaction result.
+
+`npm run installer:verify:transaction` proves immutable ref freezing, exact
+rollback, dirty-vault preservation, dirty-app refusal, abrupt interruption
+recovery, and single-installer locking. `npm run installer:verify:matrix` runs
+real isolated clean install, reinstall, update, after-config rollback, and normal
+uninstall phases. It samples child-process-tree peak working set and does not
+retain full install logs in memory. See `docs/TRANSACTIONAL_INSTALLER.md`.
 
 `npm run codex:hooks:managed` installs or repairs the trust-free managed Codex hook path through `C:\ProgramData\OpenAI\Codex\requirements.toml`. It may request administrator permission through UAC. After it runs, fully restart Codex and create a fresh workspace thread before counting live proof.
 

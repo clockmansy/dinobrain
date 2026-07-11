@@ -153,6 +153,11 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("installer:verify:launchers", ["HG-08", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:managed-hook", ["HG-01", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:semantic-rag", ["HG-04", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("installer:verify:hooks", ["HG-01", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("installer:verify:claude", ["HG-02", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("installer:verify:native-result", ["HG-11"]),
+  command("installer:verify:transaction", ["HG-10", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("installer:verify:matrix", ["HG-11"], { timeout_ms: 1_200_000 }),
   command("uninstall:verify", ["HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   ...[1, 2, 3].map((run) =>
     command("index:verify:concurrency", ["HG-10"], {

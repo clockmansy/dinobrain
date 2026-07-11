@@ -1,15 +1,21 @@
 # DinoBrain Install
 
-Date: 2026-07-01
+Date: 2026-07-11
 
 This document explains how to install DinoBrain on a Windows PC.
 
-The installer is idempotent. Running it again updates existing repos, reinstalls dependencies, rebuilds the MCP server, refreshes SQLite shards, refreshes the Codex MCP config block, registers a Codex user-level `UserPromptSubmit` hook, registers Claude Code when its CLI is installed, and runs verification.
+The installer is idempotent and transactional. It resolves immutable commits,
+builds and verifies sibling stages, snapshots client configuration, atomically
+promotes the stages, and rolls the complete change set back on failure. Running
+it again updates existing repos without discarding local data, rebuilds the MCP
+server and indexes, repairs hooks and client configuration, and verifies the
+result.
 
 ## Prerequisites
 
 - Windows PowerShell 5.1 or newer
-- `git` on `PATH`
+- `git` on `PATH` for full equivalence, updates, scoped sync, and recovery push.
+  A fresh install can use degraded immutable GitHub archives when Git is absent.
 - GitHub access to both repos. Public repos need ordinary network access; private repos require credentials with read permission:
   - `clockmansy/dinobrain`
   - `clockmansy/dinobrain-data`
@@ -64,13 +70,29 @@ Recommended path from a release asset:
 
 You should not need to type install paths by hand. The setup window now pre-fills the install root from, in order: `DINOBRAIN_INSTALL_ROOT`, `DINOBRAIN_DATA_DIR`, an existing Codex `DINOBRAIN_DATA_DIR` config, an already detected `dinobrain`/`dinobrain-data` pair under common locations, or the user's Documents folder. Use **Auto** to restore that recommendation or **Browse** to pick a parent folder. If you accidentally pick the `dinobrain` or `dinobrain-data` folder itself, the installer treats its parent as the install root and previews the final app/data paths before running.
 
-The EXE embeds default refs at build time. By default `npm run installer:win` sets the app ref to `main`, so a release installer updates the local app checkout to the current GitHub `main` instead of pinning the PC to the installer build commit. The data repo also defaults to `main` unless `-DataRef` is passed during build.
+The EXE embeds requested refs at build time. A requested moving ref such as
+`main` is resolved to a full commit before any target mutation. The installer
+then uses that frozen SHA for every stage and records both the requested ref and
+resolved app/data commits in `<install-root>\dinobrain-install-result.json`.
 
-After cloning or updating, the installer fetches GitHub again and verifies that each git checkout matches the requested remote ref. If local `dinobrain` or `dinobrain-data` differs from `origin/<ref>`, installation stops instead of leaving Codex connected to a stale app/data pair. Explicit tag or commit refs are still allowed for rollback/recovery, but they are reported as pinned and will not track `origin/main`.
+If a moving branch advances after resolution, the running transaction remains
+on the earlier resolved SHA. Explicit tag or commit refs are also allowed for
+rollback/recovery. The GUI reads the terminal transaction record and displays
+the exact app/data commits plus whether stage verification and full equivalence
+were proven.
 
 Git is required for the full closed loop: repo updates, `git_sync`, scoped `auto_sync`, and GitHub push recovery. If Git is not installed, the installer can perform a degraded fresh install by downloading GitHub ZIP archives, but Git-backed update/sync/push verification will not be equivalent until Git is installed and the folders are converted to normal checkouts. For private repos in no-Git mode, enter a GitHub token in the setup window or set `DINOBRAIN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `GH_TOKEN` before launching the installer. Existing non-git install folders are not overwritten in no-Git mode.
 
-Running the installer over the same install root is supported when the existing `dinobrain` and `dinobrain-data` folders are Git repositories created by DinoBrain. The installer fetches the requested refs, rebuilds the app, refreshes indexes, rewrites the DinoBrain Codex/Claude registrations, and recreates launchers. It does not delete the data vault during reinstall. If an existing target folder is not a Git checkout, or points at a different origin URL without `-Force`, installation stops instead of overwriting it.
+Running over the same install root is supported when the existing repositories
+were created by DinoBrain. Local data-vault changes are copied into the stage
+and preserved. App changes that would be overwritten by a ref move stop the
+update, except for the exact installer-generated launchers that are regenerated.
+An unexpected non-Git folder or changed origin still fails closed.
+
+The installer serializes runs with an install-root lock. A nonterminal journal
+left by process termination or power loss is validated and rolled back before a
+new install starts. See `docs/TRANSACTIONAL_INSTALLER.md` for the state machine,
+result schema, recovery quarantine, and verification commands.
 
 From a downloaded `install.ps1`:
 

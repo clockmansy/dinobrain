@@ -206,6 +206,25 @@ async function main() {
       operationsBudgeted.filter((record) => record.retrieval_lane === "operations").length === 4,
       "explicit operations intent did not retain the bounded four-record lane",
     );
+    const explicitIntentFixture = [
+      ...Array.from({ length: 5 }, (_, index) => ({ ...records[0], path: `20_Wiki/wiki-${index}.md`, retrieval_lane: "wiki", score: 100 - index })),
+      ...Array.from({ length: 4 }, (_, index) => ({ ...base, path: `50_Instances/accepted/supplement-${index}.json`, retrieval_lane: "accepted_behavior", score: 95 - index })),
+      ...Array.from({ length: 3 }, (_, index) => ({ ...records[2], path: `30_Sources/chunks/supplement-${index}.md`, retrieval_lane: "source", score: 85 - index })),
+    ];
+    const wikiBudgeted = hybrid.takeWithContextPackBudgets(explicitIntentFixture, 7, "durable knowledge notes");
+    assert(
+      wikiBudgeted.filter((record) => record.retrieval_lane !== "wiki" && record.retrieval_lane !== "recent_task").length <= 2,
+      "explicit Wiki intent admitted more than two supplemental records",
+    );
+    const projectBudgeted = hybrid.takeWithContextPackBudgets(
+      explicitIntentFixture.map((record, index) => index < 5 ? { ...record, path: `40_Projects/project-${index}.md`, retrieval_lane: "project" } : record),
+      7,
+      "project state decisions handoffs",
+    );
+    assert(
+      projectBudgeted.filter((record) => record.retrieval_lane !== "project" && record.retrieval_lane !== "recent_task").length <= 2,
+      "explicit Project intent admitted more than two supplemental records",
+    );
 
     console.log("contextual hybrid retrieval verification ok");
   } finally {

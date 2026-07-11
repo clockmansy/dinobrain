@@ -1,11 +1,22 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace DinoBrainSetup;
 
 internal sealed class SetupForm : Form
 {
+    private sealed record InstallTransactionSummary(
+        string TransactionId,
+        string Status,
+        string AppRef,
+        string AppCommit,
+        string DataRef,
+        string DataCommit,
+        bool StageVerified,
+        bool FullEquivalence);
+
     private readonly TextBox _installRootBox = new();
     private readonly TextBox _appRepoBox = new();
     private readonly TextBox _dataRepoBox = new();
@@ -486,7 +497,7 @@ internal sealed class SetupForm : Form
         _checksLabel.Text =
             $"Prerequisites\r\n" +
             $"PowerShell: {(powershell is null ? "missing" : powershell)}\r\n" +
-            $"Git: {(git is null ? "missing" : git)}\r\n" +
+            $"Git: {(git is null ? "missing; fresh install uses degraded immutable archives" : git)}\r\n" +
             $"Claude Code: {(claude is null ? "optional, not found" : claude)}\r\n" +
             $"Setup EXE: {Program.SetupVersion}";
     }
@@ -532,11 +543,6 @@ internal sealed class SetupForm : Form
         }
 
         RefreshChecks();
-        if (FindCommand("git") is null)
-        {
-            MessageBox.Show(this, "Git must be installed and available on PATH before DinoBrain can be installed.", "DinoBrain Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
 
         var installRootText = _installRootBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(installRootText))
@@ -562,10 +568,20 @@ internal sealed class SetupForm : Form
             var exitCode = await RunPowerShellAsync(installScript, installRoot);
             if (exitCode == 0)
             {
+                var transaction = ReadInstallTransactionResult(installRoot);
+                if (!string.Equals(transaction.Status, "complete", StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException($"Installer exited successfully but transaction status was '{transaction.Status}'.");
+                }
                 _installedAppPath = Path.Combine(installRoot, "dinobrain");
-                _statusLabel.Text = "Install complete";
+                _statusLabel.Text = transaction.FullEquivalence ? "Install complete" : "Install complete (degraded)";
                 AppendLog("");
                 AppendLog("DinoBrain install complete.");
+                AppendLog($"Transaction: {transaction.TransactionId}");
+                AppendLog($"App ref: {transaction.AppRef} -> {transaction.AppCommit}");
+                AppendLog($"Data ref: {transaction.DataRef} -> {transaction.DataCommit}");
+                AppendLog($"Stage verification: {(transaction.StageVerified ? "passed" : "skipped or incomplete")}");
+                AppendLog($"Full equivalence: {(transaction.FullEquivalence ? "verified" : "not proven")}");
                 AppendLog("Codex hook handshake was verified during install.");
                 AppendLog("The Codex hook approval flow was launched if hook registration was enabled.");
                 AppendLog("Codex trust still requires a user click in /hooks.");
@@ -597,6 +613,37 @@ internal sealed class SetupForm : Form
             }
             SetInstallingState(false);
         }
+    }
+
+    private static InstallTransactionSummary ReadInstallTransactionResult(string installRoot)
+    {
+        var resultPath = Path.Combine(installRoot, "dinobrain-install-result.json");
+        if (!File.Exists(resultPath))
+        {
+            throw new InvalidDataException($"Installer transaction result was not created: {resultPath}");
+        }
+
+        using var document = JsonDocument.Parse(File.ReadAllText(resultPath));
+        var root = document.RootElement;
+        var app = root.GetProperty("app");
+        var data = root.GetProperty("data");
+        var transaction = new InstallTransactionSummary(
+            root.GetProperty("transaction_id").GetString() ?? string.Empty,
+            root.GetProperty("status").GetString() ?? string.Empty,
+            app.GetProperty("requested_ref").GetString() ?? string.Empty,
+            app.GetProperty("resolved_commit").GetString() ?? string.Empty,
+            data.GetProperty("requested_ref").GetString() ?? string.Empty,
+            data.GetProperty("resolved_commit").GetString() ?? string.Empty,
+            root.GetProperty("stage_verified").GetBoolean(),
+            root.GetProperty("full_equivalence").GetBoolean());
+
+        if (string.IsNullOrWhiteSpace(transaction.TransactionId) ||
+            !Regex.IsMatch(transaction.AppCommit, "^[0-9a-f]{40}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(transaction.DataCommit, "^[0-9a-f]{40}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            throw new InvalidDataException("Installer transaction result is missing immutable app/data commit evidence.");
+        }
+        return transaction;
     }
 
     private Task<int> RunPowerShellAsync(string installScript, string installRoot)

@@ -743,10 +743,14 @@ Post-package regressions pass for `check`, `safety:task-sync:verify`, `smoke`,
 `flow:audit`, `hook:verify`, `session:verify`, `pre-response:gate:verify`,
 `safety:classifier:verify`, `hooks:data:verify`, `verify:v2`,
 `verify:compounding`, `verify:codex-loop`, and `completion:audit:verify`.
-`verify:os` still reports recall 1.0 but remains red only for pre-existing
-retrieval-noise cases `wiki-003`, `project-001`, and `operations-002`, each at
-noise 3 against the limit 2. That independent RAG gate is not hidden by the
-SAFE-02 acceptance result.
+The later DIST-01 regression pass repaired those three retrieval-noise cases by
+making explicit intent lanes primary and globally limiting supplemental records
+to two. `eval:context` now passes 20/20 with recall 1.0, maximum noise 2, and
+average noise 1.3; `verify:os` is green. Current answer-quality retrieval also
+finds all expected memories. The deterministic generator now synthesizes the
+top two reviewed guidance records instead of silently using only the first;
+all 14 local behavior cases pass, while the changed answer hashes correctly
+leave independent judge calibration pending rather than producing a false green.
 
 #### SAFE-03: Encrypted local-only backup and restore
 
@@ -887,6 +891,24 @@ gates.
 **Acceptance:** clean install, reinstall, update, induced mid-install failure,
 rollback, uninstall, and purge all pass without manual file repair.
 
+**Implementation status (2026-07-11): DIST-01 implementation acceptance
+passed locally.** The installer now freezes app/data refs to full SHAs before
+mutation, builds and verifies sibling stages, snapshots every managed config
+surface, atomically promotes repository/config changes, emits a GUI-consumed
+transaction result, and separates normal uninstall from explicit purge. A
+per-root file lock blocks concurrent installers. Persistent journals recover an
+abrupt interruption even in the rename-before-journal window by restoring
+filesystem truth and preserving replaced bytes in a recovery quarantine.
+Temporary Codex/Claude config copies are removed on completion or rollback.
+
+`installer:verify:transaction` proves exact rollback, dirty data preservation,
+moving-ref freezing, dirty app refusal, abrupt recovery, and lock contention.
+`installer:verify:matrix` passed clean install, reinstall, update, an
+after-config failure with byte-identical app/data/config/hook rollback, and
+normal uninstall; `uninstall:verify` separately covers purge. The measured
+installer process-tree peak was 724.7 MiB. HG-01/HG-02/HG-11 remain open for
+fresh external Codex/Claude live proof and complete recovery equivalence.
+
 #### DIST-02: Clean-machine recovery matrix
 
 **Hard gates:** HG-01, HG-02, HG-09, HG-11
@@ -903,6 +925,14 @@ rollback, uninstall, and purge all pass without manual file repair.
 **Acceptance:** the both-client machine reproduces direct MCP, live pre-response,
 reviewed memory policy, semantic retrieval, behavior correction, Observatory,
 and scoped sync evidence from immutable refs.
+
+**Current status (2026-07-11): NOT COMPLETE.** The local isolated matrix covers
+Git-backed clean install, dirty-data reinstall, immutable update, config-stage
+failure rollback, and normal uninstall. It does not replace a clean Windows
+profile with both real clients, the Codex-only diagnostic, a live no-Git archive
+case, interrupted network/build processes, or GitHub plus encrypted local-only
+restore on another machine. Those external rows must be imported as fresh
+evidence before DIST-02 or HG-11 can pass.
 
 #### REL-01: Immutable release parity
 
