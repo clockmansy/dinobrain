@@ -84,6 +84,9 @@ const STOPWORDS = new Set([
 const SHORT_TOKEN_ALLOWLIST = new Set(["ai", "ci", "db", "go", "js", "llm", "mcp", "pr", "qa", "ui", "ux", "v0", "v1", "v2", "v3"]);
 const MAX_COMMON_TERM_RATIO = 0.65;
 const MIN_BM25_IDF = 0.15;
+export const CONTROLLED_RULE_CONTEXT_PACK_MAX_TOTAL = 3;
+export const CONTROLLED_RULE_CONTEXT_PACK_MAX_PER_TOPIC = 2;
+export const CONTROLLED_RULE_CONTEXT_PACK_MAX_CHARS = 2400;
 
 type ScoredRecord = {
   record: RankedRecord;
@@ -401,14 +404,36 @@ function allowsRecentTaskContext(query: string): boolean {
   ) || /최근|현재|작업|태스크|추적|감사|훅|세션|운영|상태|검증|보류|차단/.test(query);
 }
 
-function takeWithRecentTaskBudget(records: RankedRecord[], limit: number, query: string): RankedRecord[] {
+function isControlledBehaviorRule(record: RankedRecord): boolean {
+  return record.path.startsWith("50_Instances/accepted/") && record.tags.some((tag) => tag.toLowerCase() === "controlled-compounding");
+}
+
+function controlledRuleTopic(record: RankedRecord): string {
+  const topicTag = record.tags.find((tag) => tag.toLowerCase().startsWith("topic:"));
+  return topicTag?.toLowerCase() ?? "topic:general";
+}
+
+export function takeWithContextPackBudgets(records: RankedRecord[], limit: number, query: string): RankedRecord[] {
   const selected: RankedRecord[] = [];
   let recentTaskCount = 0;
+  let controlledRuleCount = 0;
+  let controlledRuleChars = 0;
+  const controlledTopicCounts = new Map<string, number>();
   const maxRecentTasks = allowsRecentTaskContext(query) ? Math.min(1, limit) : 0;
   for (const record of records) {
     if (record.kind === "recent_task" || record.path.startsWith(".dino/tasks/")) {
       if (recentTaskCount >= maxRecentTasks) continue;
       recentTaskCount += 1;
+    }
+    if (isControlledBehaviorRule(record)) {
+      const topic = controlledRuleTopic(record);
+      const chars = record.summary.length + record.excerpt.length;
+      if (controlledRuleCount >= CONTROLLED_RULE_CONTEXT_PACK_MAX_TOTAL) continue;
+      if ((controlledTopicCounts.get(topic) ?? 0) >= CONTROLLED_RULE_CONTEXT_PACK_MAX_PER_TOPIC) continue;
+      if (controlledRuleChars + chars > CONTROLLED_RULE_CONTEXT_PACK_MAX_CHARS) continue;
+      controlledRuleCount += 1;
+      controlledRuleChars += chars;
+      controlledTopicCounts.set(topic, (controlledTopicCounts.get(topic) ?? 0) + 1);
     }
     selected.push(record);
     if (selected.length >= limit) break;
@@ -420,12 +445,12 @@ function applyContextPackIntentBudget(records: RankedRecord[], query: string, li
   const targetLimit = typeof limit === "number" ? limit : records.length;
   if (targetLimit <= 0) return [];
   const intents = rootIntentsForQuery(query);
-  if (intents.length === 0) return takeWithRecentTaskBudget(records, targetLimit, query);
+  if (intents.length === 0) return takeWithContextPackBudgets(records, targetLimit, query);
 
   const primary = records.filter((record) => intents.some((prefix) => record.path.startsWith(prefix)));
   const secondary = records.filter((record) => !intents.some((prefix) => record.path.startsWith(prefix)));
-  const maxSecondary = Math.min(2, Math.max(0, targetLimit - primary.length));
-  return takeWithRecentTaskBudget([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit, query);
+  const maxSecondary = Math.min(2, targetLimit);
+  return takeWithContextPackBudgets([...primary.slice(0, targetLimit), ...secondary.slice(0, maxSecondary)], targetLimit, query);
 }
 
 function hasReviewLineage(record: RankedRecord): boolean {

@@ -7,6 +7,7 @@ import { BEHAVIOR_RECALL_STATUS_RELATIVE_PATH } from "./behavior-recall.js";
 import { BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH } from "./behavior-recall-migration.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
+import { CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH } from "./controlled-compounding.js";
 import { dataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
@@ -107,6 +108,12 @@ const HEALTH_ARTIFACTS: HealthArtifactSpec[] = [
     id: "behavior_recall",
     artifactPath: BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
     authorityRank: 92,
+    healthyStatuses: ["healthy"],
+  },
+  {
+    id: "controlled_compounding",
+    artifactPath: CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH,
+    authorityRank: 91,
     healthyStatuses: ["healthy"],
   },
   {

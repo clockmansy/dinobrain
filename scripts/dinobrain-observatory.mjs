@@ -17,7 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-03-os-health-cockpit-v1";
+const observatoryVersion = "2026-07-11-controlled-compounding-v2";
 const execFileAsync = promisify(execFile);
 const readinessVersion = "observatory_readiness_v1";
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
@@ -554,6 +554,32 @@ async function readBehaviorRecallMigrationStatus() {
   };
 }
 
+async function readControlledCompoundingStatus() {
+  const statusPath = path.join(dataRoot, ".dino", "state", "controlled_compounding_status.json");
+  const status = await readJson(statusPath);
+  if (status && typeof status === "object") return { ok: true, _path: rel(statusPath), ...status };
+  return {
+    ok: false,
+    version: "missing",
+    status: "missing",
+    generated_at: null,
+    counts: {
+      controlled_candidates: 0,
+      recurring_controlled_candidates: 0,
+      controlled_accepted_rules: 0,
+      legacy_generated_candidates_excluded: 0,
+      hot_rule_tokens: 0,
+      retrieved_controlled_rules: 0,
+      used_controlled_rules: 0,
+      max_active_proposals_in_topic: 0,
+    },
+    blockers: ["controlled_compounding_status_missing"],
+    warnings: ["controlled_compounding_status_missing"],
+    visible_status: "Controlled compounding status missing",
+    _path: rel(statusPath),
+  };
+}
+
 async function readOsV2Status() {
   const [gates, lifecycleReports, lifecycleStatus, behaviorEvals, provenance, sourceChunks] = await Promise.all([
     readJsonDir(".dino/gates", 20),
@@ -834,6 +860,7 @@ async function readiness(existingState = null) {
     sourceArtifact,
     recallMigrationArtifact,
     recallArtifact,
+    compoundingArtifact,
     taskArtifact,
     settlementArtifact,
     nodeLifecycleArtifact,
@@ -854,6 +881,7 @@ async function readiness(existingState = null) {
     readStatusArtifact(".dino/state/source_lineage_status.json"),
     readStatusArtifact(".dino/state/behavior_recall_evidence_migration.json"),
     readStatusArtifact(".dino/state/behavior_recall_status.json"),
+    readStatusArtifact(".dino/state/controlled_compounding_status.json"),
     readStatusArtifact(".dino/state/task_sessions.json"),
     readStatusArtifact(".dino/state/task_lifecycle_settlement.json"),
     readStatusArtifact(".dino/state/node_lifecycle.json"),
@@ -942,6 +970,12 @@ async function readiness(existingState = null) {
       expectedStatuses: ["healthy"],
     }),
     hardGateFromArtifact({ id: "behavior_recall", label: "Behavior Recall", artifact: recallArtifact, expectedStatuses: ["healthy"] }),
+    hardGateFromArtifact({
+      id: "controlled_compounding",
+      label: "Controlled Compounding",
+      artifact: compoundingArtifact,
+      expectedStatuses: ["healthy"],
+    }),
     hardGateFromArtifact({ id: "task_lifecycle", label: "Task Lifecycle", artifact: taskArtifact, expectedStatuses: ["healthy"] }),
     hardGateFromArtifact({
       id: "task_lifecycle_settlement",
@@ -1014,12 +1048,21 @@ async function readiness(existingState = null) {
   const mainPending = [];
   const verifierPending = [];
   const recallCounts = recallArtifact.value?.counts ?? {};
+  const compoundingCounts = compoundingArtifact.value?.counts ?? {};
   const reviewCounts = existingState?.lifecycle?.counts ?? {};
   const ragProof = ragProofArtifact.value ?? {};
   const ragEval = ragEvalArtifact.value ?? {};
 
   if ((reviewCounts.promotion_reviews ?? 0) > (reviewCounts.accepted ?? 0)) {
     reviewerPending.push(laneItem("review_queue", "pending", "promotion reviews remain visible", "80_Review_Queue/promotion"));
+  }
+  if (Number(compoundingCounts.controlled_candidates ?? 0) > 0) {
+    reviewerPending.push(laneItem(
+      "controlled_compounding_review",
+      "pending",
+      `${compoundingCounts.controlled_candidates} recurring behavior proposals await independent review`,
+      "80_Review_Queue/promotion",
+    ));
   }
   if (Number(recallCounts.handoff ?? 0) === 0) mainPending.push(laneItem("behavior_handoff", "pending", "no handoff recall coverage yet"));
   if (Number(recallCounts.direction_change ?? 0) === 0) {
@@ -1103,6 +1146,15 @@ async function readiness(existingState = null) {
       evaluator_class: answerQualityArtifact.value?.evaluator_class ?? null,
       counts: answerQualityArtifact.value?.counts ?? null,
       metrics: answerQualityArtifact.value?.metrics ?? null,
+    },
+    controlled_compounding_status: {
+      artifact_path: compoundingArtifact.artifact_path,
+      artifact_parse_status: compoundingArtifact.artifact_parse_status,
+      status: compoundingArtifact.value?.status ?? "missing",
+      counts: compoundingCounts,
+      policy: compoundingArtifact.value?.policy ?? null,
+      blockers: Array.isArray(compoundingArtifact.value?.blockers) ? compoundingArtifact.value.blockers : [],
+      warnings: artifactWarnings(compoundingArtifact),
     },
     release_manifest_status: {
       artifact_path: releaseManifestArtifact.artifact_path,
@@ -1460,7 +1512,7 @@ function withActivityGraph(wikiGraph, operationState) {
 }
 
 async function state() {
-  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(),
     readLiveOperations(),
     readSqliteOperations(),
@@ -1469,6 +1521,7 @@ async function state() {
     readSourceLineageStatus(),
     readBehaviorRecallMigrationStatus(),
     readBehaviorRecallStatus(),
+    readControlledCompoundingStatus(),
     readLifecycleQueue(),
     readSyncRisk(),
     readOsV2Status(),
@@ -1483,6 +1536,7 @@ async function state() {
       source_lineage_status: sourceLineage.status,
       behavior_recall_migration_status: behaviorRecallMigration.status,
       behavior_recall_status: behaviorRecall.status,
+      controlled_compounding_status: controlledCompounding.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
       os_v2_status: osV2.status,
@@ -1492,6 +1546,7 @@ async function state() {
     source_lineage: sourceLineage,
     behavior_recall_migration: behaviorRecallMigration,
     behavior_recall: behaviorRecall,
+    controlled_compounding: controlledCompounding,
     lifecycle,
     sync_risk: syncRisk,
     os_v2: osV2,
@@ -1996,6 +2051,7 @@ function html() {
     <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
     <div id="chip-source" class="chip"><strong>Sources</strong><span>--</span></div>
     <div id="chip-recall" class="chip"><strong>Recall</strong><span>--</span></div>
+    <div id="chip-compounding" class="chip"><strong>Compounding</strong><span>--</span></div>
     <div id="chip-graph" class="chip"><strong>Graph Health</strong><span>--</span></div>
     <div id="chip-sync" class="chip"><strong>GitHub Sync</strong><span>--</span></div>
   </nav>
@@ -2079,6 +2135,10 @@ function html() {
         <div id="behavior-recall-findings" class="list"></div>
       </div>
       <div class="block">
+        <h2>Controlled Compounding</h2>
+        <div id="controlled-compounding" class="kv"></div>
+      </div>
+      <div class="block">
         <h2>Sync Risk</h2>
         <div id="sync-risk" class="kv"></div>
       </div>
@@ -2127,6 +2187,7 @@ function html() {
     const sourceLineageFindingsEl = document.getElementById("source-lineage-findings");
     const behaviorRecallEl = document.getElementById("behavior-recall");
     const behaviorRecallFindingsEl = document.getElementById("behavior-recall-findings");
+    const controlledCompoundingEl = document.getElementById("controlled-compounding");
     const syncRiskEl = document.getElementById("sync-risk");
     const osV2El = document.getElementById("os-v2");
     const chips = {
@@ -2138,6 +2199,7 @@ function html() {
       lifecycle: document.getElementById("chip-lifecycle"),
       source: document.getElementById("chip-source"),
       recall: document.getElementById("chip-recall"),
+      compounding: document.getElementById("chip-compounding"),
       graph: document.getElementById("chip-graph"),
       sync: document.getElementById("chip-sync"),
     };
@@ -2796,6 +2858,7 @@ function html() {
       const sourceLineage = data.source_lineage || { counts: {} };
       const behaviorRecallMigration = data.behavior_recall_migration || { counts: {} };
       const behaviorRecall = data.behavior_recall || { counts: {} };
+      const controlledCompounding = data.controlled_compounding || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
       const osV2 = data.os_v2 || { counts: {} };
@@ -2843,6 +2906,13 @@ function html() {
         healthTone(behaviorRecall.status),
       );
       renderChip(
+        chips.compounding,
+        "Compound",
+        controlledCompounding.status || "--",
+        "rules " + (controlledCompounding.counts?.controlled_accepted_rules ?? 0) + " / proposals " + (controlledCompounding.counts?.controlled_candidates ?? 0),
+        healthTone(controlledCompounding.status),
+      );
+      renderChip(
         chips.graph,
         "Graph",
         graphHealth.score ?? "--",
@@ -2881,6 +2951,18 @@ function html() {
         ["lifecycle", osV2.latest_lifecycle && (osV2.latest_lifecycle.status || osV2.latest_lifecycle.lifecycle_id)],
         ["sources", osV2.counts?.source_chunks],
         ["provenance", osV2.counts?.provenance_links],
+        ["compounding", controlledCompounding.status],
+      ]);
+      kv(controlledCompoundingEl, [
+        ["status", controlledCompounding.status],
+        ["reviewed rules", controlledCompounding.counts?.controlled_accepted_rules],
+        ["recurring proposals", controlledCompounding.counts?.recurring_controlled_candidates],
+        ["hot rule tokens", controlledCompounding.counts?.hot_rule_tokens],
+        ["retrieved rules", controlledCompounding.counts?.retrieved_controlled_rules],
+        ["used rules", controlledCompounding.counts?.used_controlled_rules],
+        ["legacy excluded", controlledCompounding.counts?.legacy_generated_candidates_excluded],
+        ["blockers", Array.isArray(controlledCompounding.blockers) ? controlledCompounding.blockers.join(", ") : ""],
+        ["path", controlledCompounding._path],
       ]);
       kv(readTraceEl, [
         ["status", readTrace.status],

@@ -297,7 +297,10 @@ async function verifyClosedLoop() {
 
   assert(finish.ok === true, "finish_task did not complete.");
   assert(finish.growth?.enabled === true, "finish_task did not run auto-growth.");
-  assert(finish.growth?.destination === "candidate_review", "auto-growth did not route generated memory through review.");
+  assert(
+    ["hot_review", "cold_hold"].includes(finish.growth?.destination),
+    `auto-growth did not route generated memory through a bounded review lane: ${finish.growth?.destination}`,
+  );
   assert(finish.growth?.candidate_path, "auto-growth did not create a memory candidate.");
   assert(finish.growth?.review_path, "auto-growth did not create a promotion review record.");
   assert(finish.auto_sync?.committed === true, "finish_task did not auto-commit policy-approved growth records.");

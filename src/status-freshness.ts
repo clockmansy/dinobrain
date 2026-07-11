@@ -10,6 +10,7 @@ import {
 } from "./behavior-recall-migration.js";
 import { CLIENT_MCP_DIRECT_STATUS_RELATIVE_PATH } from "./client-mcp-direct-status.js";
 import { COLD_PARTITION_INDEX_RELATIVE_PATH, COLD_PARTITION_STATUS_RELATIVE_PATH } from "./cold-partitions.js";
+import { CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH } from "./controlled-compounding.js";
 import { dataPath, relDataPath } from "./context.js";
 import { FULL_MEMORY_AUDIT_STATUS_RELATIVE_PATH, FULL_MEMORY_STATE_DIR } from "./full-memory-audit.js";
 import { GRAPH_HEALTH_RELATIVE_PATH } from "./graph-health.js";
@@ -137,6 +138,7 @@ const ARTIFACTS: ArtifactSpec[] = [
       SOURCE_LINEAGE_STATUS_RELATIVE_PATH,
       BEHAVIOR_RECALL_MIGRATION_STATUS_RELATIVE_PATH,
       BEHAVIOR_RECALL_STATUS_RELATIVE_PATH,
+      CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH,
       REVIEW_QUEUE_STATUS_RELATIVE_PATH,
       SEMANTIC_JOBS_RELATIVE_PATH,
       REVIEW_WORKLIST_STATE_RELATIVE_PATH,
@@ -200,6 +202,21 @@ const ARTIFACTS: ArtifactSpec[] = [
     ],
     required: true,
     authorityRank: 92,
+  },
+  {
+    id: "controlled_compounding",
+    label: "controlled memory compounding",
+    artifactPath: CONTROLLED_COMPOUNDING_STATUS_RELATIVE_PATH,
+    sourceRoots: [
+      ".dino/traces",
+      ".dino/tasks",
+      ".dino/context-packs",
+      ".dino/compounding",
+      "50_Instances/accepted",
+      "50_Instances/candidates",
+    ],
+    required: true,
+    authorityRank: 91,
   },
   {
     id: "wiki_index",

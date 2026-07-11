@@ -120,6 +120,8 @@ export type ReviewGatedWriteItem = {
   candidate_evidence_paths?: string[];
   review_evidence_paths?: string[];
   predecessor_paths?: string[];
+  candidate_transition_id?: string;
+  review_transition_id?: string;
   at?: string;
 };
 
@@ -549,6 +551,7 @@ export async function writeReviewGatedBatch(
           evidence_paths: item.candidate_evidence_paths ?? [],
           predecessor_paths: item.predecessor_paths ?? [],
           at,
+          transition_id: item.candidate_transition_id,
           idempotency_key: `queue-candidate|${item.idempotency_key}|${decision.destination}`,
         }).write,
         initializeLifecycleWrite(item.review_path, reviewRecord, {
@@ -559,6 +562,7 @@ export async function writeReviewGatedBatch(
           evidence_paths: item.review_evidence_paths ?? [item.candidate_path],
           predecessor_paths: [item.candidate_path],
           at,
+          transition_id: item.review_transition_id,
           idempotency_key: `queue-review|${item.idempotency_key}|${decision.destination}`,
           sync_status: false,
         }).write,

@@ -494,6 +494,30 @@ global completion remains open for later packages and external gates.
 **Acceptance:** repeated useful corrections increase retrieval and behavior
 quality while broad-rule count and prompt-token cost remain bounded.
 
+**Execution evidence (2026-07-11):** `controlled_compounding_v2` now persists
+only rules repeated across at least two independently bound task/trace pairs.
+Generated proposals remain outside accepted memory until an independent reviewer
+attests scope and the server rechecks confidence, recurrence, prompt/trace
+hashes, contradictions, and hot-rule count/topic/token budgets. Context Packs
+admit at most three controlled rules, at most two per topic, within a 2,400
+character budget. Retrieval/use observations now drive duplicate merge,
+invalid/tampered provenance hold, 90-day unused demotion, and 365-day unused
+archive actions through rollback-capable lifecycle transactions.
+
+The stdio MCP regression proves singleton suppression, two-task recurrence,
+zero-mutation scope rejection, reviewed retrieval, later Context Pack use, and
+`+45` memory-on behavior lift. It also proves all four lifecycle actions,
+tampered-source quarantine, exact rollback across eight primary paths, exact
+reapply across ten paths, per-session and per-topic caps, and Context Pack cost
+bounds. On the live vault, a 200-trace dry run created zero proposals: six
+eligible signals were singletons and 198 legacy traces lacked verified
+task/prompt-hash binding. Apply therefore published only a healthy bounded
+status and behavior-rule index; rollback and reapply matched exact hashes.
+Seven hundred thirty-five legacy generated candidates are explicitly excluded
+from the controlled hot set rather than silently promoted. Observatory now
+shows the controlled-compounding hard gate and current counts. MEM-04 is
+complete; global completion remains open for RAG-01 and later packages.
+
 ### Phase 3 - Retrieval, Provenance, And Evaluation At Scale (P1, 6-10 engineer-days)
 
 #### RAG-01: Contextual chunk and hybrid retrieval contract

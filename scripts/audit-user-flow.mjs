@@ -435,15 +435,16 @@ async function auditFlow() {
     );
     assert(finish.compounding?.ok === true, "finish_task did not run automatic compounding");
     assert(
-      Number(finish.compounding.promoted_count ?? 0) + Number(finish.compounding.updated_count ?? 0) >= 1,
-      "automatic compounding did not create or update behavior rule candidates",
+      Number(finish.compounding.promoted_count ?? 0) === 0 &&
+        finish.compounding.promotions?.some((entry) => entry.reason_code === "single_occurrence_suppressed"),
+      "automatic compounding did not suppress the singleton behavior signal",
     );
     checks.push(
       status(
         6,
         "finish_task媛 臾댁뾿???덇퀬 ?대뼡 湲곗뼲???ъ슜?덉쑝硫??⑥? ?쇱씠 萸붿? 湲곕줉?쒕떎.",
         "verified",
-        `Created ${finish.trace_path}; structured memory-use fields, review-gated auto-growth records ${finish.growth.created_paths.join(", ")}, and compounding cycle ${finish.compounding.cycle_path} are recorded.`,
+        `Created ${finish.trace_path}; structured memory-use fields and review-gated auto-growth records ${finish.growth.created_paths.join(", ")} are recorded, while controlled compounding suppressed the singleton signal in ${finish.compounding.cycle_path}.`,
         null,
       ),
     );

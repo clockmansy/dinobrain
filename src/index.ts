@@ -19,7 +19,12 @@ import { ClientMcpProofRuntime } from "./client-mcp-proof.js";
 import { applyColdPartitions, searchColdPartitions } from "./cold-partitions.js";
 import { appendFileWithLock, atomicWriteJson } from "./concurrency.js";
 import { evaluateBehaviorMemoryLift } from "./behavior-eval.js";
-import { runCompoundingCycle } from "./compounding.js";
+import {
+  buildAndWriteControlledCompoundingStatus,
+  CONTROLLED_COMPOUNDING_PROPOSAL_VERSION,
+  evaluateControlledCompoundingPromotion,
+  runCompoundingCycle,
+} from "./compounding.js";
 import { SEARCH_ROOTS, standardRankingInputsForMode } from "./context.js";
 import { retrievalCaveatsForMode } from "./hybrid-retrieval.js";
 import { makeUniqueId } from "./ids.js";
@@ -645,7 +650,13 @@ function stringList(value: unknown): string[] {
 
 function compoundingSyncPaths(value: Record<string, unknown> | null): string[] {
   if (!value) return [];
-  const paths = stringList([value.cycle_path, value.behavior_rule_index_path, value.event_log]);
+  const paths = stringList([
+    value.cycle_path,
+    value.behavior_rule_index_path,
+    value.controlled_compounding_status_path,
+    value.public_summary_path,
+    value.event_log,
+  ]);
   for (const promotion of Array.isArray(value.promotions) ? value.promotions : []) {
     if (typeof promotion !== "object" || promotion === null) continue;
     const record = promotion as Record<string, unknown>;
@@ -1380,11 +1391,15 @@ async function runCompoundingCycleWithIndexRefresh(options: {
   apply: boolean;
   reviewer: string;
   traceLimit: number;
+  rollbackCyclePath?: string;
+  reapplyCyclePath?: string;
 }): Promise<Record<string, unknown>> {
   const report = await runCompoundingCycle(DATA_ROOT, {
     apply: options.apply,
     reviewer: options.reviewer,
     traceLimit: options.traceLimit,
+    rollbackCyclePath: options.rollbackCyclePath,
+    reapplyCyclePath: options.reapplyCyclePath,
   });
   if (report.changed === true) {
     await invalidateWikiIndex(DATA_ROOT);
@@ -1403,6 +1418,10 @@ async function runCompoundingCycleWithIndexRefresh(options: {
     applied_cleanup_count: Number(report.applied_cleanup_count ?? 0),
     cycle_path: typeof report.cycle_path === "string" ? report.cycle_path : null,
     behavior_rule_index_path: typeof report.behavior_rule_index_path === "string" ? report.behavior_rule_index_path : null,
+    controlled_compounding_status_path:
+      typeof report.controlled_compounding_status_path === "string" ? report.controlled_compounding_status_path : null,
+    public_summary_path: typeof report.public_summary_path === "string" ? report.public_summary_path : null,
+    action: typeof report.action === "string" ? report.action : "cycle",
     os_version: DINOBRAIN_OS_VERSION,
   });
   return {
@@ -3802,9 +3821,10 @@ registerTool(
       reviewer: z.string().default("manual-review"),
       notes: z.string().default(""),
       correction_resolution: z.enum(["hold_superseded", "demote_superseded", "no_conflict"]).optional(),
+      compounding_scope_approved: z.boolean().default(false),
     },
   },
-  async ({ candidate_id, decision, reviewer, notes, correction_resolution }) => {
+  async ({ candidate_id, decision, reviewer, notes, correction_resolution, compounding_scope_approved }) => {
     const candidateId = safeSlug(candidate_id);
     const candidatePath = dataPath("50_Instances", "candidates", `${candidateId}.json`);
     const reviewPath = dataPath("80_Review_Queue", "promotion", `${candidateId}.json`);
@@ -3837,6 +3857,20 @@ registerTool(
 
     const existingAccepted = await readJson<Record<string, unknown>>(acceptedPath);
     if (decision === "approve" && existingAccepted) {
+      const controlledGate = existingAccepted.controlled_compounding_gate as Record<string, unknown> | undefined;
+      if (
+        candidateState.record.proposal_version === CONTROLLED_COMPOUNDING_PROPOSAL_VERSION &&
+        (existingAccepted.independently_reviewed !== true || controlledGate?.eligible !== true)
+      ) {
+        return jsonResult({
+          ok: false,
+          candidate_id: candidateId,
+          error: "existing_controlled_rule_failed_promotion_gate",
+          mutation_performed: false,
+          blockers: Array.isArray(controlledGate?.issues) ? controlledGate.issues : ["controlled_compounding_gate_missing"],
+          accepted_path: acceptedRelativePath,
+        });
+      }
       const eligibility = await evaluateAcceptedEligibility(DATA_ROOT, acceptedRelativePath, existingAccepted);
       if (!eligibility.eligible) {
         return jsonResult({
@@ -3860,6 +3894,24 @@ registerTool(
 
     const candidate = candidateState.record;
     const isFeedbackCorrection = candidate.type === "feedback_correction";
+    const isControlledCompounding = candidate.proposal_version === CONTROLLED_COMPOUNDING_PROPOSAL_VERSION;
+    const controlledCompoundingGate = decision === "approve" && isControlledCompounding
+      ? await evaluateControlledCompoundingPromotion(DATA_ROOT, candidate, {
+          reviewer,
+          scopeApproved: compounding_scope_approved,
+        })
+      : null;
+    if (controlledCompoundingGate && !controlledCompoundingGate.eligible) {
+      return jsonResult({
+        ok: false,
+        candidate_id: candidateId,
+        status: "blocked",
+        mutation_performed: false,
+        blockers: controlledCompoundingGate.issues,
+        controlled_compounding_gate: controlledCompoundingGate,
+        reason: "Controlled compounding approval requires independent review, recurrence, scope, provenance, contradiction, and hot-budget gates.",
+      });
+    }
     const correctionConflictPaths = normalizeVaultPaths(
       Array.isArray(candidate.contradicted_memory_paths) ? candidate.contradicted_memory_paths.map(String) : [],
     );
@@ -3912,6 +3964,8 @@ registerTool(
       reviewer,
       notes,
       correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+      compounding_scope_approved: isControlledCompounding ? compounding_scope_approved : null,
+      controlled_compounding_gate: controlledCompoundingGate,
       contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
       reviewed_at: reviewedAt,
       updated_at: reviewedAt,
@@ -3949,6 +4003,8 @@ registerTool(
       }
       const acceptedBase = {
         ...withoutNodeLifecycle(candidate),
+        type: isControlledCompounding ? "behavior_rule" : candidate.type,
+        source_proposal_type: isControlledCompounding ? candidate.type : null,
         status: "accepted",
         review_status: "accepted_by_agent_review",
         reviewed_by: reviewer,
@@ -3958,6 +4014,9 @@ registerTool(
         source_candidate_path: candidateRelativePath,
         source_review_path: reviewRelativePath,
         correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
+        independently_reviewed: isControlledCompounding ? true : candidate.independently_reviewed,
+        compounding_scope_approved: isControlledCompounding ? compounding_scope_approved : null,
+        controlled_compounding_gate: controlledCompoundingGate,
         contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
         supersedes_paths: isFeedbackCorrection ? correctionConflictPaths : [],
         promotion_blockers: [],
@@ -3982,6 +4041,8 @@ registerTool(
         ...reviewBase,
         status: "approved",
         blockers: [],
+        independently_reviewed: isControlledCompounding ? true : reviewBase.independently_reviewed,
+        controlled_compounding_gate: controlledCompoundingGate,
         conflict_resolution_status: isFeedbackCorrection ? "resolved" : null,
       };
       const eligibility = await evaluateAcceptedEligibility(DATA_ROOT, acceptedRelativePath, acceptedStage.mutation.record, {
@@ -4106,6 +4167,17 @@ registerTool(
           throw new Error(`Feedback correction recall write failed; lifecycle transaction rolled back: ${safeError(error)}`);
         }
       }
+      let controlledCompoundingStatus = null;
+      if (isControlledCompounding) {
+        try {
+          controlledCompoundingStatus = await buildAndWriteControlledCompoundingStatus(DATA_ROOT);
+        } catch (error) {
+          if (lifecycleTransaction.transaction_id) {
+            await rollbackNodeLifecycleTransaction(DATA_ROOT, lifecycleTransaction.transaction_id);
+          }
+          throw new Error(`Controlled compounding status refresh failed; lifecycle transaction rolled back: ${safeError(error)}`);
+        }
+      }
       await invalidateWikiIndex(DATA_ROOT);
       await invalidateSqliteWikiShard(DATA_ROOT);
       await appendEvent({
@@ -4116,6 +4188,9 @@ registerTool(
         accepted_path: acceptedRelativePath,
         correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
         contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
+        controlled_compounding: isControlledCompounding,
+        controlled_compounding_gate: controlledCompoundingGate,
+        controlled_compounding_status_path: controlledCompoundingStatus?.path ?? null,
         lifecycle_transaction_id: lifecycleTransaction.transaction_id,
       });
       return jsonResult({
@@ -4128,6 +4203,9 @@ registerTool(
         correction_resolution: isFeedbackCorrection ? correction_resolution ?? null : null,
         contradicted_memory_paths: isFeedbackCorrection ? correctionConflictPaths : [],
         behavior_recall_path: correctionRecall?.ledger_path ?? null,
+        controlled_compounding: isControlledCompounding,
+        controlled_compounding_gate: controlledCompoundingGate,
+        controlled_compounding_status_path: controlledCompoundingStatus?.path ?? null,
         lifecycle_transaction: lifecycleTransaction,
       });
     }
@@ -4164,12 +4242,25 @@ registerTool(
       ],
       { actor: reviewer, reason: `Reject candidate ${candidateId}.` },
     );
+    let controlledCompoundingStatus = null;
+    if (isControlledCompounding) {
+      try {
+        controlledCompoundingStatus = await buildAndWriteControlledCompoundingStatus(DATA_ROOT);
+      } catch (error) {
+        if (lifecycleTransaction.transaction_id) {
+          await rollbackNodeLifecycleTransaction(DATA_ROOT, lifecycleTransaction.transaction_id);
+        }
+        throw new Error(`Controlled compounding status refresh failed; rejection transaction rolled back: ${safeError(error)}`);
+      }
+    }
     await appendEvent({
       event: "candidate_instance_reviewed",
       candidate_id: candidateId,
       decision,
       at: reviewedAt,
       accepted_path: null,
+      controlled_compounding: isControlledCompounding,
+      controlled_compounding_status_path: controlledCompoundingStatus?.path ?? null,
       lifecycle_transaction_id: lifecycleTransaction.transaction_id,
     });
 
@@ -4180,6 +4271,8 @@ registerTool(
       candidate_path: candidateRelativePath,
       review_path: reviewRelativePath,
       accepted_path: null,
+      controlled_compounding: isControlledCompounding,
+      controlled_compounding_status_path: controlledCompoundingStatus?.path ?? null,
       lifecycle_transaction: lifecycleTransaction,
     });
   },
@@ -4357,20 +4450,24 @@ registerTool(
   "run_compounding_cycle",
   {
     title: "Run Compounding Cycle",
-    description: "Distill completed task traces into accepted behavior rules, merge duplicates, hold invalid rules, and refresh retrieval indexes.",
+    description: "Create bounded recurring behavior proposals, require independent review before acceptance, maintain low-value rule lifecycle, or rollback/reapply an exact cycle.",
     inputSchema: {
       apply: z.boolean().default(true),
       reviewer: z.string().default("manual-compounding-cycle"),
       trace_limit: z.number().int().min(1).max(200).default(50),
+      rollback_cycle_path: z.string().optional(),
+      reapply_cycle_path: z.string().optional(),
     },
   },
-  async ({ apply, reviewer, trace_limit }) => {
+  async ({ apply, reviewer, trace_limit, rollback_cycle_path, reapply_cycle_path }) => {
     try {
       return jsonResult(
         await runCompoundingCycleWithIndexRefresh({
           apply,
           reviewer,
           traceLimit: trace_limit,
+          rollbackCyclePath: rollback_cycle_path,
+          reapplyCyclePath: reapply_cycle_path,
         }),
       );
     } catch (error) {
@@ -4380,6 +4477,8 @@ registerTool(
         apply,
         reviewer,
         trace_limit,
+        rollback_cycle_path: rollback_cycle_path ?? null,
+        reapply_cycle_path: reapply_cycle_path ?? null,
       });
     }
   },

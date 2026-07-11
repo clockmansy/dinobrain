@@ -262,6 +262,8 @@ Required evidence:
 - `.dino/state/behavior_recall_evidence_migration.json` plus immutable local
   migration records binding old evidence references to task-matched trace hashes;
 - `.dino/state/behavior_recall_status.json`;
+- `.dino/state/controlled_compounding_status.json`, proving recurring proposals,
+  independent promotion gates, lifecycle pressure, and bounded hot-rule cost;
 - behavior golden/evaluation reports and `npm run verify:behavior-recall`.
 
 ### HG-08: Graph, Observatory, Health, And Evidence Coherence
@@ -419,6 +421,7 @@ the current-vault artifacts named above.
 | Source lineage | `npm run status:source-lineage` | HG-05 current-vault lineage status |
 | Lineage regression | `npm run verify:source-lineage` | HG-05 regression coverage |
 | Behavior recall | `npm run status:behavior-recall` | HG-07 current trigger and correction status |
+| Controlled compounding | `npm run status:compounding` | HG-06/HG-07 current recurrence, review, lifecycle, and budget status |
 | Recall evidence migration | `npm run behavior:recall:migrate` | HG-07/HG-10 immutable stale-reference repair status |
 | Recall migration regression | `npm run behavior:recall:migrate:verify` | HG-07/HG-10 apply, tamper, rollback, and reapply proof |
 | Recall regression | `npm run verify:behavior-recall` | HG-07 regression coverage |
@@ -494,6 +497,7 @@ $commands = @(
   'npm run status:source-lineage',
   'npm run verify:source-lineage',
   'npm run status:behavior-recall',
+  'npm run status:compounding',
   'npm run behavior:recall:migrate',
   'npm run behavior:recall:migrate:verify',
   'npm run verify:behavior-recall',

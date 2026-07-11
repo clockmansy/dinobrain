@@ -6,6 +6,7 @@ import { buildAndWriteBehaviorRecallReport } from "./behavior-recall.js";
 import { applyBehaviorRecallEvidenceMigration } from "./behavior-recall-migration.js";
 import { buildAndWriteClientMcpDirectStatus } from "./client-mcp-direct-status.js";
 import { applyColdPartitions } from "./cold-partitions.js";
+import { buildAndWriteControlledCompoundingStatus } from "./controlled-compounding.js";
 import { buildAndWriteFullMemoryAudit } from "./full-memory-audit.js";
 import { buildAndWriteGraphHealth } from "./graph-health.js";
 import { buildAndWriteHealthStatus } from "./health-status.js";
@@ -140,6 +141,9 @@ export async function refreshStatusArtifacts(
 
   const behaviorRecall = await buildAndWriteBehaviorRecallReport(dataRoot);
   steps.push({ id: "behavior_recall", status: behaviorRecall.report.status, path: behaviorRecall.path });
+
+  const controlledCompounding = await buildAndWriteControlledCompoundingStatus(dataRoot);
+  steps.push({ id: "controlled_compounding", status: controlledCompounding.report.status, path: controlledCompounding.path });
 
   const audit = await buildAndWriteFullMemoryAudit(dataRoot);
   steps.push({ id: "full_memory_audit", status: audit.report.status, path: audit.statusPath });

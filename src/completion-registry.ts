@@ -102,6 +102,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("status:source-lineage", ["HG-05"]),
   command("verify:source-lineage", ["HG-05"]),
   command("status:behavior-recall", ["HG-07"]),
+  command("status:compounding", ["HG-06", "HG-07"]),
   command("behavior:recall:migrate", ["HG-07", "HG-10"]),
   command("behavior:recall:migrate:verify", ["HG-07", "HG-10"]),
   command("verify:behavior-recall", ["HG-07"]),
@@ -304,6 +305,13 @@ export const COMPLETION_ARTIFACTS: CompletionArtifactSpec[] = [
     relative_path: ".dino/state/behavior_recall_status.json",
     kind: "json",
     gates: ["HG-07"],
+    accepted_statuses: ["healthy"],
+  },
+  {
+    id: "controlled_compounding",
+    relative_path: ".dino/state/controlled_compounding_status.json",
+    kind: "json",
+    gates: ["HG-06", "HG-07"],
     accepted_statuses: ["healthy"],
   },
   {
