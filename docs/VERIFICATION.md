@@ -567,7 +567,7 @@ It verifies:
 - events are ordered as `codex_prompt_submitted`, `task_started`,
   `context_pack_created`, `os_begin_task_completed`, then
   `codex_preflight_completed`.
-- missing Node, duplicate-lock, and timeout failures return degraded non-blocking context with no `decision:block`; timeout also kills the marked MCP process tree.
+- missing Node, duplicate-lock, malformed child output, forced `decision:block`, and timeout failures return degraded non-blocking context with no blocking hook decision; timeout also kills the marked MCP process tree. The final PowerShell output boundary strips fail-closed conversation directives even if a child process regresses.
 
 `npm run pre-response:gate:verify` exercises the independent action policy in
 separate temporary vaults. It proves that forged context declarations, missing

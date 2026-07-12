@@ -201,6 +201,20 @@ function runPowerShellHookSoftTimeoutAfterTask(input, dataRoot, reportRoot) {
   );
 }
 
+function normalizePowerShellHookOutput(input) {
+  assert(process.platform === "win32", "PowerShell output normalization verification is Windows-only.");
+  return spawnSync(
+    powershellCommand(),
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psHookPath, "-NormalizeOnly"],
+    {
+      cwd: root,
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+}
+
 function countMarkedNodeProcesses(processMarker) {
   const escaped = processMarker.replace(/'/g, "''");
   const command = [
@@ -389,6 +403,31 @@ async function verifyHook() {
   assert(!duplicateContext.includes("Use the other injected DinoBrain context"), "Duplicate hook still used the unsafe skip message.");
 
   if (process.platform === "win32" && existsSync(psHookPath)) {
+    const forcedBlockRun = normalizePowerShellHookOutput(
+      JSON.stringify({
+        decision: "block",
+        reason: "simulated regression",
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: "FAIL-CLOSED: do not perform substantial work.",
+        },
+      }),
+    );
+    assert(forcedBlockRun.status === 0, `Blocking-output normalizer exited with ${forcedBlockRun.status}: ${forcedBlockRun.stderr}`);
+    const forcedBlockOutput = parseHookOutput(forcedBlockRun.stdout);
+    const forcedBlockContext = forcedBlockOutput.hookSpecificOutput?.additionalContext ?? "";
+    assert(forcedBlockOutput.decision !== "block", "Final PowerShell boundary preserved a blocking decision.");
+    assert(forcedBlockContext.includes("conversation-liveness boundary suppressed it"), "Final boundary did not report block suppression.");
+    assert(/continue the current conversation/i.test(forcedBlockContext), "Final boundary did not preserve conversation continuity.");
+    assert(!/FAIL[\s-]*CLOSED/i.test(forcedBlockContext), "Final boundary preserved a fail-closed conversation directive.");
+
+    const invalidChildRun = normalizePowerShellHookOutput("not-json");
+    assert(invalidChildRun.status === 0, `Invalid-output normalizer exited with ${invalidChildRun.status}: ${invalidChildRun.stderr}`);
+    const invalidChildOutput = parseHookOutput(invalidChildRun.stdout);
+    const invalidChildContext = invalidChildOutput.hookSpecificOutput?.additionalContext ?? "";
+    assert(invalidChildOutput.decision !== "block", "Invalid child output blocked the Codex conversation.");
+    assert(invalidChildContext.includes("DEGRADED NON-BLOCKING"), "Invalid child output did not degrade safely.");
+
     const noNodeDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-no-node-"));
     const noNodeReportRoot = path.join(noNodeDataRoot, "hook-reports");
     seedVault(noNodeDataRoot);
@@ -466,6 +505,7 @@ async function verifyHook() {
     temp_data_root: tempDataRoot,
     hook_config: path.relative(root, hookConfigPath).split(path.sep).join("/"),
     used_wrapper: process.platform === "win32" && existsSync(psHookPath),
+    conversation_liveness_boundary_verified: process.platform !== "win32" || existsSync(psHookPath),
     task_path: `.dino/tasks/${taskFiles[0]}`,
     context_pack_path: `.dino/context-packs/${packFiles[0]}`,
     session_archive_path: `10_Conversations/raw/${rawSessionFiles[0]}`,

@@ -54,6 +54,13 @@ The installer stages a user-level fallback hook at `C:\Users\<you>\.codex\hooks.
 
 Managed Codex hooks require no `/hooks` trust click. A running Codex session still needs a full restart and fresh thread after managed requirements change. User trust applies only to the fallback path.
 
+Conversation liveness is a final-boundary invariant. The PowerShell wrapper
+never emits a top-level `decision: block`. It reconstructs child output and
+suppresses blocking decisions, fail-closed conversation directives, malformed
+JSON, empty output, process failures, and timeouts into degraded non-blocking
+context. DinoBrain may still block a risky state-changing action through
+`os_gate`, but it must always let Codex return a conversational response.
+
 Registration and trust are separate states only for the user-level fallback.
 `codex:hooks:diagnose` and `verify:codex-live` report visible fallback trust
 metadata when Codex stores it in `hooks.json`. If the fallback is active and no

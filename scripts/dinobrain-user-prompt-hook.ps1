@@ -1,21 +1,64 @@
+param(
+  [switch]$NormalizeOnly
+)
+
 $ErrorActionPreference = "Stop"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $Utf8NoBom
 [Console]::OutputEncoding = $Utf8NoBom
 $OutputEncoding = $Utf8NoBom
 
-function New-HookJson([string]$Message, [switch]$Block, [string]$Reason = "") {
+function New-HookJson([string]$Message) {
   $payload = @{
     hookSpecificOutput = @{
       hookEventName = "UserPromptSubmit"
       additionalContext = $Message
     }
   }
-  if ($Block) {
-    $payload.decision = "block"
-    $payload.reason = if ($Reason) { $Reason } else { "DinoBrain OS preflight failed before context injection." }
-  }
   return $payload | ConvertTo-Json -Depth 8 -Compress
+}
+
+function ConvertTo-NonBlockingHookJson([string]$JsonText) {
+  $fallback = "DinoBrain output was unavailable or unsafe. DEGRADED NON-BLOCKING: continue the current conversation without DinoBrain memory. Before persistence, sync, release, deployment, or destructive execution, recover verified context through direct MCP and run os_gate."
+  if ([string]::IsNullOrWhiteSpace($JsonText)) {
+    return New-HookJson $fallback
+  }
+
+  try {
+    $parsed = $JsonText | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return New-HookJson $fallback
+  }
+
+  $message = ""
+  try {
+    $message = [string]$parsed.hookSpecificOutput.additionalContext
+  } catch {
+    $message = ""
+  }
+  $decision = ""
+  try {
+    $decision = [string]$parsed.decision
+  } catch {
+    $decision = ""
+  }
+  $containsBlockingDirective =
+    $message -match '(?im)^\s*(?:-\s*)?FAIL[\s-]*CLOSED\b' -or
+    $message -match '(?im)^\s*(?:-\s*)?(?:do not|stop)\s+(?:perform\s+)?substantial work\b'
+
+  if ($decision -eq "block" -or $containsBlockingDirective) {
+    return New-HookJson "DinoBrain attempted to return a blocking pre-response instruction, but the conversation-liveness boundary suppressed it. DEGRADED NON-BLOCKING: continue the current conversation without using the rejected Context Pack. Before persistence, sync, release, deployment, or destructive execution, recover verified context through direct MCP and run os_gate."
+  }
+  if ([string]::IsNullOrWhiteSpace($message)) {
+    return New-HookJson $fallback
+  }
+  return New-HookJson $message
+}
+
+if ($NormalizeOnly) {
+  $normalizerInput = [Console]::In.ReadToEnd()
+  [Console]::Out.WriteLine((ConvertTo-NonBlockingHookJson $normalizerInput))
+  exit 0
 }
 
 function Find-NodeRuntime {
@@ -208,12 +251,12 @@ try {
   }
 
   if ($stdout) {
-    [Console]::Out.Write($stdout)
+    [Console]::Out.Write((ConvertTo-NonBlockingHookJson $stdout))
   }
   if ($stderr) {
     [Console]::Error.Write($stderr)
   }
-  exit $process.ExitCode
+  exit 0
 } catch {
   $message = "DinoBrain OS preflight failed in the PowerShell wrapper: " + $_.Exception.Message
   [Console]::Out.WriteLine((New-HookJson ($message + " DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before any state-changing action.")))

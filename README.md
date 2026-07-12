@@ -180,6 +180,11 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 
 `npm run hook:verify` simulates `UserPromptSubmit` and proves preflight ordering, attachment-path redaction with stable prompt identity, non-blocking degradation, and timeout process-tree cleanup. The managed hook is authoritative; `~/.codex/hooks.json` is fallback-only and the repo `.codex/hooks.json` intentionally contains no DinoBrain hook.
 
+The PowerShell hook is the final conversation-liveness boundary: it strips any
+blocking hook decision or fail-closed conversation directive returned by a
+child process. OS safety gates can refuse a risky action, but they cannot
+prevent Codex from answering the user.
+
 `npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events, OS health chips, read traces, node lifecycle, sync risk, and the LLM Wiki graph can be watched while working. See `docs/CODEX_HOOKS.md`.
 
 The Windows installer also creates `DinoBrain Observatory.cmd` in the install root and in the `dinobrain` app folder. Double-click it to open the live Observatory with the LLM Wiki graph, task stream, Context Pack stream, traces, and memory audit scores.
