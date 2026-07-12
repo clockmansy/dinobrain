@@ -505,6 +505,45 @@ function Assert-DinoBrainTransactionalSiblingPath {
   return $candidate
 }
 
+function ConvertTo-DinoBrainExtendedPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+  if ($expanded.StartsWith("\\?\", [StringComparison]::Ordinal)) { return $expanded }
+  $full = Get-FullPath $expanded
+  if ($full.StartsWith("\\", [StringComparison]::Ordinal)) {
+    return "\\?\UNC\" + $full.TrimStart([char]'\')
+  }
+  return "\\?\" + $full
+}
+
+function Test-DinoBrainLongPathExists {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $extended = ConvertTo-DinoBrainExtendedPath -Path $Path
+  return [System.IO.Directory]::Exists($extended) -or [System.IO.File]::Exists($extended)
+}
+
+function Clear-DinoBrainDeleteAttributes {
+  param([Parameter(Mandatory = $true)][string]$ExtendedPath)
+
+  if ([System.IO.File]::Exists($ExtendedPath)) {
+    [System.IO.File]::SetAttributes($ExtendedPath, [System.IO.FileAttributes]::Normal)
+    return
+  }
+  if (-not [System.IO.Directory]::Exists($ExtendedPath)) { return }
+  try {
+    foreach ($filePath in [System.IO.Directory]::EnumerateFiles($ExtendedPath, "*", [System.IO.SearchOption]::AllDirectories)) {
+      try {
+        [System.IO.File]::SetAttributes($filePath, [System.IO.FileAttributes]::Normal)
+      } catch [System.IO.FileNotFoundException] {
+      } catch [System.IO.DirectoryNotFoundException] {
+      }
+    }
+  } catch [System.IO.DirectoryNotFoundException] {
+  }
+}
+
 function Remove-DinoBrainPathWithRetry {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -512,19 +551,27 @@ function Remove-DinoBrainPathWithRetry {
     [int]$DelayMilliseconds = 500
   )
 
+  $full = Get-FullPath $Path
+  $extended = ConvertTo-DinoBrainExtendedPath -Path $full
   $lastError = $null
   for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
-    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (-not (Test-DinoBrainLongPathExists -Path $full)) { return }
     try {
-      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-      if (-not (Test-Path -LiteralPath $Path)) { return }
+      if ([System.IO.Directory]::Exists($extended)) {
+        Clear-DinoBrainDeleteAttributes -ExtendedPath $extended
+        [System.IO.Directory]::Delete($extended, $true)
+      } elseif ([System.IO.File]::Exists($extended)) {
+        Clear-DinoBrainDeleteAttributes -ExtendedPath $extended
+        [System.IO.File]::Delete($extended)
+      }
+      if (-not (Test-DinoBrainLongPathExists -Path $full)) { return }
     } catch {
       $lastError = $_
     }
     if ($attempt -lt $Attempts) { Start-Sleep -Milliseconds $DelayMilliseconds }
   }
   $message = if ($null -ne $lastError) { [string]$lastError } else { "path still exists" }
-  throw "Could not remove path after $Attempts attempts: $Path. $message"
+  throw "Could not remove path after $Attempts attempts: $full. $message"
 }
 
 function Remove-DinoBrainTransactionalSiblingPath {

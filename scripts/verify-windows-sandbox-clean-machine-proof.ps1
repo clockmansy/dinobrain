@@ -159,6 +159,8 @@ try {
   Assert-True ($installerText.Contains("Assert-DinoBrainMicrosoftSignedExecutable")) "Installer does not verify the native runtime publisher."
   Assert-True ($installerText.Contains("Assert-DinoBrainSemanticNativeRuntime")) "Installer does not prove the ONNX native binding before RAG prewarm."
   Assert-True ($installerText.Contains("function Remove-DinoBrainPathWithRetry")) "Installer cleanup is not resilient to transient clean-machine file locks."
+  Assert-True ($installerText.Contains("function ConvertTo-DinoBrainExtendedPath")) "Installer cleanup is not resilient to paths longer than MAX_PATH."
+  Assert-True ($installerText.Contains("function Clear-DinoBrainDeleteAttributes")) "Installer cleanup does not normalize read-only rollback files."
   Assert-True ($matrixText.Contains('@("commit", "--allow-empty", "-m", "fixture: transactional installer")')) "Clean-machine matrix cannot run from an already identical release checkout."
   Assert-True ($matrixText.Contains("child_tail=")) "Clean-machine rollback failures do not preserve installer diagnostics."
   Assert-True ($bootstrapText -notmatch "(?i)(github_pat_|ghp_|sk-[A-Za-z0-9])") "Guest bootstrap contains a credential-like literal."

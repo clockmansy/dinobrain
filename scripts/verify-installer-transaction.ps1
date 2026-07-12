@@ -120,6 +120,23 @@ try {
     Remove-Job -Job $lockJob -Force -ErrorAction SilentlyContinue
   }
 
+  $longRoot = Join-Path $temp "long-path-removal"
+  $longLeaf = $longRoot
+  while ((Join-Path $longLeaf "payload.txt").Length -le 300) {
+    $longLeaf = Join-Path $longLeaf ("segment-" + ("x" * 24))
+  }
+  $extendedLeaf = ConvertTo-DinoBrainExtendedPath -Path $longLeaf
+  [void][System.IO.Directory]::CreateDirectory($extendedLeaf)
+  $longFile = Join-Path $longLeaf "payload.txt"
+  $extendedLongFile = [System.IO.Path]::Combine($extendedLeaf, "payload.txt")
+  [System.IO.File]::WriteAllText($extendedLongFile, "long path", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::SetAttributes($extendedLongFile, [System.IO.FileAttributes]::ReadOnly)
+  if ($longFile.Length -le 260) { throw "Long-path cleanup fixture did not exceed MAX_PATH." }
+  Remove-DinoBrainPathWithRetry -Path $longRoot -Attempts 10 -DelayMilliseconds 100
+  if (Test-DinoBrainLongPathExists -Path $longRoot) {
+    throw "Installer cleanup did not remove a path longer than MAX_PATH."
+  }
+
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   Add-Type -AssemblyName System.IO.Compression
   $zipSource = Join-Path $temp "zip-source"
@@ -371,6 +388,7 @@ try {
     ok = $true
     rollback_exact = $true
     transient_lock_retry = $true
+    long_path_cleanup = $true
     dirty_data_preserved = $true
     moving_branch_frozen = $true
     dirty_update_fail_closed = $true

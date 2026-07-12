@@ -25,6 +25,10 @@ authority. The local `dinobrain-install-result.json` transaction record is.
 9. Run final-path verification, delete rollback copies and temporary config
    copies, and publish a terminal result.
 
+Rollback and cleanup use retry-bounded extended-length Windows paths. Read-only
+Git and dependency files are normalized before deletion, so a long Sandbox user
+profile path cannot turn a successful byte-exact restore into `rollback_failed`.
+
 The moving branch can advance after step 3 without changing the transaction.
 Every checkout and the final result remain bound to the SHAs resolved in step 3.
 
