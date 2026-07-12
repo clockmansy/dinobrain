@@ -12,6 +12,7 @@ const [{
   CLEAN_MACHINE_REQUIRED_COMMANDS,
   CLEAN_MACHINE_REQUIRED_SCENARIOS,
   beginCleanMachineEquivalenceRun,
+  classifyCleanMachineTrackedPaths,
   signCleanMachineEquivalenceEvidence,
   validateCleanMachineEquivalenceEvidence,
 }, { runCompletionAudit }, { DINOBRAIN_DATA_CONTRACT_VERSION, DINOBRAIN_VERSION }] = await Promise.all([
@@ -24,6 +25,23 @@ const hash = (character) => character.repeat(64);
 const commit = (character) => character.repeat(40);
 const start = "2026-07-11T00:00:00.000Z";
 const finish = "2026-07-11T00:10:00.000Z";
+
+const runtimeDirty = classifyCleanMachineTrackedPaths("data", [
+  ".dino/state/client_mcp_direct_status.json",
+  ".dino/index/sqlite/wiki.sqlite",
+  ".dino/tasks/task-proof.json",
+  "50_Instances/accepted/changed-memory.json",
+]);
+assert.deepEqual(runtimeDirty.runtimeGenerated, [
+  ".dino/index/sqlite/wiki.sqlite",
+  ".dino/state/client_mcp_direct_status.json",
+  ".dino/tasks/task-proof.json",
+]);
+assert.deepEqual(runtimeDirty.unexpected, ["50_Instances/accepted/changed-memory.json"]);
+assert.deepEqual(
+  classifyCleanMachineTrackedPaths("app", [".dino/state/runtime.json", "src/index.ts"]).unexpected,
+  [".dino/state/runtime.json", "src/index.ts"],
+);
 
 function live(agent, character) {
   return {
@@ -121,6 +139,8 @@ function completePayload() {
         head_matches_upstream: true,
         installed_commit_is_ancestor: true,
         tracked_dirty_count: 0,
+        runtime_generated_tracked_dirty_count: 0,
+        unexpected_tracked_dirty_count: 0,
       },
       data: {
         repository: "clockmansy/dinobrain-data",
@@ -130,6 +150,8 @@ function completePayload() {
         head_matches_upstream: true,
         installed_commit_is_ancestor: true,
         tracked_dirty_count: 0,
+        runtime_generated_tracked_dirty_count: 0,
+        unexpected_tracked_dirty_count: 0,
       },
     },
     recovery: {
@@ -276,6 +298,24 @@ try {
   let validation = validateCleanMachineEquivalenceEvidence(evidence);
   assert(validation.ok, `valid signed evidence failed: ${validation.errors.join(",")}`);
 
+  const expectedRuntimeDirtyPayload = completePayload();
+  expectedRuntimeDirtyPayload.machine.attestation_public_key_sha256 = evidence.attestation.public_key_sha256;
+  expectedRuntimeDirtyPayload.repositories.data.tracked_dirty_count = 3;
+  expectedRuntimeDirtyPayload.repositories.data.runtime_generated_tracked_dirty_count = 3;
+  const expectedRuntimeDirty = await signCleanMachineEquivalenceEvidence(expectedRuntimeDirtyPayload, localStateRoot);
+  assert(
+    validateCleanMachineEquivalenceEvidence(expectedRuntimeDirty).ok,
+    "runtime-generated tracked state incorrectly invalidated clean-machine evidence",
+  );
+
+  const unexpectedDirtyPayload = completePayload();
+  unexpectedDirtyPayload.machine.attestation_public_key_sha256 = evidence.attestation.public_key_sha256;
+  unexpectedDirtyPayload.repositories.data.tracked_dirty_count = 1;
+  unexpectedDirtyPayload.repositories.data.unexpected_tracked_dirty_count = 1;
+  const unexpectedDirty = await signCleanMachineEquivalenceEvidence(unexpectedDirtyPayload, localStateRoot);
+  validation = validateCleanMachineEquivalenceEvidence(unexpectedDirty);
+  assert(!validation.ok && validation.errors.includes("tracked_repository_dirty"), "unexpected source drift passed");
+
   const tampered = clone(evidence);
   tampered.repositories.app.final_commit = commit("f");
   validation = validateCleanMachineEquivalenceEvidence(tampered);
@@ -367,6 +407,9 @@ try {
       "public_path_leak_rejected",
       "diagnostic_not_counted_complete",
       "completion_audit_rejects_self_reported_fake",
+      "runtime_generated_dirty_is_separated_from_source_drift",
+      "runtime_generated_dirty_evidence_accepted",
+      "unexpected_source_drift_rejected",
     ],
   }, null, 2));
 } finally {

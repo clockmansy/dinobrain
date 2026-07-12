@@ -135,7 +135,7 @@ foreach ($agent in @("codex", "claude")) {
   $oldPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clientProofScript -Agent $agent -AppPath $AppPath -VaultPath $VaultPath -NodeExe $script:Node -TimeoutSeconds $ClientProofTimeoutSeconds
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clientProofScript -Agent $agent -AppPath $AppPath -VaultPath $VaultPath -NodeExe $script:Node -TimeoutSeconds $ClientProofTimeoutSeconds -NoDialog
     $clientExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldPreference

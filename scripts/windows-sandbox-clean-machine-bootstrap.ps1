@@ -56,6 +56,17 @@ function Assert-Config {
   }
   if ([string]::IsNullOrWhiteSpace([string]$script:Config.codex_version)) { throw "codex_version is required." }
   if ([string]::IsNullOrWhiteSpace([string]$script:Config.claude_version)) { throw "claude_version is required." }
+  if (-not ($script:Config.PSObject.Properties.Name -contains "auto_restore_private")) { throw "auto_restore_private is required." }
+  if ([bool]$script:Config.auto_restore_private -and -not [bool]$script:Config.private_restore_available) {
+    throw "auto_restore_private requires private restore inputs."
+  }
+  if ([bool]$script:Config.private_restore_available) {
+    $backupRoot = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath([string]$script:Config.guest_private_backup))
+    $keyRoot = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath([string]$script:Config.guest_recovery_key))
+    if ($backupRoot.Equals($keyRoot, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Private backup and recovery key must use separate guest roots."
+    }
+  }
 }
 
 function Assert-FileHash {
@@ -215,10 +226,11 @@ try {
   $pathPrefix = "$(Split-Path -Parent $nativeClaude);$clientRoot;$($nodeRoot.FullName);$gitCmd;$gitBin"
   $repairInstallArguments = ($baseInstallArguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join " "
   $repairScript = Join-Path $workRoot "restore-and-repair.ps1"
+  $privateRestoreCompleted = $false
   if ([bool]$script:Config.private_restore_available) {
     Write-Utf8Text -Path $repairScript -Text @"
 `$ErrorActionPreference = 'Stop'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-private-restore.ps1' -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -ArchivePath '$([string]$script:Config.guest_private_backup)' -KeyFile '$([string]$script:Config.guest_recovery_key)' -IncludeUserConfig -Yes
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-private-restore.ps1' -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -ArchivePath '$([string]$script:Config.guest_private_backup)' -KeyFile '$([string]$script:Config.guest_recovery_key)' -IncludeUserConfig -OverwritePrivate -Yes
 if (`$LASTEXITCODE -ne 0) { throw 'Private restore failed.' }
 & powershell.exe $repairInstallArguments -ClaudeCommand '$nativeClaude'
 if (`$LASTEXITCODE -ne 0) { throw 'Post-restore path repair failed.' }
@@ -228,6 +240,12 @@ Write-Host 'Private restore and path repair complete.'
 @echo off
 powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$repairScript"
 "@
+    if ([bool]$script:Config.auto_restore_private) {
+      Invoke-LoggedProcess -FilePath "powershell.exe" -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $repairScript) -LogName "08-private-restore"
+      $restoreReceipt = Join-Path $env:LOCALAPPDATA "DinoBrain\proofs\private-restore\latest.json"
+      if (-not (Test-Path -LiteralPath $restoreReceipt -PathType Leaf)) { throw "Automatic private restore receipt is missing." }
+      $privateRestoreCompleted = $true
+    }
   } else {
     Write-Utf8Text -Path (Join-Path $desktop "1 Private Backup Required.txt") -Text "Full both-client equivalence requires an encrypted .dinobrain backup and its recovery key. Close the Sandbox and relaunch the host proof with -PrivateBackupPath and -RecoveryKeyPath.`r`n"
   }
@@ -252,10 +270,18 @@ cd /d "$appPath"
 `$ErrorActionPreference = 'Stop'
 `$receipt = Join-Path `$env:LOCALAPPDATA 'DinoBrain\proofs\private-restore\latest.json'
 if (-not (Test-Path -LiteralPath `$receipt)) { throw 'Restore receipt missing. Run step 1 first.' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-clean-machine-equivalence-proof.ps1' -Mode both_clients -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -InstallResultPath '$resultPath' -RestoreReceiptPath `$receipt
-`$proofExit = `$LASTEXITCODE
 `$destination = 'C:\DinoBrainExchange\evidence'
 New-Item -ItemType Directory -Force -Path `$destination | Out-Null
+`$proofLog = Join-Path `$destination 'full-recovery-proof.log'
+`$oldPreference = `$ErrorActionPreference
+`$ErrorActionPreference = 'Continue'
+try {
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-clean-machine-equivalence-proof.ps1' -Mode both_clients -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -InstallResultPath '$resultPath' -RestoreReceiptPath `$receipt *>&1 |
+    Tee-Object -FilePath `$proofLog
+  `$proofExit = `$LASTEXITCODE
+} finally {
+  `$ErrorActionPreference = `$oldPreference
+}
 `$source = Join-Path '$vaultPath' '60_Operations\clean-machine'
 if (Test-Path -LiteralPath `$source) { Copy-Item -Path (Join-Path `$source '*') -Destination `$destination -Recurse -Force }
 Copy-Item -LiteralPath '$resultPath' -Destination (Join-Path `$destination 'dinobrain-install-result.json') -Force
@@ -270,6 +296,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofExportScr
 "@
 
   $readmePath = Join-Path $desktop "DinoBrain Sandbox Proof Steps.txt"
+  $restoreStep = if ($privateRestoreCompleted) {
+    "1. Private restore completed automatically. Use the step-1 launcher only to rerun it."
+  } else {
+    "1. Run the private restore step. If no step-1 command exists, relaunch with backup/key inputs."
+  }
   Write-Utf8Text -Path $readmePath -Text @"
 DinoBrain Windows Sandbox clean-machine proof
 
@@ -277,7 +308,7 @@ Pinned app commit: $([string]$script:Config.app_commit)
 Pinned data commit: $([string]$script:Config.data_commit)
 Installer SHA-256: $([string]$script:Config.installer_sha256)
 
-1. Run the private restore step. If no step-1 command exists, relaunch with backup/key inputs.
+$restoreStep
 2. Run '2 Sign in Codex.cmd' and complete ChatGPT sign-in.
 3. Run '3 Sign in Claude.cmd' and complete Claude sign-in.
 4. Run '4 Run Full Recovery Proof.cmd'. Paste each copied challenge into the matching client.
@@ -286,11 +317,17 @@ Installer SHA-256: $([string]$script:Config.installer_sha256)
 The Sandbox is disposable. Do not store credentials in C:\DinoBrainExchange.
 "@
 
-  Write-GuestStatus -Status "ready_for_login" -Message "Pinned install, reinstall, client install, and isolated matrix passed." -Extra @{
+  $readyMessage = if ($privateRestoreCompleted) {
+    "Pinned install, reinstall, client install, isolated matrix, and automatic private restore passed."
+  } else {
+    "Pinned install, reinstall, client install, and isolated matrix passed."
+  }
+  Write-GuestStatus -Status "ready_for_login" -Message $readyMessage -Extra @{
     app_commit = [string]$script:Config.app_commit
     data_commit = [string]$script:Config.data_commit
     install_result = [string]$resultPath
     private_restore_available = [bool]$script:Config.private_restore_available
+    private_restore_completed = [bool]$privateRestoreCompleted
   }
   Start-Process explorer.exe -ArgumentList ('"' + $desktop + '"') | Out-Null
   Start-Process notepad.exe -ArgumentList ('"' + $readmePath + '"') | Out-Null

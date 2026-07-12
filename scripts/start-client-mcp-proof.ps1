@@ -9,6 +9,7 @@ param(
   [string]$NodeExe = "",
   [int]$TimeoutSeconds = 3600,
   [int]$PollSeconds = 5,
+  [switch]$NoDialog,
   [switch]$NoUi,
   [switch]$Json
 )
@@ -60,7 +61,7 @@ function Set-ProofClipboard {
 
 function Show-ProofInstructions {
   param([Parameter(Mandatory = $true)][string]$Message)
-  if ($NoUi -or $Json) { return }
+  if ($NoDialog -or $NoUi -or $Json) { return }
   try {
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show(

@@ -18,6 +18,7 @@ param(
   [string]$ClaudeVersion = "",
   [string]$SandboxExecutable = "",
   [switch]$DisablePrivateAutoDetect,
+  [switch]$AutoRestorePrivate,
   [switch]$AllowReleaseMismatch,
   [switch]$PrepareOnly,
   [switch]$NoWait,
@@ -203,6 +204,9 @@ $privateAvailable = -not [string]::IsNullOrWhiteSpace($PrivateBackupPath) -or -n
 if ($privateAvailable -and ([string]::IsNullOrWhiteSpace($PrivateBackupPath) -or [string]::IsNullOrWhiteSpace($RecoveryKeyPath))) {
   throw "PrivateBackupPath and RecoveryKeyPath must be supplied together."
 }
+if ($AutoRestorePrivate -and -not $privateAvailable) {
+  throw "AutoRestorePrivate requires a private backup and recovery key."
+}
 if ($privateAvailable -and $NoWait) {
   throw "NoWait is not allowed with private restore inputs because the host must delete their temporary copies when Sandbox closes."
 }
@@ -211,9 +215,11 @@ if ($privateAvailable) {
   $key = [System.IO.Path]::GetFullPath($RecoveryKeyPath)
   if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "Private backup not found: $backup" }
   if (-not (Test-Path -LiteralPath $key -PathType Leaf)) { throw "Recovery key not found: $key" }
-  New-Item -ItemType Directory -Force -Path $privateRoot | Out-Null
-  Copy-Item -LiteralPath $backup -Destination (Join-Path $privateRoot "backup.dinobrain") -Force
-  Copy-Item -LiteralPath $key -Destination (Join-Path $privateRoot "recovery-key.txt") -Force
+  $privateBackupRoot = Join-Path $privateRoot "backup"
+  $privateKeyRoot = Join-Path $privateRoot "key"
+  New-Item -ItemType Directory -Force -Path $privateBackupRoot, $privateKeyRoot | Out-Null
+  Copy-Item -LiteralPath $backup -Destination (Join-Path $privateBackupRoot "backup.dinobrain") -Force
+  Copy-Item -LiteralPath $key -Destination (Join-Path $privateKeyRoot "recovery-key.txt") -Force
 }
 
 $guestSource = Join-Path $root "scripts\windows-sandbox-clean-machine-bootstrap.ps1"
@@ -245,8 +251,9 @@ $config = [ordered]@{
   guest_bootstrap_sha256 = $guestSha256
   guest_exchange_root = "C:\DinoBrainExchange"
   private_restore_available = [bool]$privateAvailable
-  guest_private_backup = $(if ($privateAvailable) { "C:\DinoBrainPrivateInputs\backup.dinobrain" } else { $null })
-  guest_recovery_key = $(if ($privateAvailable) { "C:\DinoBrainPrivateInputs\recovery-key.txt" } else { $null })
+  auto_restore_private = [bool]$AutoRestorePrivate
+  guest_private_backup = $(if ($privateAvailable) { "C:\DinoBrainPrivateBackup\backup.dinobrain" } else { $null })
+  guest_recovery_key = $(if ($privateAvailable) { "C:\DinoBrainRecoveryKey\recovery-key.txt" } else { $null })
   install_root = "C:\DinoBrainHome"
   client_root = "C:\DinoBrainClients"
 }
@@ -256,11 +263,17 @@ Write-JsonAtomic -Path $configPath -Value $config
 $escapedExchange = [System.Security.SecurityElement]::Escape($exchangeRoot)
 $privateMapping = ""
 if ($privateAvailable) {
-  $escapedPrivate = [System.Security.SecurityElement]::Escape($privateRoot)
+  $escapedPrivateBackup = [System.Security.SecurityElement]::Escape((Join-Path $privateRoot "backup"))
+  $escapedPrivateKey = [System.Security.SecurityElement]::Escape((Join-Path $privateRoot "key"))
   $privateMapping = @"
       <MappedFolder>
-        <HostFolder>$escapedPrivate</HostFolder>
-        <SandboxFolder>C:\DinoBrainPrivateInputs</SandboxFolder>
+        <HostFolder>$escapedPrivateBackup</HostFolder>
+        <SandboxFolder>C:\DinoBrainPrivateBackup</SandboxFolder>
+        <ReadOnly>true</ReadOnly>
+      </MappedFolder>
+      <MappedFolder>
+        <HostFolder>$escapedPrivateKey</HostFolder>
+        <SandboxFolder>C:\DinoBrainRecoveryKey</SandboxFolder>
         <ReadOnly>true</ReadOnly>
       </MappedFolder>
 "@
@@ -301,6 +314,7 @@ $result = [ordered]@{
   claude_version = $resolved.claude_version
   memory_in_mb = $MemoryInMB
   private_restore_available = [bool]$privateAvailable
+  auto_restore_private = [bool]$AutoRestorePrivate
   run_root = $runRoot
   exchange_root = $exchangeRoot
   config_path = $configPath

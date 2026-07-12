@@ -8,7 +8,9 @@ $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $launcher = Join-Path $root "scripts\start-windows-sandbox-clean-machine-proof.ps1"
 $bootstrap = Join-Path $root "scripts\windows-sandbox-clean-machine-bootstrap.ps1"
-foreach ($path in @($launcher, $bootstrap)) {
+$fullProof = Join-Path $root "scripts\start-clean-machine-equivalence-proof.ps1"
+$clientProof = Join-Path $root "scripts\start-client-mcp-proof.ps1"
+foreach ($path in @($launcher, $bootstrap, $fullProof, $clientProof)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Sandbox proof component missing: $path" }
 }
 
@@ -21,7 +23,8 @@ function Invoke-PreparedFixture {
   param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [string]$BackupPath = "",
-    [string]$KeyPath = ""
+    [string]$KeyPath = "",
+    [switch]$AutoRestorePrivate
   )
   $arguments = @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $launcher,
@@ -40,6 +43,7 @@ function Invoke-PreparedFixture {
   )
   if (-not [string]::IsNullOrWhiteSpace($BackupPath)) { $arguments += @("-PrivateBackupPath", $BackupPath) }
   if (-not [string]::IsNullOrWhiteSpace($KeyPath)) { $arguments += @("-RecoveryKeyPath", $KeyPath) }
+  if ($AutoRestorePrivate) { $arguments += "-AutoRestorePrivate" }
   $output = @(& powershell.exe @arguments 2>&1)
   if ($LASTEXITCODE -ne 0) { throw "Sandbox prepare fixture failed:`n$($output -join "`n")" }
   return ($output -join "`n") | ConvertFrom-Json
@@ -85,7 +89,11 @@ function Invoke-FailedLaunchFixture {
 }
 
 function Assert-PreparedRun {
-  param([Parameter(Mandatory = $true)][object]$Result, [bool]$ExpectPrivate)
+  param(
+    [Parameter(Mandatory = $true)][object]$Result,
+    [bool]$ExpectPrivate,
+    [bool]$ExpectAutoRestore = $false
+  )
   Assert-True ($Result.ok -eq $true -and $Result.status -eq "prepared") "Sandbox launcher did not report prepared."
   Assert-True (Test-Path -LiteralPath $Result.wsb_path -PathType Leaf) "WSB file was not created."
   Assert-True (Test-Path -LiteralPath $Result.config_path -PathType Leaf) "Sandbox config was not created."
@@ -96,6 +104,13 @@ function Assert-PreparedRun {
   Assert-True ($config.codex_version -eq "0.144.1" -and $config.claude_version -eq "2.1.207") "Pinned client versions were not preserved."
   Assert-True ($config.install_root -eq "C:\DinoBrainHome") "Sandbox install root collides with the installer app-directory normalization rule."
   Assert-True ($config.private_restore_available -eq $ExpectPrivate) "Private restore availability is wrong."
+  Assert-True ($config.auto_restore_private -eq $ExpectAutoRestore) "Automatic private restore setting is wrong."
+  Assert-True ($Result.auto_restore_private -eq $ExpectAutoRestore) "Host result omitted the automatic private restore setting."
+  if ($ExpectPrivate) {
+    $backupRoot = [System.IO.Path]::GetDirectoryName([string]$config.guest_private_backup)
+    $keyRoot = [System.IO.Path]::GetDirectoryName([string]$config.guest_recovery_key)
+    Assert-True (-not $backupRoot.Equals($keyRoot, [StringComparison]::OrdinalIgnoreCase)) "Private backup and recovery key share a guest root."
+  }
   $configText = [System.IO.File]::ReadAllText($Result.config_path)
   Assert-True ($configText -notmatch "(?i)(github_token|gh_token|api[_-]?key|password)") "Sandbox config contains a credential field."
 
@@ -106,9 +121,15 @@ function Assert-PreparedRun {
   $mapped = @($wsb.Configuration.MappedFolders.MappedFolder)
   $exchange = @($mapped | Where-Object { $_.SandboxFolder -eq "C:\DinoBrainExchange" })
   Assert-True ($exchange.Count -eq 1 -and $exchange[0].ReadOnly -eq "false") "Writable evidence exchange mapping is missing."
-  $private = @($mapped | Where-Object { $_.SandboxFolder -eq "C:\DinoBrainPrivateInputs" })
-  Assert-True ($private.Count -eq $(if ($ExpectPrivate) { 1 } else { 0 })) "Private input mapping count is wrong."
-  if ($ExpectPrivate) { Assert-True ($private[0].ReadOnly -eq "true") "Private recovery inputs are not read-only in Sandbox." }
+  $privateBackup = @($mapped | Where-Object { $_.SandboxFolder -eq "C:\DinoBrainPrivateBackup" })
+  $privateKey = @($mapped | Where-Object { $_.SandboxFolder -eq "C:\DinoBrainRecoveryKey" })
+  $expectedPrivateMappings = $(if ($ExpectPrivate) { 1 } else { 0 })
+  Assert-True ($privateBackup.Count -eq $expectedPrivateMappings) "Private backup mapping count is wrong."
+  Assert-True ($privateKey.Count -eq $expectedPrivateMappings) "Private recovery-key mapping count is wrong."
+  if ($ExpectPrivate) {
+    Assert-True ($privateBackup[0].ReadOnly -eq "true") "Private backup mapping is not read-only in Sandbox."
+    Assert-True ($privateKey[0].ReadOnly -eq "true") "Private recovery-key mapping is not read-only in Sandbox."
+  }
   Assert-True ([string]$wsb.Configuration.LogonCommand.Command -match "windows-sandbox-clean-machine-bootstrap\.ps1") "Sandbox bootstrap is not wired to LogonCommand."
 
   $copiedBootstrap = Join-Path $Result.exchange_root "windows-sandbox-clean-machine-bootstrap.ps1"
@@ -135,9 +156,14 @@ try {
   Assert-PreparedRun -Result $private -ExpectPrivate $true
   $privateConfig = [System.IO.File]::ReadAllText($private.config_path)
   Assert-True (-not $privateConfig.Contains($backup) -and -not $privateConfig.Contains($key)) "Host private-input paths leaked into guest config."
+
+  $autoPrivate = Invoke-PreparedFixture -OutputRoot (Join-Path $temp "auto-private") -BackupPath $backup -KeyPath $key -AutoRestorePrivate
+  Assert-PreparedRun -Result $autoPrivate -ExpectPrivate $true -ExpectAutoRestore $true
   Invoke-FailedLaunchFixture -OutputRoot (Join-Path $temp "launch-failure") -BackupPath $backup -KeyPath $key
 
   $bootstrapText = [System.IO.File]::ReadAllText($bootstrap)
+  $fullProofText = [System.IO.File]::ReadAllText($fullProof)
+  $clientProofText = [System.IO.File]::ReadAllText($clientProof)
   $installerText = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
   $matrixText = [System.IO.File]::ReadAllText((Join-Path $root "scripts\verify-clean-machine-install-matrix.ps1"))
   foreach ($needle in @(
@@ -147,12 +173,19 @@ try {
     "@openai/codex@",
     "@anthropic-ai/claude-code@",
     "installer:verify:matrix",
+    "auto_restore_private",
+    "08-private-restore",
+    "-OverwritePrivate",
     "start-clean-machine-equivalence-proof.ps1",
+    "full-recovery-proof.log",
+    "Tee-Object -FilePath",
     "C:\DinoBrainExchange\evidence"
   )) {
     Assert-True ($bootstrapText.Contains($needle)) "Guest bootstrap is missing required proof behavior: $needle"
   }
   Assert-True (-not $bootstrapText.Contains("Expand-Archive")) "Guest bootstrap still depends on the incomplete Windows Sandbox Archive module."
+  Assert-True ($clientProofText.Contains('[switch]$NoDialog')) "Direct MCP proof launcher is missing its non-blocking dialog mode."
+  Assert-True ($fullProofText.Contains('-TimeoutSeconds $ClientProofTimeoutSeconds -NoDialog')) "Full recovery proof can still block behind a hidden direct-MCP dialog."
   Assert-True ($installerText.Contains("function Expand-DinoBrainZip")) "Installer is missing its module-independent ZIP extractor."
   Assert-True (-not $installerText.Contains("Expand-Archive")) "Installer still depends on the incomplete Windows Sandbox Archive module."
   Assert-True ($installerText.Contains("Install-DinoBrainVisualCppRuntime")) "Installer does not provision the semantic native runtime on a clean machine."
@@ -170,6 +203,8 @@ try {
     proof_version = "windows_sandbox_clean_machine_proof_v1"
     plain_prepare = "pass"
     private_inputs_read_only = "pass"
+    private_backup_key_roots_separated = "pass"
+    auto_private_restore_configured = "pass"
     immutable_refs_and_hashes = "pass"
     guest_bootstrap_hash_bound = "pass"
     credentials_excluded = "pass"

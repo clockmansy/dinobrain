@@ -30,7 +30,7 @@ import { DINOBRAIN_DATA_CONTRACT_VERSION, DINOBRAIN_VERSION } from "./version.js
 const execFileAsync = promisify(execFile);
 
 export const CLEAN_MACHINE_RUN_VERSION = "clean_machine_equivalence_run_v1";
-export const CLEAN_MACHINE_EQUIVALENCE_VERSION = "clean_machine_equivalence_v1";
+export const CLEAN_MACHINE_EQUIVALENCE_VERSION = "clean_machine_equivalence_v2";
 export const CLEAN_MACHINE_ATTESTATION_VERSION = "clean_machine_attestation_ed25519_v1";
 
 export const CLEAN_MACHINE_REQUIRED_COMMANDS = [
@@ -118,6 +118,8 @@ export type PublicGitIdentity = {
   head_matches_upstream: boolean;
   installed_commit_is_ancestor: boolean;
   tracked_dirty_count: number;
+  runtime_generated_tracked_dirty_count: number;
+  unexpected_tracked_dirty_count: number;
 };
 
 export type CleanMachineClientEvidence = {
@@ -234,6 +236,7 @@ type GitState = {
   origin: string | null;
   repository: string | null;
   trackedDirtyCount: number;
+  trackedDirtyPaths: string[];
 };
 
 type ArtifactState = {
@@ -297,6 +300,35 @@ function validIso(value: unknown): boolean {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))].sort();
+}
+
+const DATA_RUNTIME_TRACKED_PREFIXES = [
+  ".dino/context-packs/",
+  ".dino/events/",
+  ".dino/gates/",
+  ".dino/index/",
+  ".dino/locks/",
+  ".dino/proofs/client-mcp/",
+  ".dino/state/",
+  ".dino/tasks/",
+  ".dino/tmp/",
+  ".dino/traces/",
+] as const;
+
+export function classifyCleanMachineTrackedPaths(
+  repository: "app" | "data",
+  paths: string[],
+): { runtimeGenerated: string[]; unexpected: string[] } {
+  const normalized = unique(paths.map((value) => value.replace(/\\/g, "/").replace(/^\.\//, "")));
+  if (repository === "app") return { runtimeGenerated: [], unexpected: normalized };
+  const runtimeGenerated = normalized.filter((value) =>
+    DATA_RUNTIME_TRACKED_PREFIXES.some((prefix) => value.startsWith(prefix)),
+  );
+  const allowed = new Set(runtimeGenerated);
+  return {
+    runtimeGenerated,
+    unexpected: normalized.filter((value) => !allowed.has(value)),
+  };
 }
 
 function defaultLocalStateRoot(): string {
@@ -383,12 +415,21 @@ async function gitState(root: string): Promise<GitState> {
   ]);
   if (!head || !isCommit(head)) throw new Error(`Repository HEAD is not a full commit: ${root}`);
   const lines = status?.split(/\r?\n/).filter(Boolean) ?? [];
+  const trackedDirtyPaths = lines
+    .filter((line) => !line.startsWith("?? "))
+    .map((line) => {
+      const rawPath = line.slice(3);
+      const renameSeparator = rawPath.lastIndexOf(" -> ");
+      const selected = renameSeparator >= 0 ? rawPath.slice(renameSeparator + 4) : rawPath;
+      return selected.replace(/^"(.*)"$/, "$1").replace(/\\/g, "/");
+    });
   return {
     head: head.toLowerCase(),
     upstream: upstream && isCommit(upstream) ? upstream.toLowerCase() : null,
     origin,
     repository: githubRepository(origin),
-    trackedDirtyCount: lines.filter((line) => !line.startsWith("?? ")).length,
+    trackedDirtyCount: trackedDirtyPaths.length,
+    trackedDirtyPaths,
   };
 }
 
@@ -879,6 +920,7 @@ function publicGitIdentity(
   state: GitState,
   installedCommit: string,
   ancestor: boolean,
+  classification: { runtimeGenerated: string[]; unexpected: string[] },
 ): PublicGitIdentity {
   return {
     repository: state.repository,
@@ -888,6 +930,8 @@ function publicGitIdentity(
     head_matches_upstream: state.upstream === state.head,
     installed_commit_is_ancestor: ancestor,
     tracked_dirty_count: state.trackedDirtyCount,
+    runtime_generated_tracked_dirty_count: classification.runtimeGenerated.length,
+    unexpected_tracked_dirty_count: classification.unexpected.length,
   };
 }
 
@@ -990,14 +1034,18 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
     isAncestor(appRoot, descriptor.installed_app_commit, appState.head),
     isAncestor(dataRoot, descriptor.installed_data_commit, dataState.head),
   ]);
+  const appDirty = classifyCleanMachineTrackedPaths("app", appState.trackedDirtyPaths);
+  const dataDirty = classifyCleanMachineTrackedPaths("data", dataState.trackedDirtyPaths);
   const install = await inspectInstall(descriptor.install_result_path, {
     ...appState,
     head: descriptor.installed_app_commit,
     upstream: descriptor.app_upstream_commit,
+    trackedDirtyCount: appDirty.unexpected.length,
   }, {
     ...dataState,
     head: descriptor.installed_data_commit,
     upstream: descriptor.data_upstream_commit,
+    trackedDirtyCount: dataDirty.unexpected.length,
   }, appRoot, dataRoot);
   const restore = await inspectRestore(descriptor.restore_receipt_path, descriptor);
   const installPublic = installEvidence(install, descriptor);
@@ -1116,7 +1164,12 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
 
   const installerRegressionPassed = commandReasons(receiptMap, ["installer:verify:native-result", "installer:verify:transaction"]).length === 0;
   const installPass = installPublic.status === "PASS" && appState.repository === descriptor.expected_app_repository && dataState.repository === descriptor.expected_data_repository;
-  const repositoryPass = appState.upstream === appState.head && dataState.upstream === dataState.head && appAncestor && dataAncestor && appState.trackedDirtyCount === 0 && dataState.trackedDirtyCount === 0;
+  const repositoryPass = appState.upstream === appState.head &&
+    dataState.upstream === dataState.head &&
+    appAncestor &&
+    dataAncestor &&
+    appDirty.unexpected.length === 0 &&
+    dataDirty.unexpected.length === 0;
   const scenarios: CleanMachineScenarioEvidence[] = [
     scenario("immutable_github_install", installPass && repositoryPass, "immutable_github_install_not_proven"),
     scenario("dirty_user_config_update_regression", installerRegressionPassed, "dirty_config_regression_not_proven"),
@@ -1137,8 +1190,8 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
     dataState.upstream !== dataState.head ? "data_head_not_at_upstream" : "",
     !appAncestor ? "installed_app_commit_not_ancestor" : "",
     !dataAncestor ? "installed_data_commit_not_ancestor" : "",
-    appState.trackedDirtyCount > 0 ? "app_tracked_dirty" : "",
-    dataState.trackedDirtyCount > 0 ? "data_tracked_dirty" : "",
+    appDirty.unexpected.length > 0 ? "app_unexpected_tracked_dirty" : "",
+    dataDirty.unexpected.length > 0 ? "data_unexpected_tracked_dirty" : "",
   ]);
   const commandFailureReasons = commandReasons(receiptMap, [...CLEAN_MACHINE_REQUIRED_COMMANDS]);
   const clientReasons = unique([
@@ -1192,8 +1245,8 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
     },
     install: installPublic,
     repositories: {
-      app: publicGitIdentity(appState, descriptor.installed_app_commit, appAncestor),
-      data: publicGitIdentity(dataState, descriptor.installed_data_commit, dataAncestor),
+      app: publicGitIdentity(appState, descriptor.installed_app_commit, appAncestor, appDirty),
+      data: publicGitIdentity(dataState, descriptor.installed_data_commit, dataAncestor, dataDirty),
     },
     recovery: descriptor.mode === "both_clients"
       ? recoveryPublic
@@ -1306,7 +1359,11 @@ export function validateCleanMachineEquivalenceEvidence(
     if (evidence.repositories?.app?.installed_commit_is_ancestor !== true || evidence.repositories?.data?.installed_commit_is_ancestor !== true) {
       errors.push("installed_commit_lineage_missing");
     }
-    if (evidence.repositories?.app?.tracked_dirty_count !== 0 || evidence.repositories?.data?.tracked_dirty_count !== 0) {
+    const appUnexpectedDirty = evidence.repositories?.app?.unexpected_tracked_dirty_count ??
+      evidence.repositories?.app?.tracked_dirty_count;
+    const dataUnexpectedDirty = evidence.repositories?.data?.unexpected_tracked_dirty_count ??
+      evidence.repositories?.data?.tracked_dirty_count;
+    if (appUnexpectedDirty !== 0 || dataUnexpectedDirty !== 0) {
       errors.push("tracked_repository_dirty");
     }
     if (evidence.recovery?.status !== "PASS" || evidence.recovery?.source_identity_matches_install !== true) {
