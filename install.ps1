@@ -1249,6 +1249,116 @@ function Install-PortableNode {
   return $nodeRoot
 }
 
+function Get-DinoBrainVisualCppRuntimeFiles {
+  return @(
+    "MSVCP140.dll",
+    "MSVCP140_1.dll",
+    "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll"
+  )
+}
+
+function Get-DinoBrainMissingVisualCppRuntimeFiles {
+  param([string]$RuntimeRoot = (Join-Path $env:SystemRoot "System32"))
+
+  $missing = @()
+  foreach ($fileName in @(Get-DinoBrainVisualCppRuntimeFiles)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot $fileName) -PathType Leaf)) {
+      $missing += $fileName
+    }
+  }
+  return @($missing)
+}
+
+function Assert-DinoBrainMicrosoftSignedExecutable {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  $subject = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { "" }
+  $versionInfo = (Get-Item -LiteralPath $Path).VersionInfo
+  if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Downloaded executable does not have a valid Authenticode signature: $Path ($($signature.Status))"
+  }
+  if ($subject -notmatch "(?:^|,\s*)CN=Microsoft Corporation(?:,|$)" -or
+      $subject -notmatch "(?:^|,\s*)O=Microsoft Corporation(?:,|$)") {
+    throw "Downloaded executable is not signed by Microsoft Corporation: $subject"
+  }
+  if ([string]$versionInfo.CompanyName -ne "Microsoft Corporation" -or
+      [string]$versionInfo.OriginalFilename -ne "VC_redist.x64.exe" -or
+      [string]$versionInfo.ProductName -notmatch "^Microsoft Visual C\+\+ v14 Redistributable \(x64\)") {
+    throw "Downloaded Microsoft-signed executable is not the Visual C++ v14 x64 Redistributable."
+  }
+}
+
+function Install-DinoBrainVisualCppRuntime {
+  param(
+    [string]$DownloadUri = "https://aka.ms/vc14/vc_redist.x64.exe",
+    [string]$RuntimeRoot = (Join-Path $env:SystemRoot "System32")
+  )
+
+  $missing = @(Get-DinoBrainMissingVisualCppRuntimeFiles -RuntimeRoot $RuntimeRoot)
+  if ($missing.Count -eq 0) {
+    Write-Host "Microsoft Visual C++ x64 runtime is ready."
+    return
+  }
+  if ($RuntimeRoot -ne (Join-Path $env:SystemRoot "System32")) {
+    throw "Visual C++ runtime installation is only permitted for the Windows System32 runtime root."
+  }
+
+  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-vc-runtime-" + [guid]::NewGuid().ToString("N"))
+  $installerPath = Join-Path $tempRoot "vc_redist.x64.exe"
+  $logPath = Join-Path $tempRoot "vc-redist-install.log"
+  New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+  try {
+    Write-Host "Installing required Microsoft Visual C++ x64 runtime: $($missing -join ', ')"
+    $oldProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $DownloadUri -OutFile $installerPath
+    } finally {
+      $ProgressPreference = $oldProgress
+    }
+    Assert-DinoBrainMicrosoftSignedExecutable -Path $installerPath
+
+    $arguments = @("/install", "/quiet", "/norestart", "/log", ('"' + $logPath + '"'))
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdministrator) {
+      $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+    } else {
+      Write-Host "Windows approval is required once to install the Microsoft Visual C++ runtime."
+      $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    }
+
+    if ($process.ExitCode -notin @(0, 1638, 3010)) {
+      $tail = if (Test-Path -LiteralPath $logPath) { (Get-Content -LiteralPath $logPath -Tail 30) -join "`n" } else { "installer log unavailable" }
+      throw "Microsoft Visual C++ runtime installation failed with exit code $($process.ExitCode).`n$tail"
+    }
+
+    $missingAfter = @(Get-DinoBrainMissingVisualCppRuntimeFiles -RuntimeRoot $RuntimeRoot)
+    if ($missingAfter.Count -gt 0) {
+      throw "Microsoft Visual C++ runtime installation completed but required files are still missing: $($missingAfter -join ', ')"
+    }
+    Write-Host "Microsoft Visual C++ x64 runtime installed and verified."
+  } finally {
+    Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Assert-DinoBrainSemanticNativeRuntime {
+  param(
+    [Parameter(Mandatory = $true)][string]$NodeRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath
+  )
+
+  $nodeExe = Join-Path $NodeRoot "node.exe"
+  Invoke-NativeCommand -FilePath $nodeExe -ArgumentList @(
+    "-e",
+    "require('onnxruntime-node'); process.stdout.write('semantic-native-runtime-ok')"
+  ) -WorkingDirectory $AppPath
+}
+
 function Invoke-WithPortableNode {
   param(
     [Parameter(Mandatory = $true)][string]$NodeRoot,
@@ -2438,7 +2548,14 @@ try {
   $nodeExe = Join-Path $nodeRoot "node.exe"
   $npmCmd = Join-Path $nodeRoot "npm.cmd"
 
+  if (-not $SkipSemanticRagPrewarm) {
+    Install-DinoBrainVisualCppRuntime
+  }
+
   Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("install") -WorkingDirectory $transaction.StageAppPath
+  if (-not $SkipSemanticRagPrewarm) {
+    Assert-DinoBrainSemanticNativeRuntime -NodeRoot $nodeRoot -AppPath $transaction.StageAppPath
+  }
   Invoke-WithPortableNode -NodeRoot $nodeRoot -FilePath $npmCmd -ArgumentList @("run", "build") -WorkingDirectory $transaction.StageAppPath
   $oldDataRoot = $env:DINOBRAIN_DATA_DIR
   $env:DINOBRAIN_DATA_DIR = $transaction.StageDataPath

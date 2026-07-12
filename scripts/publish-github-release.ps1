@@ -70,6 +70,11 @@ function Assert-DinoBrainInstallerClosedLoop {
     if ($probeText -notmatch "Enable-DinoBrainDataGitHooks" -or $probeText -notmatch "hooks:data:verify") {
       throw "Installer install.ps1 does not include DinoBrain data safety hook setup and verification"
     }
+    if ($probeText -notmatch "Install-DinoBrainVisualCppRuntime" -or
+        $probeText -notmatch "Assert-DinoBrainMicrosoftSignedExecutable" -or
+        $probeText -notmatch "Assert-DinoBrainSemanticNativeRuntime") {
+      throw "Installer install.ps1 does not include the verified semantic native runtime prerequisite"
+    }
   } finally {
     Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
   }

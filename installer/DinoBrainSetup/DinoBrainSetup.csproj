@@ -9,8 +9,8 @@
     <RootNamespace>DinoBrainSetup</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>2.2.18</Version>
-    <SetupVersion Condition="'$(SetupVersion)' == ''">2.2.18</SetupVersion>
+    <Version>2.2.19</Version>
+    <SetupVersion Condition="'$(SetupVersion)' == ''">2.2.19</SetupVersion>
     <InstallerAppRef Condition="'$(InstallerAppRef)' == ''">main</InstallerAppRef>
     <InstallerDataRef Condition="'$(InstallerDataRef)' == ''">main</InstallerDataRef>
     <Authors>DinoBrain</Authors>

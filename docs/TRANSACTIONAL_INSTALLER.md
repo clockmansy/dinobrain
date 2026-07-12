@@ -13,8 +13,10 @@ authority. The local `dinobrain-install-result.json` transaction record is.
 2. Recover any nonterminal journal left by an interrupted earlier run.
 3. Resolve the requested app and data refs to full 40-character commit SHAs.
 4. Copy or clone both repositories into short sibling stage paths.
-5. Build, index, prewarm semantic retrieval, generate temporary client config,
-   and run verification entirely against the stage paths.
+5. Verify the Microsoft Visual C++ x64 runtime, install the Microsoft-signed
+   redistributable if required, prove the ONNX native binding loads, then build,
+   index, prewarm semantic retrieval, generate temporary client config, and run
+   verification entirely against the stage paths.
 6. Generate final-path config and snapshot every file or managed directory that
    can be changed.
 7. Rename existing repositories to rollback siblings and promote the verified

@@ -154,6 +154,9 @@ try {
   Assert-True (-not $bootstrapText.Contains("Expand-Archive")) "Guest bootstrap still depends on the incomplete Windows Sandbox Archive module."
   Assert-True ($installerText.Contains("function Expand-DinoBrainZip")) "Installer is missing its module-independent ZIP extractor."
   Assert-True (-not $installerText.Contains("Expand-Archive")) "Installer still depends on the incomplete Windows Sandbox Archive module."
+  Assert-True ($installerText.Contains("Install-DinoBrainVisualCppRuntime")) "Installer does not provision the semantic native runtime on a clean machine."
+  Assert-True ($installerText.Contains("Assert-DinoBrainMicrosoftSignedExecutable")) "Installer does not verify the native runtime publisher."
+  Assert-True ($installerText.Contains("Assert-DinoBrainSemanticNativeRuntime")) "Installer does not prove the ONNX native binding before RAG prewarm."
   Assert-True ($bootstrapText -notmatch "(?i)(github_pat_|ghp_|sk-[A-Za-z0-9])") "Guest bootstrap contains a credential-like literal."
 
   [ordered]@{

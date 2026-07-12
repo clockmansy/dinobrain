@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.18",
+  "version": "2.2.19",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -109,6 +109,7 @@
     "installer:verify:launchers": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-observatory-launcher.ps1",
     "installer:verify:managed-hook": "powershell -ExecutionPolicy Bypass -File scripts/verify-codex-managed-hook.ps1",
     "installer:verify:semantic-rag": "powershell -ExecutionPolicy Bypass -File scripts/verify-installer-semantic-rag.ps1",
+    "installer:verify:native-runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-installer-native-runtime.ps1",
     "installer:verify:hooks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-installer-hooks.ps1",
     "installer:verify:claude": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-installer-claude-config.ps1",
     "installer:verify:native-result": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-installer-native-result.ps1",

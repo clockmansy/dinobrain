@@ -14,6 +14,10 @@ result.
 ## Prerequisites
 
 - Windows PowerShell 5.1 or newer
+- The Microsoft Visual C++ x64 runtime is checked automatically. If its four
+  required DLLs are absent, the installer downloads the latest supported x64
+  redistributable from Microsoft's official permalink, verifies its
+  Authenticode publisher, and requests Windows elevation once to install it.
 - `git` on `PATH` for full equivalence, updates, scoped sync, and recovery push.
   A fresh install can use degraded immutable GitHub archives when Git is absent.
 - GitHub access to both repos. Public repos need ordinary network access; private repos require credentials with read permission:
@@ -94,7 +98,7 @@ Recommended path from a release asset:
 .\DinoBrainSetup.exe
 ```
 
-`DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories and downloads portable Node.js.
+`DinoBrainSetup.exe` is a Windows GUI bootstrapper. It contains the current `install.ps1`, lets the user choose the install root and client registration options, streams install logs, then calls the same idempotent installer described below. It still requires network access because the underlying installer clones GitHub repositories, downloads portable Node.js, and provisions the Microsoft Visual C++ x64 runtime when it is missing. The runtime download must have a valid Microsoft Authenticode signature before it can run.
 
 You should not need to type install paths by hand. The setup window now pre-fills the install root from, in order: `DINOBRAIN_INSTALL_ROOT`, `DINOBRAIN_DATA_DIR`, an existing Codex `DINOBRAIN_DATA_DIR` config, an already detected `dinobrain`/`dinobrain-data` pair under common locations, or the user's Documents folder. Use **Auto** to restore that recommendation or **Browse** to pick a parent folder. If you accidentally pick the `dinobrain` or `dinobrain-data` folder itself, the installer treats its parent as the install root and previews the final app/data paths before running.
 
