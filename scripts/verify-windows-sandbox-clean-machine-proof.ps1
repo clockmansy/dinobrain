@@ -139,6 +139,7 @@ try {
 
   $bootstrapText = [System.IO.File]::ReadAllText($bootstrap)
   $installerText = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
+  $matrixText = [System.IO.File]::ReadAllText((Join-Path $root "scripts\verify-clean-machine-install-matrix.ps1"))
   foreach ($needle in @(
     "Assert-FileHash",
     "System.IO.Compression.ZipFile",
@@ -157,6 +158,7 @@ try {
   Assert-True ($installerText.Contains("Install-DinoBrainVisualCppRuntime")) "Installer does not provision the semantic native runtime on a clean machine."
   Assert-True ($installerText.Contains("Assert-DinoBrainMicrosoftSignedExecutable")) "Installer does not verify the native runtime publisher."
   Assert-True ($installerText.Contains("Assert-DinoBrainSemanticNativeRuntime")) "Installer does not prove the ONNX native binding before RAG prewarm."
+  Assert-True ($matrixText.Contains('@("commit", "--allow-empty", "-m", "fixture: transactional installer")')) "Clean-machine matrix cannot run from an already identical release checkout."
   Assert-True ($bootstrapText -notmatch "(?i)(github_pat_|ghp_|sk-[A-Za-z0-9])") "Guest bootstrap contains a credential-like literal."
 
   [ordered]@{

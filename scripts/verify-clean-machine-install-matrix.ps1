@@ -191,7 +191,7 @@ try {
   Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments @("config", "user.email", "installer-matrix@example.invalid") | Out-Null
   Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments @("config", "user.name", "DinoBrain Installer Matrix") | Out-Null
   Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments (@("add", "--") + $overlayPaths) | Out-Null
-  Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments @("commit", "-m", "fixture: transactional installer") | Out-Null
+  Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments @("commit", "--allow-empty", "-m", "fixture: transactional installer") | Out-Null
   Invoke-MatrixGit -WorkingDirectory $temp -Arguments @("clone", "--bare", $appSeed, $appOrigin) | Out-Null
   Invoke-MatrixGit -WorkingDirectory $appSeed -Arguments @("remote", "set-url", "origin", $appOrigin) | Out-Null
 

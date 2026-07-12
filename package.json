@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.19",
+  "version": "2.2.20",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
