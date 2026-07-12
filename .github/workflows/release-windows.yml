@@ -59,14 +59,55 @@ jobs:
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
+      - name: Resolve immutable data ref
+        id: refs
+        shell: pwsh
+        run: |
+          $line = git ls-remote https://github.com/clockmansy/dinobrain-data.git refs/heads/main
+          $dataCommit = (($line -split '\s+')[0]).Trim().ToLowerInvariant()
+          if ($dataCommit -notmatch '^[a-f0-9]{40}$') {
+            throw "Could not resolve immutable dinobrain-data/main commit."
+          }
+          "data_commit=$dataCommit" >> $env:GITHUB_OUTPUT
+
       - name: Build and publish release assets
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $tag = "${{ steps.release.outputs.tag }}"
+          $appCommit = "${{ github.sha }}"
+          $dataCommit = "${{ steps.refs.outputs.data_commit }}"
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $release = $null
+          try {
+            $release = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          } catch {
+            if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 404) { throw }
+          }
+          if ($release) {
+            $asset = @($release.assets | Where-Object { $_.name -eq 'DinoBrainSetup.zip' } | Select-Object -First 1)
+            if ($asset.Count -gt 0) {
+              $expectedBody = @(
+                "Asset source commit: $appCommit",
+                "Installer app ref: $appCommit",
+                "Installer data ref: $dataCommit"
+              )
+              $bodyMatches = @($expectedBody | Where-Object { -not ([string]$release.body).Contains($_) }).Count -eq 0
+              $assetHealthy = $asset[0].state -eq 'uploaded' -and [string]$asset[0].digest -match '^sha256:[a-f0-9]{64}$'
+              if (-not $bodyMatches -or -not $assetHealthy) {
+                throw 'Existing release asset provenance mismatch; refusing replacement.'
+              }
+              Write-Host "Verified release asset already exists for $appCommit; skipping duplicate publisher."
+              exit 0
+            }
+          }
           powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1 `
-            -Tag "${{ steps.release.outputs.tag }}" `
-            -TargetCommitish "${{ github.sha }}" `
-            -InstallerAppRef main `
-            -DataRef main `
-            -ReplaceAsset
+            -Tag "$tag" `
+            -TargetCommitish "$appCommit" `
+            -InstallerAppRef "$appCommit" `
+            -DataRef "$dataCommit"

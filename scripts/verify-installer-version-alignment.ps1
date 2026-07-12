@@ -13,6 +13,19 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $installScript = Join-Path $root "install.ps1"
 $source = [System.IO.File]::ReadAllText($installScript)
+$releaseWorkflow = [System.IO.File]::ReadAllText((Join-Path $root ".github\workflows\release-windows.yml"))
+foreach ($forbidden in @("-InstallerAppRef main", "-DataRef main", "-ReplaceAsset")) {
+  if ($releaseWorkflow.Contains($forbidden)) { throw "Release workflow still permits mutable or destructive asset publication: $forbidden" }
+}
+foreach ($required in @(
+  "Resolve immutable data ref",
+  'InstallerAppRef "$appCommit"',
+  'DataRef "$dataCommit"',
+  "Existing release asset provenance mismatch; refusing replacement.",
+  "skipping duplicate publisher"
+)) {
+  if (-not $releaseWorkflow.Contains($required)) { throw "Release workflow is missing its immutable publication guard: $required" }
+}
 $start = $source.IndexOf("function Test-Command")
 $end = $source.IndexOf("function Install-PortableNode")
 if ($start -lt 0 -or $end -lt 0 -or $end -le $start) {
