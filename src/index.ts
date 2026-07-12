@@ -58,6 +58,12 @@ import { classifyPromptLaunch } from "./prompt-eligibility.js";
 import { publicSyncReceiptCommitMessage, writePublicSyncReceipt } from "./public-sync-receipt.js";
 import { buildReviewQueueBackpressure, writeReviewGatedBatch } from "./review-backpressure.js";
 import { buildReviewWorklistActions } from "./review-worklist-actions.js";
+import {
+  clearActiveSessionTaskPointer,
+  clearActiveSessionTaskPointerUnlocked,
+  type SessionTaskSupersession,
+  writeStartedTaskWithSessionPointer,
+} from "./session-task-pointer.js";
 import { publishSourceLineage } from "./source-lineage-publication.js";
 import { withTaskLifecycleMutationLock } from "./task-lifecycle-lock.js";
 import {
@@ -1692,6 +1698,35 @@ async function writeGateReport(taskId: string, value: Record<string, unknown>): 
   return relDataPath(gatePath);
 }
 
+async function recordSessionTaskSupersession(superseded: SessionTaskSupersession | null): Promise<void> {
+  if (!superseded) return;
+  await upsertOperationTask(DATA_ROOT, superseded.task_path, superseded.task_record);
+  await upsertOperationTrace(DATA_ROOT, superseded.trace_path, superseded.trace_record);
+  await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(superseded.task_path, superseded.task_record));
+  await upsertSqliteOperationTrace(DATA_ROOT, traceEntryFromRecord(superseded.trace_path, superseded.trace_record));
+  await registerTaskSyncPaths({
+    dataRoot: DATA_ROOT,
+    taskId: superseded.task_id,
+    paths: [superseded.task_path, superseded.trace_path],
+    source: "same_session_new_prompt:terminal",
+    approval: "system_verified",
+    terminal: true,
+  });
+  await appendEvent({
+    event: "task_finished",
+    task_id: superseded.task_id,
+    outcome: "blocked",
+    at: superseded.finished_at,
+    trace_path: superseded.trace_path,
+    lease_id: superseded.lease_id,
+    terminal_owner_id: superseded.terminal_owner_id,
+    superseded_by_task_id: superseded.superseded_by_task_id,
+    terminal_action_source: "same_session_new_prompt",
+    terminal_transaction_id: superseded.terminal_transaction.transaction_id,
+    terminal_transaction_journal: superseded.terminal_transaction.journal_path,
+  });
+}
+
 async function finalizePreflightBlockedTask(params: {
   taskId: string;
   taskPath: string;
@@ -1759,6 +1794,11 @@ async function finalizePreflightBlockedTask(params: {
     taskRecord: updated,
     tracePath,
     traceRecord: trace,
+  });
+  await clearActiveSessionTaskPointer({
+    dataRoot: DATA_ROOT,
+    taskId: params.taskId,
+    taskRecord: updated,
   });
   const taskRelativePath = relDataPath(params.taskPath);
   await upsertOperationTask(DATA_ROOT, taskRelativePath, updated);
@@ -2344,7 +2384,12 @@ registerTool(
       lease,
       terminal_owner_id: null,
     };
-    await writeJson(taskPath, record);
+    const sessionTurn = await writeStartedTaskWithSessionPointer({
+      dataRoot: DATA_ROOT,
+      taskPath,
+      taskRecord: record,
+    });
+    await recordSessionTaskSupersession(sessionTurn.superseded);
     const taskRelativePath = relDataPath(taskPath);
     await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
@@ -2649,7 +2694,12 @@ registerTool(
       lease,
       terminal_owner_id: null,
     };
-    await writeJson(taskPath, record);
+    const sessionTurn = await writeStartedTaskWithSessionPointer({
+      dataRoot: DATA_ROOT,
+      taskPath,
+      taskRecord: record,
+    });
+    await recordSessionTaskSupersession(sessionTurn.superseded);
     const taskRelativePath = relDataPath(taskPath);
     await upsertOperationTask(DATA_ROOT, taskRelativePath, record);
     await upsertSqliteOperationTask(DATA_ROOT, taskEntryFromRecord(taskRelativePath, record));
@@ -2896,6 +2946,11 @@ async function finishTaskTerminalWrite(params: {
       taskRecord: updated,
       tracePath,
       traceRecord: trace,
+    });
+    await clearActiveSessionTaskPointerUnlocked({
+      dataRoot: DATA_ROOT,
+      taskId: params.taskId,
+      taskRecord: updated,
     });
     return {
       idempotent: false,

@@ -256,6 +256,32 @@ async function main() {
     assert(files(hookRoot, ".dino/tasks").length === 1, "Repeated hook created duplicate tasks");
     assert(files(hookRoot, ".dino/context-packs").length === 1, "Repeated hook created duplicate Context Packs");
 
+    const continuedHook = runHook(hookRoot, reportRoot, {
+      ...stableInput,
+      prompt: "Continue the same session with a newer corrected user requirement.",
+      turn_id: "hook-turn-2",
+    });
+    assert(continuedHook.context.includes("DinoBrain OS preflight completed for this Codex prompt"), "New user turn missed preflight");
+    assert(files(hookRoot, ".dino/tasks").length === 2, "New user turn did not create exactly one successor task");
+    assert(files(hookRoot, ".dino/context-packs").length === 2, "New user turn did not create a successor Context Pack");
+    assert(files(hookRoot, ".dino/traces").length === 1, "Superseded user turn did not receive exactly one terminal trace");
+
+    const hookTasks = files(hookRoot, ".dino/tasks").map((name) =>
+      JSON.parse(readFileSync(path.join(hookRoot, ".dino", "tasks", name), "utf8")),
+    );
+    const supersededTask = hookTasks.find((task) => task.request === stableInput.prompt);
+    const activeTask = hookTasks.find((task) => task.request === "Continue the same session with a newer corrected user requirement.");
+    assert(supersededTask?.status === "blocked", "Prior unfinished user turn was not truthfully blocked");
+    assert(supersededTask?.block_reason === "superseded_by_new_prompt", "Prior user turn lacks supersession reason");
+    assert(supersededTask?.superseded_by_task_id === activeTask?.task_id, "Supersession did not bind the successor task");
+    assert(supersededTask?.lease?.state === "terminal", "Superseded user turn lease remained active");
+    assert(activeTask?.status === "started" && activeTask?.lease?.lease_id, "Successor user turn is not the sole active leased task");
+    const supersededTrace = JSON.parse(
+      readFileSync(path.join(hookRoot, supersededTask.trace_path.replaceAll("/", path.sep)), "utf8"),
+    );
+    assert(supersededTrace.outcome === "blocked", "Supersession trace invented a successful outcome");
+    assert(supersededTrace.superseded_by_task_id === activeTask.task_id, "Supersession trace lacks successor binding");
+
     for (const [prompt, expected, launchKind, turnId] of [
       [titlePrompt, "title_generation", "codex_desktop", "filtered-title"],
       [ambientPrompt, "ambient_suggestion", "codex_desktop", "filtered-ambient"],
@@ -271,14 +297,39 @@ async function main() {
       assert(result.context.includes(`prompt_classification: ${expected}`), `${expected} hook classification missing`);
       assert(result.context.includes("durable_task_created: false"), `${expected} hook did not report zero durable task`);
     }
-    assert(files(hookRoot, ".dino/tasks").length === 1, "Filtered hook launches polluted durable tasks");
-    assert(files(hookRoot, ".dino/context-packs").length === 1, "Filtered hook launches polluted Context Packs");
+    assert(files(hookRoot, ".dino/tasks").length === 2, "Filtered hook launches polluted durable tasks");
+    assert(files(hookRoot, ".dino/context-packs").length === 2, "Filtered hook launches polluted Context Packs");
     const receiptDir = path.join(hookRoot, ".dino", "tmp", "hook-receipts");
-    assert(existsSync(receiptDir) && readdirSync(receiptDir).length === 5, "Stable hook receipts were not recorded once per turn");
+    assert(existsSync(receiptDir) && readdirSync(receiptDir).length === 6, "Stable hook receipts were not recorded once per turn");
 
-    const task = JSON.parse(readFileSync(path.join(hookRoot, ".dino", "tasks", files(hookRoot, ".dino/tasks")[0]), "utf8"));
+    const task = activeTask;
     assert(task.prompt_classification === "user_interactive", "Durable hook task lacks user-interactive classification");
     assert(task.lease?.lease_id, "Durable hook task lacks lease ownership");
+
+    const hookClient = await connect(hookRoot);
+    try {
+      const finishedHookTask = parseTool(
+        await hookClient.callTool({
+          name: "finish_task",
+          arguments: {
+            task_id: task.task_id,
+            lease_id: task.lease.lease_id,
+            summary: "Successor hook task completed after supersession regression.",
+            outcome: "completed",
+            growth_policy: "trace_only",
+            changed_files: [],
+            decisions: [],
+            next_steps: [],
+            used_memory_paths: [],
+            context_pack_paths: [],
+          },
+        }),
+      );
+      assert(finishedHookTask.trace_path, "Successor hook task did not finish normally");
+    } finally {
+      await hookClient.close();
+    }
+    assert(files(hookRoot, ".dino/tmp/active-session-tasks").length === 0, "Terminal task left an active-session pointer");
 
     console.log(
       JSON.stringify(
@@ -290,6 +341,8 @@ async function main() {
           durable_hook_pack_count: files(hookRoot, ".dino/context-packs").length,
           duplicate_hook_idempotent: true,
           duplicate_mcp_start_idempotent: true,
+          same_session_supersession_verified: true,
+          terminal_pointer_cleanup_verified: true,
           lease_heartbeat_enforced: true,
           terminal_owner_enforced: true,
           repeated_finish_idempotent: true,

@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.23` for this release) and
+  drift from the current authoritative version (`2.2.24` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -153,6 +153,12 @@ The first foundation slice is implemented and remains intentionally
   authoritative OS version on the task/context/preflight/report chain, and
   selects the newest complete valid proof rather than the first matching event.
   An isolated regression rejects both pre-build and newer wrong-version chains.
+- Same-session task supersession now prevents interrupted Codex turns from
+  becoming stale lifecycle debt. A bounded active-session pointer terminalizes
+  only the prior unfinished task in that exact client session as `blocked`,
+  records a successor-bound trace without claiming completion, and is removed
+  by the normal terminal transaction. Regression coverage proves duplicate
+  prompt idempotency, successor binding, truthful blocking, and pointer cleanup.
 
 FND-01 is not fully closed until a full current-vault audit, fresh external
 proof imports, final-generation publication, and release-candidate evidence all
