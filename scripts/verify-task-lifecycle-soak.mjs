@@ -93,25 +93,52 @@ async function main() {
     initRepo(appRoot, "app");
     initRepo(dataRoot, "data");
     const startedAt = new Date("2026-07-01T00:00:00.000Z");
+    const staleTaskPath = path.join(dataRoot, ".dino", "tasks", "task-stale-before-soak.json");
+    writeJson(staleTaskPath, {
+      task_id: "task-stale-before-soak",
+      status: "started",
+      request: "Expired task must still block release soak",
+      launch_kind: "user_prompt",
+      created_at: new Date(startedAt.getTime() - 2 * 60 * 60_000).toISOString(),
+      updated_at: new Date(startedAt.getTime() - 2 * 60 * 60_000).toISOString(),
+      lease: {
+        lease_id: "lease-stale-before-soak",
+        owner_id: "fixture",
+        acquired_at: new Date(startedAt.getTime() - 2 * 60 * 60_000).toISOString(),
+        heartbeat_at: new Date(startedAt.getTime() - 2 * 60 * 60_000).toISOString(),
+        expires_at: new Date(startedAt.getTime() - 60 * 60_000).toISOString(),
+        lease_seconds: 3600,
+        state: "active",
+      },
+    });
+    await expectReject(
+      () => soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt }),
+      /blocker-free healthy baseline/i,
+      "stale baseline task was not blocked",
+    );
+    rmSync(staleTaskPath, { force: true });
     const activeTaskPath = path.join(dataRoot, ".dino", "tasks", "task-active-before-soak.json");
     writeJson(activeTaskPath, {
       task_id: "task-active-before-soak",
       status: "started",
-      request: "Active task must be drained before release soak",
+      request: "Healthy active task may continue during release soak",
       launch_kind: "user_prompt",
       created_at: startedAt.toISOString(),
       updated_at: startedAt.toISOString(),
+      lease: {
+        lease_id: "lease-active-before-soak",
+        owner_id: "fixture",
+        acquired_at: startedAt.toISOString(),
+        heartbeat_at: startedAt.toISOString(),
+        expires_at: new Date(startedAt.getTime() + 48 * 60 * 60_000).toISOString(),
+        lease_seconds: 48 * 60 * 60,
+        state: "active",
+      },
     });
-    await expectReject(
-      () => soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt }),
-      /zero active tasks/i,
-      "active baseline task was not blocked",
-    );
-    rmSync(activeTaskPath, { force: true });
     const begun = await soak.beginTaskLifecycleSoak({ appRoot, dataRoot, localStateRoot, now: startedAt });
     assert(begun.descriptor.status === "running", "soak did not start");
     assert(begun.descriptor.baseline.counts.blockers === 0, "fixture baseline was not healthy");
-    assert(begun.descriptor.baseline.counts.active === 0, "fixture baseline was not fully drained");
+    assert(begun.descriptor.baseline.counts.active === 1, "healthy active baseline task was not preserved");
     if (process.platform === "win32") {
       const keyAcl = execFileSync("icacls", [path.join(localStateRoot, "attestation-ed25519-private.pem")], {
         encoding: "utf8",
@@ -151,6 +178,16 @@ async function main() {
 
     const finishedAt = new Date(startedAt.getTime() + soak.TASK_LIFECYCLE_SOAK_MINIMUM_MS + 60_000);
     const proofAt = new Date(finishedAt.getTime() - 30_000).toISOString();
+    const activeTask = JSON.parse(readFileSync(activeTaskPath, "utf8"));
+    writeJson(activeTaskPath, {
+      ...activeTask,
+      updated_at: proofAt,
+      lease: {
+        ...activeTask.lease,
+        heartbeat_at: proofAt,
+        expires_at: new Date(finishedAt.getTime() + 60 * 60_000).toISOString(),
+      },
+    });
     const agents = ["codex", "claude"];
     const reports = [];
     for (const agent of agents) {
@@ -270,7 +307,7 @@ async function main() {
         "private_key_acl_hardened",
         "clean_app_and_immutable_refs_bound",
         "blocker_free_baseline_and_final_bound",
-        "zero_active_task_baseline_required",
+        "healthy_active_task_baseline_allowed",
         "fresh_codex_and_claude_proofs_required",
         "proof_tasks_created_inside_window",
         "ed25519_attestation_verified",

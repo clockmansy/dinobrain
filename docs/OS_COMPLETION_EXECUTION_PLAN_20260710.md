@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.24` for this release) and
+  drift from the current authoritative version (`2.2.25` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -159,6 +159,10 @@ The first foundation slice is implemented and remains intentionally
   records a successor-bound trace without claiming completion, and is removed
   by the normal terminal transaction. Regression coverage proves duplicate
   prompt idempotency, successor binding, truthful blocking, and pointer cleanup.
+- Internal `<codex_delegation>` work is now filtered before durable task
+  creation. The lifecycle soak requires a blocker-free baseline rather than an
+  idle machine: healthy unexpired active tasks are hash-bound into the baseline,
+  while stale or expired tasks still block begin/finalize.
 
 FND-01 is not fully closed until a full current-vault audit, fresh external
 proof imports, final-generation publication, and release-candidate evidence all

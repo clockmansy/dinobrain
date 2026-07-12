@@ -115,12 +115,15 @@ const ambientPrompt =
   "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project. Optimize for relief: choose suggestions that make the user's life easier.";
 const internalPrompt =
   "## Memory Writing Agent: Phase 2 (Consolidation)\n\nConsolidate raw memories and rollout summaries into a local agent memory folder.";
+const delegationPrompt =
+  "<codex_delegation>\n<source_thread_id>thread-fixture</source_thread_id>\n<input>Review the parent task and return findings.</input>\n</codex_delegation>";
 
 async function main() {
   for (const [request, expected] of [
     [titlePrompt, "title_generation"],
     [ambientPrompt, "ambient_suggestion"],
     [internalPrompt, "internal_codex_service"],
+    [delegationPrompt, "internal_codex_service"],
     ["DinoBrain installer hook handshake", "diagnostic_probe"],
   ]) {
     const launchKind = expected === "diagnostic_probe" ? "installer_handshake" : "codex_desktop";
@@ -151,6 +154,7 @@ async function main() {
       [titlePrompt, "title_generation", "codex_desktop"],
       [ambientPrompt, "ambient_suggestion", "codex_desktop"],
       [internalPrompt, "internal_codex_service", "codex_desktop"],
+      [delegationPrompt, "internal_codex_service", "codex_desktop"],
       ["DinoBrain installer hook handshake", "diagnostic_probe", "installer_handshake"],
     ]) {
       const result = parseTool(
@@ -286,6 +290,7 @@ async function main() {
       [titlePrompt, "title_generation", "codex_desktop", "filtered-title"],
       [ambientPrompt, "ambient_suggestion", "codex_desktop", "filtered-ambient"],
       [internalPrompt, "internal_codex_service", "codex_desktop", "filtered-internal"],
+      [delegationPrompt, "internal_codex_service", "codex_desktop", "filtered-delegation"],
       ["DinoBrain installer hook handshake", "diagnostic_probe", "installer_handshake", "filtered-diagnostic"],
     ]) {
       const result = runHook(
@@ -300,7 +305,7 @@ async function main() {
     assert(files(hookRoot, ".dino/tasks").length === 2, "Filtered hook launches polluted durable tasks");
     assert(files(hookRoot, ".dino/context-packs").length === 2, "Filtered hook launches polluted Context Packs");
     const receiptDir = path.join(hookRoot, ".dino", "tmp", "hook-receipts");
-    assert(existsSync(receiptDir) && readdirSync(receiptDir).length === 6, "Stable hook receipts were not recorded once per turn");
+    assert(existsSync(receiptDir) && readdirSync(receiptDir).length === 7, "Stable hook receipts were not recorded once per turn");
 
     const task = activeTask;
     assert(task.prompt_classification === "user_interactive", "Durable hook task lacks user-interactive classification");
@@ -343,6 +348,7 @@ async function main() {
           duplicate_mcp_start_idempotent: true,
           same_session_supersession_verified: true,
           terminal_pointer_cleanup_verified: true,
+          codex_delegation_filtered: true,
           lease_heartbeat_enforced: true,
           terminal_owner_enforced: true,
           repeated_finish_idempotent: true,

@@ -70,6 +70,7 @@ const AMBIENT_PATTERNS = [
 ];
 
 const INTERNAL_SERVICE_PATTERNS = [
+  /<codex_delegation>\s*<source_thread_id>/i,
   /memory writing agent:\s*phase\s*2/i,
   /consolidate raw memories and rollout summaries/i,
   /overview:\s*generate\s+0\s*(?:to|-)\s*3\s+hypotheses/i,
