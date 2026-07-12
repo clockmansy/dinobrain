@@ -71,6 +71,17 @@ function Download-Verified {
   Assert-FileHash -Path $Destination -Expected $Sha256 -Label $Label
 }
 
+function Expand-ZipFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$ArchivePath,
+    [Parameter(Mandatory = $true)][string]$DestinationPath
+  )
+  if (Test-Path -LiteralPath $DestinationPath) { throw "ZIP destination already exists: $DestinationPath" }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DestinationPath) | Out-Null
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
+}
+
 function Quote-ProcessArgument {
   param([string]$Value)
   if ($Value -notmatch '[\s"]') { return $Value }
@@ -149,7 +160,7 @@ try {
   $installerZip = Join-Path $workRoot "DinoBrainSetup.zip"
   Download-Verified -Uri ([string]$script:Config.installer_uri) -Destination $installerZip -Sha256 ([string]$script:Config.installer_sha256) -Label "DinoBrain release"
   $releaseRoot = Join-Path $workRoot "release"
-  Expand-Archive -LiteralPath $installerZip -DestinationPath $releaseRoot -Force
+  Expand-ZipFile -ArchivePath $installerZip -DestinationPath $releaseRoot
   $installerExe = Get-ChildItem -LiteralPath $releaseRoot -Recurse -Filter "DinoBrainSetup.exe" | Select-Object -First 1
   if ($null -eq $installerExe) { throw "DinoBrainSetup.exe is missing from the verified release ZIP." }
   $installScript = Join-Path $workRoot "install.ps1"

@@ -35,6 +35,7 @@ function Invoke-PreparedFixture {
     "-GitInstallerSha256", ("d" * 64),
     "-CodexVersion", "0.144.1",
     "-ClaudeVersion", "2.1.207",
+    "-DisablePrivateAutoDetect",
     "-PrepareOnly", "-AllowReleaseMismatch", "-Json"
   )
   if (-not [string]::IsNullOrWhiteSpace($BackupPath)) { $arguments += @("-PrivateBackupPath", $BackupPath) }
@@ -62,6 +63,7 @@ function Invoke-FailedLaunchFixture {
     "-GitInstallerSha256", ("d" * 64),
     "-CodexVersion", "0.144.1",
     "-ClaudeVersion", "2.1.207",
+    "-DisablePrivateAutoDetect",
     "-SandboxExecutable", (Join-Path $OutputRoot "missing-windows\WindowsSandbox.exe"),
     "-PrivateBackupPath", $BackupPath,
     "-RecoveryKeyPath", $KeyPath,
@@ -137,6 +139,7 @@ try {
   $bootstrapText = [System.IO.File]::ReadAllText($bootstrap)
   foreach ($needle in @(
     "Assert-FileHash",
+    "System.IO.Compression.ZipFile",
     "--extract-install-script",
     "@openai/codex@",
     "@anthropic-ai/claude-code@",
@@ -146,6 +149,7 @@ try {
   )) {
     Assert-True ($bootstrapText.Contains($needle)) "Guest bootstrap is missing required proof behavior: $needle"
   }
+  Assert-True (-not $bootstrapText.Contains("Expand-Archive")) "Guest bootstrap still depends on the incomplete Windows Sandbox Archive module."
   Assert-True ($bootstrapText -notmatch "(?i)(github_pat_|ghp_|sk-[A-Za-z0-9])") "Guest bootstrap contains a credential-like literal."
 
   [ordered]@{

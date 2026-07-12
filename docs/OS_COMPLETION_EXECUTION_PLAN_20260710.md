@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.14` for this release) and
+  drift from the current authoritative version (`2.2.15` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -366,7 +366,7 @@ no missing tools, and `release_parity_verified: true`. Proof SHA-256 values are
 for Codex and
 `1636160353d5b856d80cc1c7bf6ec0733f6323c724e933aa6cca40d7f7ab7fd3`
 for Claude. A fresh post-build Codex prompt also passed the ordered live-hook
-verifier with OS version `2.2.14`. LOOP-03 current-machine acceptance is met;
+verifier with OS version `2.2.15`. LOOP-03 current-machine acceptance is met;
 the DIST-02 clean Windows proof remains a separate global completion gate.
 See `docs/DIRECT_MCP_PROOF.md` for the artifact contract and trust boundary.
 

@@ -17,6 +17,7 @@ param(
   [string]$CodexVersion = "",
   [string]$ClaudeVersion = "",
   [string]$SandboxExecutable = "",
+  [switch]$DisablePrivateAutoDetect,
   [switch]$AllowReleaseMismatch,
   [switch]$PrepareOnly,
   [switch]$NoWait,
@@ -46,6 +47,37 @@ function Write-JsonAtomic {
   $tempPath = "$Path.tmp-$([guid]::NewGuid().ToString('N'))"
   Write-Utf8Text -Path $tempPath -Text (($Value | ConvertTo-Json -Depth 12) + "`n")
   Move-Item -LiteralPath $tempPath -Destination $Path -Force
+}
+
+function Remove-DirectoryWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$AllowedRoot,
+    [int]$Attempts = 60,
+    [int]$DelayMilliseconds = 500
+  )
+  $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+  $resolvedRoot = [System.IO.Path]::GetFullPath($AllowedRoot).TrimEnd([char[]]@('\', '/'))
+  $rootPrefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $resolvedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to remove a directory outside the proof output root: $resolvedPath"
+  }
+  $lastError = ""
+  for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
+    if (-not (Test-Path -LiteralPath $resolvedPath)) {
+      return [pscustomobject]@{ ok = $true; attempts = $attempt - 1; error = "" }
+    }
+    try {
+      Remove-Item -LiteralPath $resolvedPath -Recurse -Force -ErrorAction Stop
+      if (-not (Test-Path -LiteralPath $resolvedPath)) {
+        return [pscustomobject]@{ ok = $true; attempts = $attempt; error = "" }
+      }
+    } catch {
+      $lastError = $_.Exception.Message
+    }
+    if ($attempt -lt $Attempts) { Start-Sleep -Milliseconds $DelayMilliseconds }
+  }
+  return [pscustomobject]@{ ok = $false; attempts = $Attempts; error = $lastError }
 }
 
 function Invoke-PublicJson {
@@ -153,7 +185,7 @@ $exchangeRoot = Join-Path $runRoot "exchange"
 $privateRoot = Join-Path $runRoot "private-input"
 New-Item -ItemType Directory -Force -Path $exchangeRoot | Out-Null
 
-if ([string]::IsNullOrWhiteSpace($PrivateBackupPath) -and [string]::IsNullOrWhiteSpace($RecoveryKeyPath)) {
+if (-not $DisablePrivateAutoDetect -and [string]::IsNullOrWhiteSpace($PrivateBackupPath) -and [string]::IsNullOrWhiteSpace($RecoveryKeyPath)) {
   $documents = [Environment]::GetFolderPath("MyDocuments")
   if (-not [string]::IsNullOrWhiteSpace($documents)) {
     $latestBackup = Get-ChildItem -LiteralPath (Join-Path $documents "DinoBrain Backups") -Filter "*.dinobrain" -File -ErrorAction SilentlyContinue |
@@ -279,6 +311,7 @@ Write-JsonAtomic -Path (Join-Path $runRoot "host-launch-status.json") -Value $re
 Write-JsonAtomic -Path (Join-Path $OutputRoot "latest.json") -Value $result
 
 if (-not $PrepareOnly) {
+  $privateCleanupError = ""
   try {
     if (-not (Test-Path -LiteralPath $sandboxExe -PathType Leaf)) { throw "Windows Sandbox is not installed: $sandboxExe" }
     $process = Start-Process -FilePath $sandboxExe -ArgumentList ('"' + $wsbPath + '"') -PassThru
@@ -298,11 +331,20 @@ if (-not $PrepareOnly) {
     throw
   } finally {
     if ($privateAvailable -and -not $NoWait -and (Test-Path -LiteralPath $privateRoot)) {
-      Remove-Item -LiteralPath $privateRoot -Recurse -Force
-      $result["private_input_removed"] = $true
+      $cleanup = Remove-DirectoryWithRetry -Path $privateRoot -AllowedRoot $OutputRoot
+      $result["private_input_removed"] = [bool]$cleanup.ok
+      $result["private_input_cleanup_attempts"] = [int]$cleanup.attempts
+      if (-not $cleanup.ok) {
+        $privateCleanupError = [string]$cleanup.error
+        $result["private_input_cleanup_error"] = $privateCleanupError
+        if ($result["status"] -ne "launch_failed") { $result["status"] = "private_cleanup_failed" }
+      }
     }
     Write-JsonAtomic -Path (Join-Path $runRoot "host-launch-status.json") -Value $result
     Write-JsonAtomic -Path (Join-Path $OutputRoot "latest.json") -Value $result
+  }
+  if (-not [string]::IsNullOrWhiteSpace($privateCleanupError)) {
+    throw "Sandbox closed, but temporary private-input cleanup failed: $privateCleanupError"
   }
 }
 
