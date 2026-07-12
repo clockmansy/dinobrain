@@ -301,6 +301,7 @@ function Remove-DinoBrainLaunchers {
     "DinoBrain Codex MCP Proof.cmd",
     "DinoBrain Claude MCP Proof.cmd",
     "DinoBrain Recovery Equivalence Proof.cmd",
+    "DinoBrain Windows Sandbox Proof.cmd",
     "DinoBrain Private Backup.cmd",
     "DinoBrain Private Restore.cmd",
     "DinoBrain Uninstall Everything.cmd"

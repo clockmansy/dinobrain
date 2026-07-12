@@ -520,6 +520,7 @@ function Get-DinoBrainInstallerLauncherNames {
     "DinoBrain Codex MCP Proof.cmd",
     "DinoBrain Claude MCP Proof.cmd",
     "DinoBrain Recovery Equivalence Proof.cmd",
+    "DinoBrain Windows Sandbox Proof.cmd",
     "DinoBrain Private Backup.cmd",
     "DinoBrain Private Restore.cmd",
     "DinoBrain Uninstall Everything.cmd"
@@ -1967,6 +1968,36 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript" -
   return $launcherPaths
 }
 
+function New-DinoBrainWindowsSandboxProofLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [Parameter(Mandatory = $true)][string]$AppPath
+  )
+
+  $proofScript = Join-Path $AppPath "scripts\start-windows-sandbox-clean-machine-proof.ps1"
+  if (-not (Test-Path -LiteralPath $proofScript)) {
+    Write-Warning "Windows Sandbox proof script not found: $proofScript"
+    return @()
+  }
+
+  $launcherPaths = @(
+    (Join-Path $InstallRoot "DinoBrain Windows Sandbox Proof.cmd"),
+    (Join-Path $AppPath "DinoBrain Windows Sandbox Proof.cmd")
+  )
+  $content = @"
+@echo off
+setlocal
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$proofScript"
+"@
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  foreach ($launcherPath in $launcherPaths) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $launcherPath) | Out-Null
+    [System.IO.File]::WriteAllText($launcherPath, $content, $utf8NoBom)
+    Write-Host "Windows Sandbox proof launcher created: $launcherPath"
+  }
+  return $launcherPaths
+}
+
 function Invoke-DinoBrainCodexManagedHookInstall {
   param(
     [Parameter(Mandatory = $true)][string]$AppPath,
@@ -2471,6 +2502,7 @@ if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig -and -not $c
 $liveProofLaunchers = New-DinoBrainLiveProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 $directMcpProofLaunchers = New-DinoBrainDirectMcpProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $cleanMachineProofLaunchers = New-DinoBrainCleanMachineProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
+$windowsSandboxProofLaunchers = New-DinoBrainWindowsSandboxProofLauncher -InstallRoot $InstallRoot -AppPath $AppDir
 $privateRecoveryLaunchers = New-DinoBrainPrivateRecoveryLaunchers -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $uninstallLaunchers = New-DinoBrainUninstallLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -ToolsDir $ToolsDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -ManagedHookDir $CodexManagedHookDir -ClaudeCommand $ClaudeCommand
 
@@ -2551,6 +2583,9 @@ foreach ($launcher in $directMcpProofLaunchers) {
 }
 foreach ($launcher in $cleanMachineProofLaunchers) {
   Write-Host "Recovery-equivalence proof launcher: $launcher"
+}
+foreach ($launcher in $windowsSandboxProofLaunchers) {
+  Write-Host "Windows Sandbox proof launcher: $launcher"
 }
 foreach ($launcher in $privateRecoveryLaunchers) {
   Write-Host "Private recovery launcher: $launcher"

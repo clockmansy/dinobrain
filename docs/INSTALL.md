@@ -42,6 +42,8 @@ After install, the installer creates a double-click launcher in both:
 <install-root>\dinobrain\DinoBrain Private Restore.cmd
 <install-root>\DinoBrain Recovery Equivalence Proof.cmd
 <install-root>\dinobrain\DinoBrain Recovery Equivalence Proof.cmd
+<install-root>\DinoBrain Windows Sandbox Proof.cmd
+<install-root>\dinobrain\DinoBrain Windows Sandbox Proof.cmd
 ```
 
 Run either `DinoBrain Observatory.cmd` launcher to open the live Observatory at `http://127.0.0.1:3847/`. The page includes a live LLM Wiki graph view backed by the SQLite/JSON Wiki index, plus task, context pack, trace, and memory audit logs.
@@ -64,6 +66,17 @@ Claude is absent, Git used the degraded ZIP fallback, the restore belongs to a
 different commit, or any search/behavior/graph/sync check fails. Use
 `npm run proof:clean-machine:codex` only as a diagnostic on a Codex-only PC; it
 can never count as release equivalence.
+
+If no separate clean PC is available, run `DinoBrain Windows Sandbox
+Proof.cmd` or `npm run proof:clean-machine:sandbox`. The host launcher resolves
+the selected release asset, exact app/data commits, PortableGit asset, and
+Codex/Claude package versions before creating the WSB. The Sandbox maps only a
+writable evidence exchange plus optional read-only private restore inputs. It
+verifies every download, extracts the embedded installer, performs clean install
+and reinstall, installs both clients, runs `installer:verify:matrix`, and creates
+four numbered desktop steps for restore, client sign-in, and final proof. A
+physical second PC is not required, but missing backup/key inputs or skipped
+client sign-in still leaves the release hard gate pending.
 
 Run `DinoBrain Private Backup.cmd` to create an authenticated encrypted archive
 of local-only conversations, private sources, attachments, local event evidence,
@@ -252,7 +265,8 @@ claude mcp add `
 18. Creates `DinoBrain Codex Live Proof.cmd` launchers that combine stale-process restart, hook trust guidance, a unique proof prompt, and live `codex_desktop` verification.
 19. Creates `DinoBrain Private Backup.cmd` and `DinoBrain Private Restore.cmd` launchers for encrypted local-only recovery. Restore writes a local-only authenticated receipt under `%LOCALAPPDATA%\DinoBrain\proofs\private-restore\latest.json`.
 20. Creates `DinoBrain Recovery Equivalence Proof.cmd` to bind immutable install, encrypted restore, both clients, retrieval, behavior, Observatory, and scoped sync evidence into one signed run.
-21. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
+21. Creates `DinoBrain Windows Sandbox Proof.cmd` to produce clean-machine evidence without a second physical PC.
+22. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
 `hooks:data:verify` proves the data repo Git hook is configured and blocks unreviewed auto-generated accepted memories plus local-only event/index paths at commit/push time. `verify:os` validates the managed Codex hook, lean environment values, optional fallback exclusivity, MCP tools, compounding, retrieval, and sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the wrapper smoke test.
 

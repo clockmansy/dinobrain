@@ -78,6 +78,7 @@ npm run installer:verify:native-result
 npm run installer:verify:transaction
 npm run clean-machine:verify
 npm run installer:verify:matrix
+npm run installer:verify:sandbox-proof
 npm run codex:hooks:managed
 npm run installer:win
 npm run release:win -- -ReplaceAsset
@@ -233,6 +234,15 @@ required capability receipts. `npm run installer:verify:matrix` runs
 real isolated clean install, reinstall, update, after-config rollback, and normal
 uninstall phases. It samples child-process-tree peak working set and does not
 retain full install logs in memory. See `docs/TRANSACTIONAL_INSTALLER.md`.
+
+`npm run installer:verify:sandbox-proof` prepares disposable WSB fixtures
+without launching a VM. It verifies immutable app/data refs, SHA-256-bound
+installer and PortableGit downloads, pinned client versions, guest-bootstrap
+hash binding, a writable evidence-only exchange, read-only private inputs, and
+credential exclusion. `npm run proof:clean-machine:sandbox` performs the real
+Windows Sandbox run; preparation alone cannot satisfy the hard gate because
+private restore and both real-client challenges must still produce the signed
+clean-machine evidence bundle.
 
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one

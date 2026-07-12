@@ -117,6 +117,15 @@ memory; these launchers separately protect raw conversations, private files, and
 client configuration with authenticated encryption. Keep the recovery key on a
 different secure device. See `docs/PRIVATE_BACKUP_RECOVERY.md`.
 
+When another physical PC is unavailable, run `DinoBrain Windows Sandbox
+Proof.cmd`. It creates a disposable clean Windows environment from an immutable
+release ZIP, exact app/data commits, verified PortableGit, and pinned Codex and
+Claude packages. Installation and the isolated install/update/rollback/uninstall
+matrix are automatic; only private restore and the two client sign-ins/challenge
+prompts remain interactive. Public-safe proof artifacts return through a mapped
+exchange while recovery inputs are read-only and their temporary host copies are
+removed when Sandbox closes.
+
 ## MCP Development
 
 The MCP server skeleton lives in `src/index.ts`.

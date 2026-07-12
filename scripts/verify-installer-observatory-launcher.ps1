@@ -29,6 +29,7 @@ try {
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-client-mcp-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-clean-machine-equivalence-proof.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-windows-sandbox-clean-machine-proof.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\install-codex-managed-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-backup.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-private-restore.ps1"), "# test`n")
@@ -112,6 +113,17 @@ try {
     }
     if (-not $text.Contains($vaultPath) -or -not $text.Contains($appPath) -or -not $text.Contains($nodeRoot)) {
       throw "Recovery-equivalence launcher does not contain expected app/data/node paths: $launcher"
+    }
+  }
+
+  $windowsSandboxProofLaunchers = @(New-DinoBrainWindowsSandboxProofLauncher -InstallRoot $installRoot -AppPath $appPath)
+  if ($windowsSandboxProofLaunchers.Count -ne 2) {
+    throw "Expected 2 Windows Sandbox proof launchers, got $($windowsSandboxProofLaunchers.Count)"
+  }
+  foreach ($launcher in $windowsSandboxProofLaunchers) {
+    $text = [System.IO.File]::ReadAllText($launcher)
+    if ($text -notmatch "start-windows-sandbox-clean-machine-proof\.ps1") {
+      throw "Windows Sandbox proof launcher is incomplete: $launcher"
     }
   }
 

@@ -485,6 +485,7 @@ the current-vault artifacts named above.
 | Installer path | `npm run installer:verify:path-ux` | HG-11 path/reinstall behavior |
 | Hook approval | `npm run installer:verify:approval` | HG-01/HG-11 trust flow |
 | Observatory launcher | `npm run installer:verify:launchers` | HG-08/HG-11 launcher evidence |
+| Windows Sandbox proof | `npm run installer:verify:sandbox-proof` | HG-09/HG-11 disposable clean-machine evidence path |
 | Managed hook | `npm run installer:verify:managed-hook` | HG-01/HG-11 managed hook evidence |
 | Semantic install | `npm run installer:verify:semantic-rag` | HG-04/HG-11 semantic setup evidence |
 | User hook merge | `npm run installer:verify:hooks` | HG-01/HG-11 idempotent coexistence with existing hooks |
@@ -583,6 +584,7 @@ $commands = @(
   'npm run installer:verify:path-ux',
   'npm run installer:verify:approval',
   'npm run installer:verify:launchers',
+  'npm run installer:verify:sandbox-proof',
   'npm run installer:verify:managed-hook',
   'npm run installer:verify:semantic-rag',
   'npm run installer:verify:hooks',

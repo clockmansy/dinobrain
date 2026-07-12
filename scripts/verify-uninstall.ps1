@@ -42,7 +42,7 @@ try {
   [System.IO.File]::WriteAllText($installerResultPath, "{`"status`":`"complete`"}`n", [System.Text.UTF8Encoding]::new($false))
 
   foreach ($launcherRoot in @($installRoot, $appDir)) {
-    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Codex MCP Proof.cmd", "DinoBrain Claude MCP Proof.cmd", "DinoBrain Recovery Equivalence Proof.cmd", "DinoBrain Private Backup.cmd", "DinoBrain Private Restore.cmd", "DinoBrain Uninstall Everything.cmd")) {
+    foreach ($launcherName in @("DinoBrain Observatory.cmd", "DinoBrain Hook Diagnose.cmd", "DinoBrain Codex Hook Approval.cmd", "DinoBrain Codex Managed Hook Admin.cmd", "DinoBrain Codex Live Proof.cmd", "DinoBrain Codex MCP Proof.cmd", "DinoBrain Claude MCP Proof.cmd", "DinoBrain Recovery Equivalence Proof.cmd", "DinoBrain Windows Sandbox Proof.cmd", "DinoBrain Private Backup.cmd", "DinoBrain Private Restore.cmd", "DinoBrain Uninstall Everything.cmd")) {
       [System.IO.File]::WriteAllText((Join-Path $launcherRoot $launcherName), "@echo off`r`n", [System.Text.UTF8Encoding]::new($false))
     }
   }

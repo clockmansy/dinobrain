@@ -92,6 +92,7 @@ private backups, and runtime state. `npm run uninstall:verify` proves both modes
 npm run installer:verify:native-result
 npm run installer:verify:transaction
 npm run installer:verify:matrix
+npm run installer:verify:sandbox-proof
 npm run uninstall:verify
 ```
 
@@ -109,6 +110,14 @@ the target PC, binds fresh Codex and Claude direct MCP proofs to matching live
 pre-response events, runs capability checks sequentially, and emits a signed
 public-safe evidence record. The Ed25519 private key and raw command logs never
 enter the data repository.
+
+`DinoBrain Windows Sandbox Proof.cmd` supplies the external clean-Windows layer
+when no second physical machine is available. The host prepares a disposable
+WSB from hash-bound release inputs and maps only an evidence exchange plus
+optional read-only recovery inputs. The guest runs the transactional installer
+and matrix from scratch, installs pinned Codex/Claude clients, and exports only
+public-safe signed evidence. Sandbox preparation alone is not equivalence;
+private restore and both client challenge proofs must still pass.
 
 These local proofs do not replace the external clean-Windows Codex and Claude
 live-client evidence required by HG-11.

@@ -153,6 +153,7 @@ export const COMPLETION_COMMANDS: CompletionCommandSpec[] = [
   command("installer:verify:path-ux", ["HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:approval", ["HG-01", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:launchers", ["HG-08", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
+  command("installer:verify:sandbox-proof", ["HG-09", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:managed-hook", ["HG-01", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:semantic-rag", ["HG-04", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
   command("installer:verify:hooks", ["HG-01", "HG-11"], { timeout_ms: LONG_TIMEOUT_MS }),
