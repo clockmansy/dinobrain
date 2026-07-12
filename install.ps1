@@ -150,6 +150,39 @@ function Test-Command {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Expand-DinoBrainZip {
+  param(
+    [Parameter(Mandatory = $true)][string]$ArchivePath,
+    [Parameter(Mandatory = $true)][string]$DestinationPath
+  )
+
+  $archive = [System.IO.Path]::GetFullPath($ArchivePath)
+  $destination = [System.IO.Path]::GetFullPath($DestinationPath)
+  if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "ZIP archive not found: $archive" }
+  New-Item -ItemType Directory -Force -Path $destination | Out-Null
+  $destinationPrefix = $destination.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+  try {
+    foreach ($entry in $zip.Entries) {
+      if ([string]::IsNullOrWhiteSpace([string]$entry.FullName)) { continue }
+      $entryPath = ([string]$entry.FullName).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+      $target = [System.IO.Path]::GetFullPath((Join-Path $destination $entryPath))
+      if (-not $target.StartsWith($destinationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "ZIP entry escapes the destination root: $($entry.FullName)"
+      }
+      if ([string]::IsNullOrEmpty([string]$entry.Name)) {
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        continue
+      }
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+      [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+    }
+  } finally {
+    $zip.Dispose()
+  }
+}
+
 function Invoke-NativeCommand {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -256,7 +289,7 @@ function Install-GitHubArchive {
     } finally {
       $ProgressPreference = $oldProgress
     }
-    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    Expand-DinoBrainZip -ArchivePath $zipPath -DestinationPath $extractDir
     $roots = @(Get-ChildItem -LiteralPath $extractDir -Directory)
     if ($roots.Count -ne 1) {
       throw "Unexpected GitHub archive shape for $Name."
@@ -1209,7 +1242,7 @@ function Install-PortableNode {
     $ProgressPreference = $oldProgress
   }
 
-  Expand-Archive -Path $zipPath -DestinationPath $DestinationRoot -Force
+  Expand-DinoBrainZip -ArchivePath $zipPath -DestinationPath $DestinationRoot
   if (-not (Test-Path -LiteralPath $nodeExe)) {
     throw "Portable Node installation failed: $nodeExe"
   }

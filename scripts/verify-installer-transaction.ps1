@@ -88,6 +88,42 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-installer-transaction-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  Add-Type -AssemblyName System.IO.Compression
+  $zipSource = Join-Path $temp "zip-source"
+  $zipPath = Join-Path $temp "zip-fixture.zip"
+  $zipDestination = Join-Path $temp "zip-destination"
+  New-Item -ItemType Directory -Force -Path $zipSource | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $zipSource "payload.txt"), "verified zip payload", [System.Text.UTF8Encoding]::new($false))
+  [System.IO.Compression.ZipFile]::CreateFromDirectory($zipSource, $zipPath)
+  Expand-DinoBrainZip -ArchivePath $zipPath -DestinationPath $zipDestination
+  [System.IO.File]::WriteAllText((Join-Path $zipDestination "payload.txt"), "stale", [System.Text.UTF8Encoding]::new($false))
+  Expand-DinoBrainZip -ArchivePath $zipPath -DestinationPath $zipDestination
+  if ([System.IO.File]::ReadAllText((Join-Path $zipDestination "payload.txt")) -ne "verified zip payload") {
+    throw "Module-independent ZIP extraction did not overwrite stale content."
+  }
+
+  $maliciousZipPath = Join-Path $temp "zip-slip-fixture.zip"
+  $maliciousStream = [System.IO.File]::Open($maliciousZipPath, [System.IO.FileMode]::CreateNew)
+  $maliciousZip = [System.IO.Compression.ZipArchive]::new($maliciousStream, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+  try {
+    $entry = $maliciousZip.CreateEntry("../escaped.txt")
+    $writer = [System.IO.StreamWriter]::new($entry.Open())
+    try { $writer.Write("blocked") } finally { $writer.Dispose() }
+  } finally {
+    $maliciousZip.Dispose()
+    $maliciousStream.Dispose()
+  }
+  $zipSlipBlocked = $false
+  try {
+    Expand-DinoBrainZip -ArchivePath $maliciousZipPath -DestinationPath (Join-Path $temp "zip-slip-destination")
+  } catch {
+    if ($_.Exception.Message -match "escapes the destination root") { $zipSlipBlocked = $true } else { throw }
+  }
+  if (-not $zipSlipBlocked -or (Test-Path -LiteralPath (Join-Path $temp "escaped.txt"))) {
+    throw "Module-independent ZIP extraction did not block zip-slip."
+  }
+
   $appRemote = New-TestRemote -Base $temp -Name "app"
   $dataRemote = New-TestRemote -Base $temp -Name "data"
   $installRoot = Join-Path $temp "existing-install"

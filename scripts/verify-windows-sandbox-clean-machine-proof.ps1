@@ -138,6 +138,7 @@ try {
   Invoke-FailedLaunchFixture -OutputRoot (Join-Path $temp "launch-failure") -BackupPath $backup -KeyPath $key
 
   $bootstrapText = [System.IO.File]::ReadAllText($bootstrap)
+  $installerText = [System.IO.File]::ReadAllText((Join-Path $root "install.ps1"))
   foreach ($needle in @(
     "Assert-FileHash",
     "System.IO.Compression.ZipFile",
@@ -151,6 +152,8 @@ try {
     Assert-True ($bootstrapText.Contains($needle)) "Guest bootstrap is missing required proof behavior: $needle"
   }
   Assert-True (-not $bootstrapText.Contains("Expand-Archive")) "Guest bootstrap still depends on the incomplete Windows Sandbox Archive module."
+  Assert-True ($installerText.Contains("function Expand-DinoBrainZip")) "Installer is missing its module-independent ZIP extractor."
+  Assert-True (-not $installerText.Contains("Expand-Archive")) "Installer still depends on the incomplete Windows Sandbox Archive module."
   Assert-True ($bootstrapText -notmatch "(?i)(github_pat_|ghp_|sk-[A-Za-z0-9])") "Guest bootstrap contains a credential-like literal."
 
   [ordered]@{
