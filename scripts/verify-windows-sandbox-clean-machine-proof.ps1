@@ -94,6 +94,7 @@ function Assert-PreparedRun {
   Assert-True ($config.app_commit -eq ("b" * 40) -and $config.data_commit -eq ("c" * 40)) "Immutable commits were not preserved."
   Assert-True ($config.installer_sha256 -eq ("a" * 64) -and $config.git_installer_sha256 -eq ("d" * 64)) "Download hashes were not preserved."
   Assert-True ($config.codex_version -eq "0.144.1" -and $config.claude_version -eq "2.1.207") "Pinned client versions were not preserved."
+  Assert-True ($config.install_root -eq "C:\DinoBrainHome") "Sandbox install root collides with the installer app-directory normalization rule."
   Assert-True ($config.private_restore_available -eq $ExpectPrivate) "Private restore availability is wrong."
   $configText = [System.IO.File]::ReadAllText($Result.config_path)
   Assert-True ($configText -notmatch "(?i)(github_token|gh_token|api[_-]?key|password)") "Sandbox config contains a credential field."

@@ -289,7 +289,7 @@ The Sandbox is disposable. Do not store credentials in C:\DinoBrainExchange.
   Write-GuestStatus -Status "ready_for_login" -Message "Pinned install, reinstall, client install, and isolated matrix passed." -Extra @{
     app_commit = [string]$script:Config.app_commit
     data_commit = [string]$script:Config.data_commit
-    install_result = "C:\DinoBrain\dinobrain-install-result.json"
+    install_result = [string]$resultPath
     private_restore_available = [bool]$script:Config.private_restore_available
   }
   Start-Process explorer.exe -ArgumentList ('"' + $desktop + '"') | Out-Null

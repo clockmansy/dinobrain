@@ -247,7 +247,7 @@ $config = [ordered]@{
   private_restore_available = [bool]$privateAvailable
   guest_private_backup = $(if ($privateAvailable) { "C:\DinoBrainPrivateInputs\backup.dinobrain" } else { $null })
   guest_recovery_key = $(if ($privateAvailable) { "C:\DinoBrainPrivateInputs\recovery-key.txt" } else { $null })
-  install_root = "C:\DinoBrain"
+  install_root = "C:\DinoBrainHome"
   client_root = "C:\DinoBrainClients"
 }
 $configPath = Join-Path $exchangeRoot "sandbox-proof-config.json"
