@@ -145,6 +145,7 @@ function runPowerShellHookWithoutNode(input, dataRoot, reportRoot) {
 
 function runPowerShellHookTimeout(input, dataRoot, reportRoot) {
   assert(process.platform === "win32", "PowerShell wrapper timeout verification is Windows-only.");
+  const processMarker = `dinobrain-hook-timeout-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const env = {
     ...process.env,
     DINOBRAIN_DATA_DIR: dataRoot,
@@ -155,7 +156,37 @@ function runPowerShellHookTimeout(input, dataRoot, reportRoot) {
     DINOBRAIN_HOOK_IMPORT_SESSION: "0",
     DINOBRAIN_HOOK_AUTO_SYNC: "0",
     DINOBRAIN_HOOK_TIMEOUT_SECONDS: "1",
-    DINOBRAIN_HOOK_TEST_DELAY_MS: "2500",
+    DINOBRAIN_HOOK_TEST_DELAY_AFTER_CONNECT_MS: "2500",
+    DINOBRAIN_HOOK_PROCESS_MARKER: processMarker,
+  };
+  const result = spawnSync(
+    powershellCommand(),
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", psHookPath],
+    {
+      cwd: root,
+      env,
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  return { ...result, processMarker };
+}
+
+function runPowerShellHookSoftTimeoutAfterTask(input, dataRoot, reportRoot) {
+  assert(process.platform === "win32", "PowerShell wrapper cooperative-timeout verification is Windows-only.");
+  const env = {
+    ...process.env,
+    DINOBRAIN_DATA_DIR: dataRoot,
+    DINOBRAIN_HOOK_REPORT_DIR: reportRoot,
+    DINOBRAIN_HOOK_PROJECT: "dinobrain-hook-soft-timeout-verify",
+    DINOBRAIN_NODE_EXE: process.execPath,
+    DINOBRAIN_HOOK_LAUNCH_KIND: "verification_fixture",
+    DINOBRAIN_HOOK_IMPORT_SESSION: "0",
+    DINOBRAIN_HOOK_AUTO_SYNC: "0",
+    DINOBRAIN_HOOK_TIMEOUT_SECONDS: "6",
+    DINOBRAIN_HOOK_SOFT_TIMEOUT_MS: "2500",
+    DINOBRAIN_HOOK_TEST_DELAY_AFTER_BEGIN_MS: "5000",
   };
   return spawnSync(
     powershellCommand(),
@@ -168,6 +199,21 @@ function runPowerShellHookTimeout(input, dataRoot, reportRoot) {
       windowsHide: true,
     },
   );
+}
+
+function countMarkedNodeProcesses(processMarker) {
+  const escaped = processMarker.replace(/'/g, "''");
+  const command = [
+    `$marker = '${escaped}'`,
+    "$count = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -like ('*' + $marker + '*') }).Count",
+    "[Console]::Out.Write($count)",
+  ].join("; ");
+  const result = spawnSync(powershellCommand(), ["-NoProfile", "-Command", command], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  assert(result.status === 0, `Could not inspect timeout child processes: ${result.stderr}`);
+  return Number(result.stdout.trim() || "0");
 }
 
 function hookDedupeKey(input, request) {
@@ -185,7 +231,8 @@ async function verifyHook() {
   assert(existsSync(serverPath), "dist/index.js is missing. Run npm run build first.");
   assert(existsSync(hookConfigPath), ".codex/hooks.json is missing.");
   const hookConfig = readJson(hookConfigPath);
-  assert(hookConfig.hooks?.UserPromptSubmit, ".codex/hooks.json does not configure UserPromptSubmit.");
+  const repoHookText = JSON.stringify(hookConfig.hooks?.UserPromptSubmit ?? []);
+  assert(!/dinobrain-user-prompt-hook\.ps1|Loading DinoBrain context/i.test(repoHookText), ".codex/hooks.json must not duplicate the managed DinoBrain hook.");
 
   const tempDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-"));
   const tempReportRoot = path.join(tempDataRoot, "hook-reports");
@@ -198,6 +245,7 @@ async function verifyHook() {
     "How to verify: run hook:verify after build.",
     "If an error happens, record root cause before fix.",
     "Codex hook protocol context pack DinoBrain Observatory.",
+    "Attachment: C:/Users/example-user/AppData/Local/Temp/codex-clipboard-proof.png",
   ].join("\n");
   const hookInput = JSON.stringify({
     hookEventName: "UserPromptSubmit",
@@ -244,6 +292,11 @@ async function verifyHook() {
 
   const task = readJson(path.join(tempDataRoot, ".dino", "tasks", taskFiles[0]));
   assert(task.sensitivity === "normal", "Normal prompt was incorrectly marked sensitive.");
+  assert(task.request.includes("[REDACTED_MACHINE_LOCAL_PATH]"), "Stored task request exposed the attachment path.");
+  assert(task.request_redactions?.includes("windows_user_path"), "Stored task did not record its path redaction.");
+  assert(task.supplied_prompt_hash_matches === true, "Attachment redaction changed the preflight identity hash.");
+  assert(task.prompt_hash === task.request_hash, "Task prompt identity diverged from the original request hash.");
+  assert(task.task_id.includes(task.prompt_hash.slice(0, 28)), "Task id is not bound to the original prompt identity.");
 
   const pack = readJson(path.join(tempDataRoot, ".dino", "context-packs", packFiles[0]));
   assert(
@@ -293,9 +346,11 @@ async function verifyHook() {
     assert(events.some((event) => event.event === eventName), `Missing event ${eventName}.`);
   }
   const submittedEvent = events.find((event) => event.event === "codex_prompt_submitted");
+  const startedEvent = events.find((event) => event.event === "task_started");
   const completedEvent = events.find((event) => event.event === "codex_preflight_completed");
   assert(submittedEvent?.hook_run_id && submittedEvent.hook_run_id === completedEvent?.hook_run_id, "Hook events did not share hook_run_id.");
   assert(submittedEvent?.prompt_hash && submittedEvent.prompt_hash === completedEvent?.prompt_hash, "Hook events did not share prompt_hash.");
+  assert(submittedEvent.prompt_hash === startedEvent?.prompt_hash, "Attachment redaction broke submitted-to-task hash linkage.");
   assert(completedEvent.hook_run_id === hookReport.hook_run_id, "Hook report did not match event hook_run_id.");
   const orderedNames = ["codex_prompt_submitted", "task_started", "context_pack_created", "os_begin_task_completed", "codex_preflight_completed"];
   const orderedIndexes = orderedNames.map((eventName) => events.findIndex((event) => event.event === eventName));
@@ -329,7 +384,8 @@ async function verifyHook() {
   assert(duplicateRun.status === 0, `Duplicate hook exited with ${duplicateRun.status}: ${duplicateRun.stderr}`);
   const duplicateOutput = parseHookOutput(duplicateRun.stdout);
   const duplicateContext = duplicateOutput.hookSpecificOutput?.additionalContext ?? "";
-  assert(duplicateContext.includes("FAIL-CLOSED"), "Duplicate hook lock did not fail closed without sibling report.");
+  assert(duplicateContext.includes("DEGRADED NON-BLOCKING"), "Duplicate hook lock did not emit degraded continuation context.");
+  assert(duplicateOutput.decision !== "block", "Duplicate hook lock blocked the Codex conversation.");
   assert(!duplicateContext.includes("Use the other injected DinoBrain context"), "Duplicate hook still used the unsafe skip message.");
 
   if (process.platform === "win32" && existsSync(psHookPath)) {
@@ -339,7 +395,7 @@ async function verifyHook() {
     const noNodeRun = runPowerShellHookWithoutNode(
       JSON.stringify({
         hookEventName: "UserPromptSubmit",
-        prompt: "This hook run must fail closed when the PowerShell wrapper cannot locate Node.",
+        prompt: "This hook run must degrade safely when the PowerShell wrapper cannot locate Node.",
         cwd: root,
       }),
       noNodeDataRoot,
@@ -348,9 +404,9 @@ async function verifyHook() {
     assert(noNodeRun.status === 0, `No-node wrapper exited with ${noNodeRun.status}: ${noNodeRun.stderr}`);
     const noNodeOutput = parseHookOutput(noNodeRun.stdout);
     const noNodeContext = noNodeOutput.hookSpecificOutput?.additionalContext ?? "";
-    assert(noNodeOutput.decision === "block", "No-node PowerShell wrapper did not emit a blocking hook decision.");
-    assert(noNodeContext.includes("FAIL-CLOSED"), "No-node PowerShell wrapper did not fail closed.");
-    assert(!/Continue with the current user request/i.test(noNodeContext), "No-node wrapper still allowed fail-open continuation.");
+    assert(noNodeOutput.decision !== "block", "No-node PowerShell wrapper blocked the Codex conversation.");
+    assert(noNodeContext.includes("DEGRADED NON-BLOCKING"), "No-node PowerShell wrapper did not emit degraded context.");
+    assert(/continue ordinary conversation/i.test(noNodeContext), "No-node wrapper did not preserve conversation continuity.");
 
     const timeoutDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-timeout-"));
     const timeoutReportRoot = path.join(timeoutDataRoot, "hook-reports");
@@ -358,7 +414,7 @@ async function verifyHook() {
     const timeoutRun = runPowerShellHookTimeout(
       JSON.stringify({
         hookEventName: "UserPromptSubmit",
-        prompt: "This hook run must fail closed when preflight exceeds the wrapper timeout.",
+        prompt: "This hook run must degrade safely when preflight exceeds the wrapper timeout.",
         cwd: root,
       }),
       timeoutDataRoot,
@@ -367,11 +423,41 @@ async function verifyHook() {
     assert(timeoutRun.status === 0, `Timeout wrapper exited with ${timeoutRun.status}: ${timeoutRun.stderr}`);
     const timeoutOutput = parseHookOutput(timeoutRun.stdout);
     const timeoutContext = timeoutOutput.hookSpecificOutput?.additionalContext ?? "";
-    assert(timeoutOutput.decision === "block", "Timed-out PowerShell wrapper did not emit a blocking decision.");
+    assert(timeoutOutput.decision !== "block", "Timed-out PowerShell wrapper blocked the Codex conversation.");
     assert(timeoutContext.includes("timed out after 1 seconds"), "Timed-out wrapper did not expose its timeout reason.");
-    assert(timeoutContext.includes("FAIL-CLOSED"), "Timed-out wrapper did not fail closed.");
+    assert(timeoutContext.includes("DEGRADED NON-BLOCKING"), "Timed-out wrapper did not emit degraded context.");
+    assert(countMarkedNodeProcesses(timeoutRun.processMarker) === 0, "Timed-out hook left its MCP Node child running.");
     const timeoutTaskDir = path.join(timeoutDataRoot, ".dino", "tasks");
     assert(!existsSync(timeoutTaskDir) || readdirSync(timeoutTaskDir).length === 0, "Timed-out hook created a durable task.");
+
+    const softTimeoutDataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-codex-hook-soft-timeout-"));
+    const softTimeoutReportRoot = path.join(softTimeoutDataRoot, "hook-reports");
+    seedVault(softTimeoutDataRoot);
+    const softTimeoutRun = runPowerShellHookSoftTimeoutAfterTask(
+      JSON.stringify({
+        hookEventName: "UserPromptSubmit",
+        prompt: "This hook run creates a task, then must cooperatively terminalize it before the hard timeout.",
+        cwd: root,
+      }),
+      softTimeoutDataRoot,
+      softTimeoutReportRoot,
+    );
+    assert(softTimeoutRun.status === 0, `Cooperative timeout wrapper exited with ${softTimeoutRun.status}: ${softTimeoutRun.stderr}`);
+    const softTimeoutOutput = parseHookOutput(softTimeoutRun.stdout);
+    const softTimeoutContext = softTimeoutOutput.hookSpecificOutput?.additionalContext ?? "";
+    assert(softTimeoutOutput.decision !== "block", "Cooperative timeout blocked the Codex conversation.");
+    assert(softTimeoutContext.includes("cooperative timeout"), "Cooperative timeout reason was not exposed.");
+    assert(softTimeoutContext.includes("timeout_cleanup: settled=1, failed=0"), "Cooperative timeout did not report exact task cleanup.");
+    const softTimeoutTaskDir = path.join(softTimeoutDataRoot, ".dino", "tasks");
+    const softTimeoutTaskFiles = readdirSync(softTimeoutTaskDir).filter((file) => file.endsWith(".json"));
+    assert(softTimeoutTaskFiles.length === 1, `Expected one cooperative-timeout task, found ${softTimeoutTaskFiles.length}.`);
+    const softTimeoutTask = readJson(path.join(softTimeoutTaskDir, softTimeoutTaskFiles[0]));
+    assert(softTimeoutTask.status === "blocked", "Cooperative timeout left its task active.");
+    assert(softTimeoutTask.lease?.state === "terminal", "Cooperative timeout left its task lease active.");
+    assert(
+      existsSync(path.join(softTimeoutDataRoot, ".dino", "traces", `${softTimeoutTask.task_id}.json`)),
+      "Cooperative timeout did not write a terminal trace.",
+    );
   }
 
   return {

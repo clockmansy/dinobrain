@@ -27,11 +27,22 @@ const claudeSettingsPath = path.resolve(process.env.DINOBRAIN_CLAUDE_SETTINGS_PA
 const requireClaudePromptHook = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_REQUIRE_CLAUDE_PROMPT_HOOK ?? "");
 const allowNoGit = /^(1|true|yes)$/i.test(process.env.DINOBRAIN_ALLOW_NO_GIT ?? "");
 const requiredCodexEnv = {
-  DINOBRAIN_AUTO_GROWTH: "1",
-  DINOBRAIN_AUTO_COMPOUND: "1",
-  DINOBRAIN_AUTO_SYNC: "1",
+  DINOBRAIN_AUTO_GROWTH: "0",
+  DINOBRAIN_AUTO_COMPOUND: "0",
+  DINOBRAIN_AUTO_SYNC: "0",
   DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL: "0",
   DINOBRAIN_AUTO_SYNC_PUSH: "0",
+};
+const requiredLeanHookEnv = {
+  DINOBRAIN_AUTO_GROWTH: "0",
+  DINOBRAIN_AUTO_COMPOUND: "0",
+  DINOBRAIN_AUTO_SYNC: "0",
+  DINOBRAIN_HOOK_AUTO_SYNC: "0",
+  DINOBRAIN_HOOK_IMPORT_SESSION: "0",
+  DINOBRAIN_HOOK_CONTEXT_LIMIT: "3",
+  DINOBRAIN_HOOK_LEASE_SECONDS: "3600",
+  DINOBRAIN_HOOK_SOFT_TIMEOUT_MS: "6000",
+  DINOBRAIN_HOOK_TIMEOUT_SECONDS: "8",
 };
 
 const expectedTools = [
@@ -143,6 +154,15 @@ function parseCodexDinoBrainConfig() {
   };
 }
 
+function missingLeanHookEnv(command) {
+  return Object.entries(requiredLeanHookEnv)
+    .filter(([name, value]) => {
+      const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return !new RegExp(`${escapedName}\\s*=\\s*['\"]${value}['\"]`, "i").test(command ?? "");
+    })
+    .map(([name, expected]) => ({ name, expected }));
+}
+
 function parseCodexHookRuntimeConfig() {
   if (!existsSync(codexConfigPath)) {
     return {
@@ -206,15 +226,20 @@ function parseCodexUserHookConfig() {
     });
 
   const hookCommand = matchedHook ? `${matchedHook.command ?? ""} ${matchedHook.commandWindows ?? ""}`.trim() : "";
-  const hookHasAutoCompound = !matchedHook || /DINOBRAIN_AUTO_COMPOUND/i.test(hookCommand);
+  const missingLeanEnv = matchedHook ? missingLeanHookEnv(hookCommand) : [];
   return {
-    ok: (Boolean(matchedHook) || !requireCodexUserHook) && hookHasAutoCompound,
+    ok: (Boolean(matchedHook) || !requireCodexUserHook) && missingLeanEnv.length === 0,
     required: requireCodexUserHook,
     registered: Boolean(matchedHook),
     hooks_path: codexHooksPath,
-    reason: matchedHook ? (hookHasAutoCompound ? "registered" : "dinobrain_hook_missing_auto_compound_env") : "dinobrain_user_prompt_hook_not_registered",
+    reason: matchedHook
+      ? missingLeanEnv.length === 0
+        ? "registered_lean_fallback"
+        : "dinobrain_hook_lean_env_mismatch"
+      : "dinobrain_user_prompt_hook_not_registered",
     command: matchedHook?.command ?? null,
     timeout: matchedHook?.timeout ?? null,
+    missing_lean_env: missingLeanEnv,
   };
 }
 
@@ -237,15 +262,29 @@ function parseCodexManagedHookConfig() {
     /dinobrain-managed-user-prompt-hook\.ps1|dinobrain-user-prompt-hook\.ps1/i.test(text);
   const wrapperPath = managedDir ? path.join(managedDir, "dinobrain-managed-user-prompt-hook.ps1") : null;
   const wrapperExists = wrapperPath ? existsSync(wrapperPath) : false;
+  const wrapperText = wrapperExists ? readFileSync(wrapperPath, "utf8") : "";
+  const missingLeanEnv = wrapperExists ? missingLeanHookEnv(wrapperText) : [];
+  const timeoutBudgetValid = /^timeout\s*=\s*12\s*$/m.test(text);
+  const configuredValid = registered && wrapperExists && missingLeanEnv.length === 0 && timeoutBudgetValid;
   return {
-    ok: (registered && wrapperExists) || !requireCodexManagedHook,
+    ok: registered ? configuredValid : !requireCodexManagedHook,
     required: requireCodexManagedHook,
     requirements_path: codexRequirementsPath,
     registered,
     managed_dir: managedDir || null,
     wrapper_path: wrapperPath,
     wrapper_exists: wrapperExists,
-    reason: !registered ? "dinobrain_managed_user_prompt_hook_not_registered" : wrapperExists ? "registered" : "managed_wrapper_missing",
+    timeout_budget_valid: timeoutBudgetValid,
+    missing_lean_env: missingLeanEnv,
+    reason: !registered
+      ? "dinobrain_managed_user_prompt_hook_not_registered"
+      : !wrapperExists
+        ? "managed_wrapper_missing"
+        : missingLeanEnv.length > 0
+          ? "managed_wrapper_lean_env_mismatch"
+          : !timeoutBudgetValid
+            ? "managed_hook_timeout_budget_mismatch"
+            : "registered_lean",
   };
 }
 
@@ -277,15 +316,20 @@ function parseClaudePromptHookConfig() {
   const dinobrainHook = commands.find((text) => {
     return /dinobrain-user-prompt-hook\.ps1/i.test(text) || /Loading DinoBrain context/i.test(text);
   });
-  const hookHasAutoCompound = !dinobrainHook || /DINOBRAIN_AUTO_COMPOUND/i.test(dinobrainHook);
+  const missingLeanEnv = dinobrainHook ? missingLeanHookEnv(dinobrainHook) : [];
   return {
-    ok: (Boolean(dinobrainHook) || !requireClaudePromptHook) && hookHasAutoCompound,
+    ok: (Boolean(dinobrainHook) || !requireClaudePromptHook) && missingLeanEnv.length === 0,
     required: requireClaudePromptHook,
     settings_path: claudeSettingsPath,
     user_prompt_submit_group_count: groups.length,
     dinobrain_hook_registered: Boolean(dinobrainHook),
     command: dinobrainHook ?? null,
-    reason: dinobrainHook ? (hookHasAutoCompound ? "registered" : "dinobrain_claude_hook_missing_auto_compound_env") : "dinobrain_claude_prompt_hook_missing",
+    missing_lean_env: missingLeanEnv,
+    reason: dinobrainHook
+      ? missingLeanEnv.length === 0
+        ? "registered_lean"
+        : "dinobrain_claude_hook_lean_env_mismatch"
+      : "dinobrain_claude_prompt_hook_missing",
   };
 }
 
@@ -746,7 +790,7 @@ async function main() {
       user_prompt_hook: codexUserHook,
       managed_prompt_hook: codexManagedHook,
       mcp_list_tools: codexMcp,
-      note: "If the Codex app was already running before MCP or user hooks were added, run DinoBrain Codex Hook Approval.cmd or open /hooks and trust the DinoBrain UserPromptSubmit hook.",
+      note: "When the managed hook is healthy, no user hook trust approval is required. Fully restart Codex only when it predates the latest managed configuration.",
     },
     claude_code_integration: {
       mcp_list: claudeCodeMcp,

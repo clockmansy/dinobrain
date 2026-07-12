@@ -1816,17 +1816,33 @@ async function findTaskPreflightEvidence(taskId: string, requireCompleted: boole
   const events = await readRecentOsEvents();
   const startedIndex = events.findIndex((event) => event.event === "task_started" && event.task_id === taskId);
   const started = startedIndex >= 0 ? events[startedIndex] : null;
-  const contextIndex = events.findIndex(
-    (event, index) => index > startedIndex && event.event === "context_pack_created" && event.task_id === taskId,
-  );
-  const contextEvent = contextIndex >= 0 ? events[contextIndex] : null;
-  const completedIndex = events.findIndex(
-    (event, index) =>
-      index > contextIndex &&
+  let completedIndex = -1;
+  for (let index = events.length - 1; index > startedIndex; index -= 1) {
+    const event = events[index];
+    if (
       ["os_begin_task_completed", "manual_preflight_context_ready"].includes(firstString(event.event)) &&
-      event.task_id === taskId,
-  );
+      event.task_id === taskId
+    ) {
+      completedIndex = index;
+      break;
+    }
+  }
   const completed = completedIndex >= 0 ? events[completedIndex] : null;
+  const completedContextPath = firstString(completed?.context_pack_trace);
+  const contextSearchEnd = completedIndex >= 0 ? completedIndex : events.length;
+  let contextIndex = -1;
+  for (let index = contextSearchEnd - 1; index > startedIndex; index -= 1) {
+    const event = events[index];
+    if (
+      event.event === "context_pack_created" &&
+      event.task_id === taskId &&
+      (!completedContextPath || event.path === completedContextPath)
+    ) {
+      contextIndex = index;
+      break;
+    }
+  }
+  const contextEvent = contextIndex >= 0 ? events[contextIndex] : null;
   const hookRunId = firstString(started?.hook_run_id, contextEvent?.hook_run_id, completed?.hook_run_id) || null;
   const promptHash = firstString(started?.prompt_hash, contextEvent?.prompt_hash, completed?.prompt_hash) || null;
   const hookSubmissionRequired = firstString(started?.launch_source).toLowerCase().includes("hook");
@@ -2282,10 +2298,10 @@ registerTool(
     const storedRequest = sanitized.request;
     const storedProject = project ? redactSensitiveText(project).text : null;
     const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
-    const filtered = await filteredTaskLaunch(storedRequest, metadata, "os_begin_task");
+    const filtered = await filteredTaskLaunch(request, metadata, "os_begin_task");
     if (filtered) return jsonResult(filtered);
-    const eligibility = classifyTaskLaunch(storedRequest, metadata);
-    const dedupeClaim = await claimTaskStart(metadata, storedRequest);
+    const eligibility = classifyTaskLaunch(request, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, request);
     if (!dedupeClaim.acquired) {
       if (dedupeClaim.response) {
         return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
@@ -2301,10 +2317,10 @@ registerTool(
         safe_action: "Do not perform substantial work; retry from the same trusted client session after the first preflight completes.",
       });
     }
-    const taskId = makeTaskId(storedRequest);
+    const taskId = makeTaskId(request);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
     const createdAt = nowIso();
-    const lease = taskLease(storedRequest, metadata, createdAt);
+    const lease = taskLease(request, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
@@ -2324,7 +2340,7 @@ registerTool(
       updated_at: createdAt,
       data_root: ".",
       sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
-      ...taskLaunchEvidence(storedRequest, metadata, eligibility),
+      ...taskLaunchEvidence(request, metadata, eligibility),
       lease,
       terminal_owner_id: null,
     };
@@ -2589,10 +2605,10 @@ registerTool(
     const storedRequest = sanitized.request;
     const storedProject = project ? redactSensitiveText(project).text : null;
     const sensitivityEvidence = effectiveSensitivity(sensitivity, request);
-    const filtered = await filteredTaskLaunch(storedRequest, metadata, "start_task");
+    const filtered = await filteredTaskLaunch(request, metadata, "start_task");
     if (filtered) return jsonResult(filtered);
-    const eligibility = classifyTaskLaunch(storedRequest, metadata);
-    const dedupeClaim = await claimTaskStart(metadata, storedRequest);
+    const eligibility = classifyTaskLaunch(request, metadata);
+    const dedupeClaim = await claimTaskStart(metadata, request);
     if (!dedupeClaim.acquired) {
       if (dedupeClaim.response) {
         return jsonResult({ ...dedupeClaim.response, idempotent: true, dedupe_receipt_reused: true });
@@ -2606,10 +2622,10 @@ registerTool(
         error: "task_start_dedupe_timeout",
       });
     }
-    const taskId = makeTaskId(storedRequest);
+    const taskId = makeTaskId(request);
     const taskPath = dataPath(".dino", "tasks", `${taskId}.json`);
     const createdAt = nowIso();
-    const lease = taskLease(storedRequest, metadata, createdAt);
+    const lease = taskLease(request, metadata, createdAt);
     const record = {
       task_id: taskId,
       status: "started",
@@ -2629,7 +2645,7 @@ registerTool(
       updated_at: createdAt,
       data_root: ".",
       sync_policy: sensitivityEvidence.sensitivity === "normal" ? "conditional" : "blocked_until_review",
-      ...taskLaunchEvidence(storedRequest, metadata, eligibility),
+      ...taskLaunchEvidence(request, metadata, eligibility),
       lease,
       terminal_owner_id: null,
     };
@@ -3806,13 +3822,16 @@ async function correctionPromptBinding(taskId: string | undefined, verifiedAt: s
   }
   const promptHash = firstString(task.prompt_hash);
   const request = firstString(task.request);
-  const promptHashVerified = /^[a-f0-9]{64}$/i.test(promptHash) && request.length > 0 && sha256(request) === promptHash;
+  const requestHash = firstString(task.request_hash);
+  const promptHashVerified =
+    /^[a-f0-9]{64}$/i.test(promptHash) &&
+    ((requestHash.length > 0 && requestHash === promptHash) || (request.length > 0 && sha256(request) === promptHash));
   return {
     binding_status: promptHashVerified ? "verified" : "prompt_hash_unverified",
     task_id: normalizedTaskId,
     task_path: taskRelativePath,
     prompt_hash: promptHash || null,
-    request_hash: firstString(task.request_hash) || null,
+    request_hash: requestHash || null,
     prompt_classification: firstString(task.prompt_classification) || null,
     prompt_eligibility_version: firstString(task.prompt_eligibility_version) || null,
     launch_kind: firstString(task.launch_kind) || null,

@@ -17,6 +17,7 @@ const dataRepoPath = path.resolve(root, "..", "dinobrain-data");
 const reportPath = path.resolve(process.env.DINOBRAIN_FLOW_AUDIT_OUT ?? path.join(root, "reports", "dinobrain-flow-audit.json"));
 const hookConfigPath = path.join(root, ".codex", "hooks.json");
 const hookScriptPath = path.join(root, "scripts", "dinobrain-user-prompt-hook.mjs");
+const managedHookInstallerPath = path.join(root, "scripts", "install-codex-managed-hook.ps1");
 const codexCliCandidates = [
   process.env.CODEX_CLI_PATH,
   path.join(process.env.LOCALAPPDATA ?? "", "OpenAI", "Codex", "bin", "aec6b7c6fcdfb66a", "codex.exe"),
@@ -152,13 +153,13 @@ The narrow lookup phrase is zeta-lattice-only. It should appear through wiki_sea
 
 function verifyCodexHookBridge(dataRoot) {
   const claim = "?ъ슜???붿껌???ㅼ뼱?ㅻ㈃ OS ?낆씠 癒쇱? 媛먯??쒕떎.";
-  if (!existsSync(hookConfigPath) || !existsSync(hookScriptPath)) {
+  if (!existsSync(hookConfigPath) || !existsSync(hookScriptPath) || !existsSync(managedHookInstallerPath)) {
     return status(
       1,
       claim,
       "not_implemented",
-      "No project Codex hook or DinoBrain UserPromptSubmit hook script is present.",
-      "The agent must intentionally call MCP tools until a hook or agent protocol exists.",
+      "The managed Codex hook installer, hook script, or project hook policy file is missing.",
+      "Restore the managed-hook source files before treating pre-response injection as implemented.",
     );
   }
 
@@ -171,17 +172,17 @@ function verifyCodexHookBridge(dataRoot) {
       claim,
       "not_implemented",
       `Hook config exists but is not valid JSON: ${error.message}`,
-      "Fix .codex/hooks.json before Codex can load it.",
+      "Fix .codex/hooks.json so the repository can enforce the no-duplicate-hook policy.",
     );
   }
 
-  if (!hookConfig.hooks?.UserPromptSubmit) {
+  if (/dinobrain-user-prompt-hook\.ps1|Loading DinoBrain context/i.test(JSON.stringify(hookConfig.hooks?.UserPromptSubmit ?? []))) {
     return status(
       1,
       claim,
       "not_implemented",
-      ".codex/hooks.json exists but does not configure UserPromptSubmit.",
-      "Add a UserPromptSubmit hook that calls DinoBrain preflight.",
+      ".codex/hooks.json still registers a repository DinoBrain hook alongside the managed global hook.",
+      "Remove the duplicate repository hook and keep the managed hook authoritative.",
     );
   }
 
@@ -241,8 +242,8 @@ function verifyCodexHookBridge(dataRoot) {
     1,
     claim,
     "verified",
-    "Project .codex/hooks.json configures UserPromptSubmit, and the hook simulation called DinoBrain preflight and returned additionalContext.",
-    "Codex must still trust the project hook before it runs in a live session.",
+    "The repository policy contains no duplicate DinoBrain hook, the managed-hook installer exists, and direct hook simulation returned verified additionalContext.",
+    "A fresh Codex process is still required after managed requirements change.",
   );
 }
 

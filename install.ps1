@@ -1318,9 +1318,9 @@ function Assert-DinoBrainCodexConfigTomlShape {
     "(?m)^startup_timeout_sec\s*=\s*120\r?$",
     "(?m)^\[mcp_servers\.dinobrain\.env\]\r?$",
     "(?m)^DINOBRAIN_DATA_DIR\s*=\s*(['""]).+\1\r?$",
-    "(?m)^DINOBRAIN_AUTO_GROWTH\s*=\s*(['""])1\1\r?$",
-    "(?m)^DINOBRAIN_AUTO_COMPOUND\s*=\s*(['""])1\1\r?$",
-    "(?m)^DINOBRAIN_AUTO_SYNC\s*=\s*(['""])1\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_GROWTH\s*=\s*(['""])0\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_COMPOUND\s*=\s*(['""])0\1\r?$",
+    "(?m)^DINOBRAIN_AUTO_SYNC\s*=\s*(['""])0\1\r?$",
     "(?m)^DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL\s*=\s*(['""])0\1\r?$",
     "(?m)^DINOBRAIN_AUTO_SYNC_PUSH\s*=\s*(['""])0\1\r?$"
   )
@@ -1425,9 +1425,9 @@ function Set-DinoBrainCodexConfig {
     "",
     "[mcp_servers.dinobrain.env]",
     "DINOBRAIN_DATA_DIR = $(ConvertTo-TomlString $VaultPath)",
-    "DINOBRAIN_AUTO_GROWTH = `"1`"",
-    "DINOBRAIN_AUTO_COMPOUND = `"1`"",
-    "DINOBRAIN_AUTO_SYNC = `"1`"",
+    "DINOBRAIN_AUTO_GROWTH = `"0`"",
+    "DINOBRAIN_AUTO_COMPOUND = `"0`"",
+    "DINOBRAIN_AUTO_SYNC = `"0`"",
     "DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = `"0`"",
     "DINOBRAIN_AUTO_SYNC_PUSH = `"0`"",
     ""
@@ -1454,7 +1454,7 @@ function New-DinoBrainCodexHookCommand {
   $hookScript = Join-Path $AppPath "scripts\dinobrain-user-prompt-hook.ps1"
   $hookLiteral = ConvertTo-PowerShellSingleQuotedString $hookScript
   $vaultLiteral = ConvertTo-PowerShellSingleQuotedString $VaultPath
-  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; `$env:DINOBRAIN_AUTO_GROWTH = '1'; `$env:DINOBRAIN_AUTO_COMPOUND = '1'; `$env:DINOBRAIN_AUTO_SYNC = '1'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '0'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '1'; & $hookLiteral }`""
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; `$env:DINOBRAIN_AUTO_GROWTH = '0'; `$env:DINOBRAIN_AUTO_COMPOUND = '0'; `$env:DINOBRAIN_AUTO_SYNC = '0'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '0'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '0'; `$env:DINOBRAIN_HOOK_IMPORT_SESSION = '0'; `$env:DINOBRAIN_HOOK_CONTEXT_LIMIT = '3'; `$env:DINOBRAIN_HOOK_LEASE_SECONDS = '3600'; `$env:DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = '6000'; `$env:DINOBRAIN_HOOK_TIMEOUT_SECONDS = '8'; & $hookLiteral }`""
 }
 
 function Test-DinoBrainHookGroup {
@@ -1496,6 +1496,35 @@ function Get-UserPromptSubmitGroupsWithoutDinoBrain {
   }
 
   return @($result)
+}
+
+function Remove-DinoBrainCodexUserHookRecords {
+  param([Parameter(Mandatory = $true)][string]$HooksPath)
+
+  if (-not (Test-Path -LiteralPath $HooksPath)) { return $false }
+  $raw = [System.IO.File]::ReadAllText($HooksPath)
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+  $config = ConvertTo-Hashtable ($raw | ConvertFrom-Json)
+  if (-not ($config -is [System.Collections.IDictionary]) -or -not $config.Contains("hooks")) { return $false }
+  $hooks = $config["hooks"]
+  if (-not ($hooks -is [System.Collections.IDictionary]) -or -not $hooks.Contains("UserPromptSubmit")) { return $false }
+
+  $originalGroups = @($hooks["UserPromptSubmit"])
+  if (-not (@($originalGroups | Where-Object { Test-DinoBrainHookGroup $_ }).Count -gt 0)) { return $false }
+  $remainingGroups = @(Get-UserPromptSubmitGroupsWithoutDinoBrain -Groups $originalGroups)
+  if ($remainingGroups.Count -gt 0) {
+    $hooks["UserPromptSubmit"] = $remainingGroups
+  } else {
+    $hooks.Remove("UserPromptSubmit")
+  }
+
+  $backupPath = "$HooksPath.bak-dinobrain-managed-only-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+  Copy-Item -LiteralPath $HooksPath -Destination $backupPath -Force
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($HooksPath, (($config | ConvertTo-Json -Depth 40) + "`r`n"), $utf8NoBom)
+  Write-Host "Removed duplicate DinoBrain user hook; managed hook is authoritative: $HooksPath"
+  Write-Host "Codex user hooks backup: $backupPath"
+  return $true
 }
 
 function Add-HookToFirstUserPromptSubmitGroup {
@@ -1565,7 +1594,7 @@ function Set-DinoBrainCodexUserHook {
     type = "command"
     command = $command
     commandWindows = $command
-    timeout = 30
+    timeout = 12
     statusMessage = "Loading DinoBrain context"
   }
   $fallbackGroup = [ordered]@{ hooks = @($hookRecord) }
@@ -1618,7 +1647,7 @@ function Set-DinoBrainClaudeUserHook {
   $hookRecord = [ordered]@{
     type = "command"
     command = $command
-    timeout = 30
+    timeout = 12
   }
   $fallbackGroup = [ordered]@{
     matcher = ""
@@ -2424,6 +2453,9 @@ try {
 $codexManagedHookConfigured = $false
 if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig) {
   $codexManagedHookConfigured = Invoke-DinoBrainCodexManagedHookInstall -AppPath $AppDir -VaultPath $DataDir -RequirementsPath $CodexRequirementsPath -ManagedDir $CodexManagedHookDir
+  if ($codexManagedHookConfigured) {
+    [void](Remove-DinoBrainCodexUserHookRecords -HooksPath $CodexHooksPath)
+  }
 }
 
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
@@ -2451,7 +2483,7 @@ if (-not $SkipClaudeCodeConfig) {
 
 Invoke-DinoBrainInstallFailurePoint -Name "after_config"
 if (-not $SkipVerify) {
-  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $ClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig) -RequireCodexManagedHook:$codexManagedHookConfigured -RequireClaudeCode:$claudeCodeConfigured -RequireClaudePromptHook:$claudePromptHookConfigured -AllowNoGit:(-not $gitAvailable)
+  Invoke-DinoBrainVerify -NodeRoot $nodeRoot -AppPath $AppDir -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath -VaultPath $DataDir -ClaudeCommand $ClaudeCommand -ClaudeSettingsPath $ClaudeSettingsPath -RequireCodexUserHook:(-not $SkipCodexHookConfig -and -not $codexManagedHookConfigured) -RequireCodexManagedHook:$codexManagedHookConfigured -RequireClaudeCode:$claudeCodeConfigured -RequireClaudePromptHook:$claudePromptHookConfigured -AllowNoGit:(-not $gitAvailable)
 }
 
 Complete-DinoBrainInstallTransaction -Transaction $transaction

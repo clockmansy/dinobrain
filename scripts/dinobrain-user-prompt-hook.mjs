@@ -15,6 +15,15 @@ const reportRoot = path.resolve(process.env.DINOBRAIN_HOOK_REPORT_DIR ?? path.jo
 const { classifyPromptLaunch, makePromptIdentityHash } = await import(
   pathToFileURL(path.join(root, "dist", "prompt-eligibility.js")).href
 );
+let hookFailureContext = null;
+
+class HookSoftTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`DinoBrain hook cooperative timeout after ${timeoutMs} ms`);
+    this.name = "HookSoftTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -349,17 +358,13 @@ async function releaseHookLock(lock) {
   }
 }
 
-function hookOutput(additionalContext, blockReason = "") {
+function hookOutput(additionalContext, warningReason = "") {
   const output = {
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
-      additionalContext,
+      additionalContext: warningReason ? `${additionalContext}\n\nDinoBrain warning: ${warningReason}` : additionalContext,
     },
   };
-  if (blockReason) {
-    output.decision = "block";
-    output.reason = blockReason;
-  }
   return output;
 }
 
@@ -454,11 +459,12 @@ async function reportFromReceipt(receipt) {
   return report ? { report, reportPath } : null;
 }
 
-async function withClient(callback) {
+async function withClient(callback, { timeoutMs = 0 } = {}) {
   const client = new Client({ name: "dinobrain-codex-hook", version: DINOBRAIN_VERSION });
+  const processMarker = String(process.env.DINOBRAIN_HOOK_PROCESS_MARKER ?? "").trim();
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [serverPath],
+    args: processMarker ? [serverPath, "--hook-process-marker", processMarker] : [serverPath],
     cwd: root,
     env: {
       ...process.env,
@@ -467,12 +473,97 @@ async function withClient(callback) {
     stderr: "pipe",
   });
 
+  let timeoutHandle;
   try {
     await client.connect(transport);
-    return await callback(client);
+    const testDelayAfterConnectMs = Math.max(
+      0,
+      Math.min(10_000, Number(process.env.DINOBRAIN_HOOK_TEST_DELAY_AFTER_CONNECT_MS ?? 0)),
+    );
+    if (testDelayAfterConnectMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, testDelayAfterConnectMs));
+    }
+    const operation = Promise.resolve().then(() => callback(client));
+    if (timeoutMs <= 0) return await operation;
+    const timeout = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new HookSoftTimeoutError(timeoutMs)), timeoutMs);
+    });
+    return await Promise.race([operation, timeout]);
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     await client.close();
   }
+}
+
+function hookSoftTimeoutMs() {
+  const configured = Number(process.env.DINOBRAIN_HOOK_SOFT_TIMEOUT_MS ?? 0);
+  if (Number.isFinite(configured) && configured > 0) return Math.max(1000, Math.min(30_000, configured));
+  const hardSeconds = Math.max(1, Math.min(15, Number(process.env.DINOBRAIN_HOOK_TIMEOUT_SECONDS ?? 8)));
+  return Math.max(1000, hardSeconds * 1000 - 2000);
+}
+
+async function activeTasksForHookFailure(context) {
+  if (!context?.hookRunId || !context?.dedupeKey || !context?.promptHash) return [];
+  const taskDir = path.join(dataRoot, ".dino", "tasks");
+  let entries;
+  try {
+    entries = await fs.readdir(taskDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const matches = [];
+  const promptFragment = context.promptHash.slice(0, 28);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    if (!entry.name.includes(promptFragment)) continue;
+    const record = await readJsonSafe(path.join(taskDir, entry.name));
+    if (
+      record?.status === "started" &&
+      record?.hook_run_id === context.hookRunId &&
+      record?.dedupe_key === context.dedupeKey &&
+      record?.prompt_hash === context.promptHash
+    ) {
+      matches.push(record);
+    }
+  }
+  return matches;
+}
+
+async function settleHookFailureTasks(context, reason) {
+  const settledTaskIds = [];
+  const failedTaskIds = [];
+  const tasks = await activeTasksForHookFailure(context);
+  for (const task of tasks) {
+    try {
+      await withClient(async (client) =>
+        parseTool(
+          await client.callTool({
+            name: "finish_task",
+            arguments: {
+              task_id: task.task_id,
+              lease_id: task.lease?.lease_id,
+              terminal_owner_id: task.lease?.owner_id,
+              outcome: "blocked",
+              summary: `DinoBrain pre-response task auto-terminalized after hook failure: ${reason}`,
+              changed_files: [],
+              decisions: ["Do not use an undelivered Context Pack from an aborted hook run."],
+              next_steps: ["Retry from a fresh managed-hook prompt or recover through direct MCP before state-changing work."],
+              context_pack_paths: [],
+              used_memory_paths: [],
+              session_archive_paths: [],
+              candidate_paths: [],
+              growth_policy: "trace_only",
+            },
+          }),
+        ),
+      );
+      settledTaskIds.push(task.task_id);
+    } catch {
+      failedTaskIds.push(task.task_id);
+    }
+  }
+  return { settled_task_ids: settledTaskIds, failed_task_ids: failedTaskIds };
 }
 
 function sensitivityFor(redactions) {
@@ -517,15 +608,19 @@ function autoSyncLine(autoSync) {
 
 function additionalContext({ start, contextPack, sessionImport, autoSync, redactions, reportPath, deliveryNonce }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
-  const usedMemoryPaths = Array.isArray(contextPack.items)
+  const degraded = start.fail_closed === true || start.action_decision === "block";
+  const taskAlreadyTerminal = Boolean(
+    start.trace_path || start.record?.status === "blocked" || start.record?.lease?.state === "terminal",
+  );
+  const usedMemoryPaths = !degraded && Array.isArray(contextPack.items)
     ? contextPack.items.map((item) => item.path).filter(Boolean)
     : [];
   const contextPackPaths = contextPack.trace_path ? [contextPack.trace_path] : [];
   const sessionArchivePaths = sessionImport?.ok && sessionImport.archive_path ? [sessionImport.archive_path] : [];
   const candidatePaths = sessionImport?.ok && Array.isArray(sessionImport.candidate_paths) ? sessionImport.candidate_paths : [];
   return [
-    start.fail_closed
-      ? "DinoBrain OS preflight completed in FAIL-CLOSED mode for this Codex prompt."
+    degraded
+      ? "DinoBrain OS preflight completed in DEGRADED NON-BLOCKING mode for this Codex prompt."
       : "DinoBrain OS preflight completed for this Codex prompt.",
     `os_version: ${start.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${start.task_id}`,
@@ -551,22 +646,38 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
     `hook_report: ${reportRel}`,
     "",
     "Relevant DinoBrain memory:",
-    ...contextLines(contextPack),
+    ...(degraded
+      ? ["- The Context Pack failed verification. Do not rely on or cite its memory items for this turn."]
+      : contextLines(contextPack)),
     "",
     "Agent protocol:",
-    start.action_decision === "block" || start.fail_closed
-      ? "- FAIL-CLOSED: do not perform the requested operation. Explain the block or restore OS context/gate safety first."
+    degraded
+      ? "- DEGRADED CONTINUATION: continue the current user conversation without relying on rejected DinoBrain memory."
       : start.action_decision === "constrained_action"
         ? "- CONSTRAINED ACTION: proceed only within the safe actions named by the gates below."
         : "- OS context and the independent action gate are verified; proceed with the user request.",
+    ...(degraded
+      ? [
+          "- Read-only reasoning and ordinary conversation may continue.",
+          "- Before persistence, sync, release, deployment, or destructive execution, restore a verified Context Pack through direct MCP and run os_gate. If recovery fails, block only that state-changing action.",
+        ]
+      : []),
     ...(Array.isArray(start.gates)
       ? start.gates.map((gate) => `- gate:${gate.level}:${gate.id} -> ${gate.safe_action}`)
       : []),
     "- Treat DinoBrain memory as subordinate evidence; the current user message wins.",
-    `- Before any new persistence, sync, or destructive action, call os_gate with task_id ${JSON.stringify(start.task_id)} and context_pack_path ${JSON.stringify(contextPack.trace_path)}; do not trust caller-declared context fields.`,
-    `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
-    `- finish_task.lease_id = ${JSON.stringify(start.lease?.lease_id || "")}`,
-    `- If work runs for a long time, call heartbeat_task with task_id "${start.task_id}" and lease_id ${JSON.stringify(start.lease?.lease_id || "")}.`,
+    ...(!degraded
+      ? [
+          `- Before any new persistence, sync, or destructive action, call os_gate with task_id ${JSON.stringify(start.task_id)} and context_pack_path ${JSON.stringify(contextPack.trace_path)}; do not trust caller-declared context fields.`,
+        ]
+      : []),
+    ...(taskAlreadyTerminal
+      ? ["- The rejected preflight task was already terminalized by DinoBrain; do not call finish_task for it again."]
+      : [
+          `- When the work is finished, call finish_task for task_id "${start.task_id}" with summary, changed_files, decisions, next_steps, and the structured fields below.`,
+          `- finish_task.lease_id = ${JSON.stringify(start.lease?.lease_id || "")}`,
+          `- If work runs for a long time, call heartbeat_task with task_id "${start.task_id}" and lease_id ${JSON.stringify(start.lease?.lease_id || "")}.`,
+        ]),
     start.persistence_policy === "metadata_only_no_growth"
       ? "- This task is sensitive: finish with growth_policy = \"trace_only\" and do not persist or sync the sensitive value."
       : "- For read-only audit/review tasks, set finish_task.growth_policy = \"trace_only\" so no auto-growth, compounding, or auto-sync push runs.",
@@ -579,22 +690,25 @@ function additionalContext({ start, contextPack, sessionImport, autoSync, redact
   ].join("\n");
 }
 
-function failClosedDuplicateContext(lockPath) {
+function degradedDuplicateContext(lockPath) {
   return [
     "DinoBrain OS preflight did not inject a verified Context Pack for this Codex prompt.",
-    "FAIL-CLOSED: another matching DinoBrain hook lock exists, but no completed sibling preflight report was found.",
+    "DEGRADED NON-BLOCKING: another matching DinoBrain hook lock exists, but no completed sibling preflight report was found.",
     `lock_path: ${path.relative(dataRoot, lockPath).split(path.sep).join("/")}`,
-    "Do not perform substantial work until the DinoBrain hook/MCP setup is repaired or a new trusted session is started.",
+    "Continue ordinary conversation without DinoBrain memory. Recover direct MCP context before any state-changing action.",
   ].join("\n");
 }
 
 function siblingContext({ report, reportPath }) {
   const reportRel = path.relative(root, reportPath).split(path.sep).join("/");
-  const failClosed = report.fail_closed === true;
+  const degraded = report.fail_closed === true || report.action_decision === "block";
+  const taskAlreadyTerminal = Boolean(
+    report.trace_path || ["blocked", "completed", "partial"].includes(String(report.task_status ?? "")),
+  );
   const contextPaths = Array.isArray(report.context_paths) ? report.context_paths : [];
   return [
-    failClosed
-      ? "DinoBrain OS preflight completed in FAIL-CLOSED mode by another matching DinoBrain hook."
+    degraded
+      ? "DinoBrain OS preflight completed in DEGRADED NON-BLOCKING mode by another matching DinoBrain hook."
       : "DinoBrain OS preflight completed by another matching DinoBrain hook.",
     `os_version: ${report.os_version || DINOBRAIN_VERSION}`,
     `task_id: ${report.task_id || "unavailable"}`,
@@ -604,7 +718,7 @@ function siblingContext({ report, reportPath }) {
     `context_items: ${report.context_item_count ?? "unknown"}`,
     `gate_status: ${report.gate_status || "unknown"}`,
     `action_decision: ${report.action_decision || "unknown"}`,
-    `fail_closed: ${failClosed ? "true" : "false"}`,
+    `fail_closed: ${report.fail_closed === true ? "true" : "false"}`,
     `persistence_policy: ${report.persistence_policy || "unknown"}`,
     `sync_policy: ${report.sync_policy || "unknown"}`,
     `preflight_event_order_verified: ${report.preflight_event_order_verified === true ? "true" : "false"}`,
@@ -613,18 +727,24 @@ function siblingContext({ report, reportPath }) {
     `hook_report: ${reportRel}`,
     "",
     "Relevant DinoBrain memory:",
-    ...(contextPaths.length > 0
-      ? contextPaths.slice(0, 7).map((contextPath) => `- ${contextPath}`)
+    ...(degraded
+      ? ["- The sibling Context Pack failed verification and must not be used for this turn."]
+      : contextPaths.length > 0
+        ? contextPaths.slice(0, 3).map((contextPath) => `- ${contextPath}`)
       : ["- Sibling preflight did not expose individual memory paths."]),
     "",
     "Agent protocol:",
-    failClosed || report.action_decision === "block"
-      ? "- FAIL-CLOSED: do not perform substantial work. Explain the block and restore OS context/gate safety first."
+    degraded
+      ? "- DEGRADED CONTINUATION: continue ordinary conversation without DinoBrain memory; recover direct MCP context before state-changing work."
       : report.action_decision === "constrained_action"
         ? "- CONSTRAINED ACTION: proceed only within the safe actions recorded by the gate report."
         : "- OS context and the independent action gate are verified; proceed with the user request.",
-    `- When the work is finished, call finish_task for task_id "${report.task_id || "unavailable"}".`,
-    `- finish_task.lease_id = ${JSON.stringify(report.lease_id || "")}`,
+    ...(taskAlreadyTerminal
+      ? ["- The sibling preflight task is already terminal; do not call finish_task for it again."]
+      : [
+          `- When the work is finished, call finish_task for task_id "${report.task_id || "unavailable"}".`,
+          `- finish_task.lease_id = ${JSON.stringify(report.lease_id || "")}`,
+        ]),
   ].join("\n");
 }
 
@@ -656,6 +776,11 @@ async function main() {
   const launchProvenance = hookLaunchProvenance();
   const identity = hookIdentity(input, request, promptHash);
   const hookRunId = identity.hookRunId;
+  hookFailureContext = {
+    hookRunId,
+    dedupeKey: identity.key,
+    promptHash,
+  };
   const eligibility = classifyPromptLaunch({
     request,
     launchKind: launchProvenance.launch_kind,
@@ -665,7 +790,7 @@ async function main() {
     promptPresent: Boolean(prompt.trim()),
   });
   const project = projectNameFor(input);
-  const limit = Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_CONTEXT_LIMIT ?? 7)));
+  const limit = Math.max(1, Math.min(20, Number(process.env.DINOBRAIN_HOOK_CONTEXT_LIMIT ?? 3)));
   const sensitivity = sensitivityFor(redactions);
   const existingReceipt = await readHookReceipt(identity);
   if (existingReceipt) {
@@ -705,7 +830,7 @@ async function main() {
     }
     const receiptReport = receipt ? await reportFromReceipt(receipt.receipt) : null;
     const sibling = receiptReport ?? (await waitForSiblingPreflightReport(hookLock.key));
-    const context = sibling ? siblingContext(sibling) : failClosedDuplicateContext(hookLock.path);
+    const context = sibling ? siblingContext(sibling) : degradedDuplicateContext(hookLock.path);
     process.stdout.write(
       `${JSON.stringify(
         hookOutput(context, sibling ? "" : "DinoBrain preflight duplicate lock did not produce verified sibling context."),
@@ -815,10 +940,21 @@ async function main() {
             prompt_hash: promptHash,
             dedupe_key: identity.key,
             owner_id: `hook:${identity.key}`,
-            lease_seconds: Math.max(60, Math.min(7 * 24 * 60 * 60, Number(process.env.DINOBRAIN_HOOK_LEASE_SECONDS ?? 86400))),
+            lease_seconds: Math.max(60, Math.min(7 * 24 * 60 * 60, Number(process.env.DINOBRAIN_HOOK_LEASE_SECONDS ?? 3600))),
           },
         }),
       );
+
+      const testDelayAfterBeginMs = Math.max(
+        0,
+        Math.min(10_000, Number(process.env.DINOBRAIN_HOOK_TEST_DELAY_AFTER_BEGIN_MS ?? 0)),
+      );
+      if (testDelayAfterBeginMs > 0) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, testDelayAfterBeginMs);
+          timer.unref?.();
+        });
+      }
 
       const startResult = beginResult;
       if (startResult.skipped || startResult.durable_task_created === false) {
@@ -882,7 +1018,7 @@ async function main() {
       }
 
       return { start: startResult, contextPack: contextResult, sessionImport: importResult };
-    });
+    }, { timeoutMs: hookSoftTimeoutMs() });
 
     let autoSync;
     if (
@@ -950,6 +1086,8 @@ async function main() {
       os_version: start.os_version || DINOBRAIN_VERSION,
       task_id: start.task_id,
       task_path: start.task_path,
+      task_status: start.record?.status ?? (start.trace_path ? "blocked" : "started"),
+      trace_path: start.trace_path ?? null,
       lease_id: start.lease?.lease_id ?? null,
       lease_owner_id: start.lease?.owner_id ?? null,
       lease_expires_at: start.lease?.expires_at ?? null,
@@ -1050,7 +1188,7 @@ async function main() {
         hookOutput(
           context,
           start.fail_closed || start.action_decision === "block"
-            ? "DinoBrain OS gates failed closed before response."
+            ? "DinoBrain memory verification failed; conversation continues in degraded mode."
             : "",
         ),
       )}\n`,
@@ -1062,12 +1200,21 @@ async function main() {
 
 main().catch(async (error) => {
   const message = safeError(error);
+  let timeoutCleanup = { settled_task_ids: [], failed_task_ids: [] };
+  try {
+    timeoutCleanup = await settleHookFailureTasks(hookFailureContext, message);
+  } catch (cleanupError) {
+    timeoutCleanup = { settled_task_ids: [], failed_task_ids: [], error: safeError(cleanupError) };
+  }
   try {
     await appendDataEvent({
       event: "codex_preflight_failed",
       source: "codex_hook",
       at: nowIso(),
       error: message,
+      hook_run_id: hookFailureContext?.hookRunId ?? null,
+      prompt_hash: hookFailureContext?.promptHash ?? null,
+      timeout_cleanup: timeoutCleanup,
     });
   } catch {
     // Keep hook output valid even if the data vault is unavailable.
@@ -1078,8 +1225,8 @@ main().catch(async (error) => {
       hookOutput(
         [
           `DinoBrain OS preflight failed: ${message}`,
-          "FAIL-CLOSED: do not perform substantial work because no DinoBrain Context Pack was injected for this turn.",
-          "Only explain the block or repair the DinoBrain hook/MCP setup.",
+          "DEGRADED MODE: continue with the current user instruction; no DinoBrain Context Pack was injected for this turn.",
+          `timeout_cleanup: settled=${timeoutCleanup.settled_task_ids.length}, failed=${timeoutCleanup.failed_task_ids.length}`,
           "If this persists, run npm run build and npm run hook:verify from the DinoBrain repo.",
         ].join("\n"),
         "DinoBrain OS preflight failed before context injection.",

@@ -218,6 +218,33 @@ async function main() {
     assert(normal.context_evidence?.contextTraceFresh === true, "Fresh context was not recognized");
     assert(normal.preflight_evidence?.eventOrderVerified === true, "Direct MCP event order was not verified");
 
+    const refreshStart = await call(normalClient, "os_begin_task", {
+      request: "Refresh the task-bound Context Pack during a long-running task.",
+      project: "gate-verifier",
+      sensitivity: "normal",
+    });
+    const refreshedPack = await call(normalClient, "get_context_pack", {
+      question: "Refresh the task-bound Context Pack during a long-running task.",
+      task_id: refreshStart.task_id,
+      limit: 3,
+    });
+    assert(refreshedPack.trace_path !== refreshStart.context_pack.trace_path, "Context Pack refresh reused the old trace");
+    const refreshedGate = await call(normalClient, "os_gate", {
+      request: "Continue after refreshing the task-bound Context Pack.",
+      task_id: refreshStart.task_id,
+      context_pack_path: refreshedPack.trace_path,
+      has_context_pack: true,
+      context_item_count: refreshedPack.item_count,
+      sensitivity: "normal",
+    });
+    assert(refreshedGate.action_decision === "allow", "Latest task-bound Context Pack was not accepted");
+    assert(refreshedGate.context_pack_path === refreshedPack.trace_path, "Gate selected an older Context Pack after refresh");
+    await finish(
+      normalClient,
+      { ...refreshStart, context_pack: refreshedPack },
+      "Latest task-bound Context Pack selection verified.",
+    );
+
     const unknownSensitivity = await call(normalClient, "os_begin_task", {
       request: "Write a local analysis summary without syncing it.",
       project: "gate-verifier",
@@ -436,6 +463,7 @@ async function main() {
         {
           ok: true,
           safe_action: normal.action_decision,
+          refreshed_context_pack_allowed: true,
           unknown_sensitivity_constrained: true,
           manual_start_context_gate_fallback: true,
           forged_context_blocked: true,

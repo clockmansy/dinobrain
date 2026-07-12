@@ -184,6 +184,14 @@ function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function taskPromptHashVerified(task: JsonObject): boolean {
+  const promptHash = firstString(task.prompt_hash);
+  if (!/^[a-f0-9]{64}$/i.test(promptHash)) return false;
+  const originalRequestHash = firstString(task.request_hash);
+  const storedRequest = firstString(task.request);
+  return promptHash === originalRequestHash || (storedRequest.length > 0 && promptHash === sha256(storedRequest));
+}
+
 function shortHash(value: string, length = 16): string {
   return sha256(value).slice(0, length);
 }
@@ -389,9 +397,8 @@ function extractSignals(
   const taskId = firstString(trace.record.task_id);
   const taskPath = task.path;
   const promptHash = firstString(task.record.prompt_hash);
-  const taskRequest = firstString(task.record.request);
   const outcome = firstString(trace.record.outcome);
-  if (!taskId || task.record.task_id !== taskId || !promptHash || sha256(taskRequest) !== promptHash || outcome === "blocked") {
+  if (!taskId || task.record.task_id !== taskId || !promptHash || !taskPromptHashVerified(task.record) || outcome === "blocked") {
     return { signals: [], suppressed: [{ reason_code: "trace_task_provenance_unverified", task_id: taskId || "unknown" }] };
   }
   const project = safeSlug(firstString(task.record.project, "unknown")).toLowerCase();
@@ -509,7 +516,7 @@ async function validateEvidenceSources(
       if (sha256(traceBytes) !== source.trace_sha256) issues.push(`trace_hash_mismatch:${source.trace_path}`);
       else if (firstString(trace.task_id) !== source.task_id) issues.push(`trace_task_mismatch:${source.trace_path}`);
       else if (!task || firstString(task.task_id) !== source.task_id) issues.push(`task_binding_missing:${source.task_path}`);
-      else if (firstString(task.prompt_hash) !== source.prompt_hash || sha256(firstString(task.request)) !== source.prompt_hash) {
+      else if (firstString(task.prompt_hash) !== source.prompt_hash || !taskPromptHashVerified(task)) {
         issues.push(`task_prompt_hash_mismatch:${source.task_path}`);
       } else if (firstString(trace.outcome) === "blocked") issues.push(`blocked_trace_not_eligible:${source.trace_path}`);
       else verified += 1;

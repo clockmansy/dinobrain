@@ -49,6 +49,20 @@ function Quote-Argument([string]$Value) {
   return '"' + ($Value -replace '"', '\"') + '"'
 }
 
+function Stop-HookProcessTree([int]$ProcessId) {
+  if ($ProcessId -le 0) {
+    return
+  }
+  $taskKill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+  if (Test-Path -LiteralPath $taskKill) {
+    try {
+      & $taskKill /PID $ProcessId /T /F *> $null
+      if ($LASTEXITCODE -eq 0) { return }
+    } catch {}
+  }
+  try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+}
+
 function Get-ProcessRecord([int]$ProcessId) {
   if ($ProcessId -le 0) {
     return $null
@@ -122,7 +136,7 @@ try {
   $nodeExe = Find-NodeRuntime
 
   if (-not $nodeExe) {
-    [Console]::Out.WriteLine((New-HookJson "DinoBrain OS preflight could not find a Node.js runtime. FAIL-CLOSED: do not perform substantial work because DinoBrain memory was not loaded for this Codex turn. Install/repair the DinoBrain Node runtime, then start a new trusted Codex session." -Block -Reason "DinoBrain OS preflight could not find a Node.js runtime."))
+    [Console]::Out.WriteLine((New-HookJson "DinoBrain OS context is unavailable because the Node.js runtime was not found. DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before persistence, sync, release, deployment, or destructive execution."))
     exit 0
   }
 
@@ -143,11 +157,11 @@ try {
   $oldLaunchProvenance = $env:DINOBRAIN_HOOK_LAUNCH_PROVENANCE
   $env:DINOBRAIN_REPO_ROOT = $repoRoot
   $env:DINOBRAIN_HOOK_LAUNCH_PROVENANCE = Get-HookLauncherProvenance
-  $timeoutSeconds = 28
+  $timeoutSeconds = 8
   if ($env:DINOBRAIN_HOOK_TIMEOUT_SECONDS) {
     $parsedTimeout = 0
     if ([int]::TryParse($env:DINOBRAIN_HOOK_TIMEOUT_SECONDS, [ref]$parsedTimeout)) {
-      $timeoutSeconds = [Math]::Max(1, [Math]::Min(120, $parsedTimeout))
+      $timeoutSeconds = [Math]::Max(1, [Math]::Min(15, $parsedTimeout))
     }
   }
   $timedOut = $false
@@ -159,7 +173,7 @@ try {
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
       $timedOut = $true
-      try { $process.Kill() } catch {}
+      Stop-HookProcessTree -ProcessId $process.Id
       try { $process.WaitForExit(5000) | Out-Null } catch {}
     }
     $stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -171,7 +185,7 @@ try {
 
   if ($timedOut) {
     $message = "DinoBrain OS preflight timed out after $timeoutSeconds seconds."
-    [Console]::Out.WriteLine((New-HookJson ($message + " FAIL-CLOSED: do not perform substantial work because no verified DinoBrain Context Pack was injected for this turn. Start a new trusted session after repairing the hook/MCP runtime.") -Block -Reason $message))
+    [Console]::Out.WriteLine((New-HookJson ($message + " DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before persistence, sync, release, deployment, or destructive execution.")))
     exit 0
   }
 
@@ -180,7 +194,7 @@ try {
     if ($stderr) {
       $message = $message + " stderr: " + ($stderr -replace "\s+", " ").Trim()
     }
-    [Console]::Out.WriteLine((New-HookJson ($message + " FAIL-CLOSED: do not perform substantial work because no DinoBrain Context Pack was injected for this Codex turn.") -Block -Reason $message))
+    [Console]::Out.WriteLine((New-HookJson ($message + " DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before any state-changing action.")))
     exit 0
   }
 
@@ -189,7 +203,7 @@ try {
     if ($stderr) {
       $message = $message + " stderr: " + ($stderr -replace "\s+", " ").Trim()
     }
-    [Console]::Out.WriteLine((New-HookJson ($message + " FAIL-CLOSED: do not perform substantial work because no DinoBrain Context Pack was injected for this Codex turn.") -Block -Reason $message))
+    [Console]::Out.WriteLine((New-HookJson ($message + " DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before any state-changing action.")))
     exit 0
   }
 
@@ -202,6 +216,6 @@ try {
   exit $process.ExitCode
 } catch {
   $message = "DinoBrain OS preflight failed in the PowerShell wrapper: " + $_.Exception.Message
-  [Console]::Out.WriteLine((New-HookJson ($message + " FAIL-CLOSED: do not perform substantial work because no DinoBrain Context Pack was injected for this Codex turn.") -Block -Reason $message))
+  [Console]::Out.WriteLine((New-HookJson ($message + " DEGRADED NON-BLOCKING: continue ordinary conversation without DinoBrain memory. Recover direct MCP context before any state-changing action.")))
   exit 0
 }

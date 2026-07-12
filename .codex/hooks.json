@@ -1,17 +1,3 @@
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& { $root = git rev-parse --show-toplevel; & (Join-Path $root 'scripts\\dinobrain-user-prompt-hook.ps1') }\"",
-            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& { $root = git rev-parse --show-toplevel; & (Join-Path $root 'scripts\\dinobrain-user-prompt-hook.ps1') }\"",
-            "timeout": 30,
-            "statusMessage": "Loading DinoBrain context"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }

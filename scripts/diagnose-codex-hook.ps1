@@ -306,7 +306,11 @@ if (Test-Path -LiteralPath $HooksPath) {
     $hookRecord = Get-DinoBrainHookRecord -HookConfig $hookJson.Value
     $hookCommand = Get-HookCommand -HookConfig $hookJson.Value
     if ([string]::IsNullOrWhiteSpace($hookCommand)) {
-      Add-Check $checks "codex_user_hook" "fail" "DinoBrain UserPromptSubmit hook is not registered" @{ hooks_path = $HooksPath }
+      if ($managedHookPresent) {
+        Add-Check $checks "codex_user_hook" "pass" "Duplicate DinoBrain user hook is intentionally absent; the managed hook is authoritative" @{ hooks_path = $HooksPath; managed_hook_present = $true }
+      } else {
+        Add-Check $checks "codex_user_hook" "fail" "DinoBrain UserPromptSubmit hook is not registered" @{ hooks_path = $HooksPath }
+      }
     } else {
       Add-Check $checks "codex_user_hook" "pass" "DinoBrain UserPromptSubmit hook is registered" @{ hooks_path = $HooksPath; command = $hookCommand }
       $state = Get-ObjectPropertyValue -ObjectValue $hookRecord -PropertyName "state"
@@ -329,10 +333,10 @@ if (Test-Path -LiteralPath $HooksPath) {
       }
     }
   } else {
-    Add-Check $checks "codex_user_hook" "fail" "hooks.json is invalid JSON" @{ hooks_path = $HooksPath; error = $hookJson.Error }
+    Add-Check $checks "codex_user_hook" ($(if ($managedHookPresent) { "warn" } else { "fail" })) "hooks.json is invalid JSON" @{ hooks_path = $HooksPath; error = $hookJson.Error; managed_hook_present = $managedHookPresent }
   }
 } else {
-  Add-Check $checks "codex_user_hook" "fail" "hooks.json was not found" @{ hooks_path = $HooksPath }
+  Add-Check $checks "codex_user_hook" ($(if ($managedHookPresent) { "pass" } else { "fail" })) ($(if ($managedHookPresent) { "hooks.json is absent; the managed DinoBrain hook is authoritative" } else { "hooks.json was not found" })) @{ hooks_path = $HooksPath; managed_hook_present = $managedHookPresent }
 }
 
 $codexCommand = Get-Command codex -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -438,7 +442,11 @@ $failCount = @($checks | Where-Object { $_.status -eq "fail" }).Count
 $warnCount = @($checks | Where-Object { $_.status -eq "warn" }).Count
 $nextSteps = @()
 if ($failCount -eq 0 -and $warnCount -eq 0) {
-  $nextSteps += "Run DinoBrain Codex Hook Approval.cmd or open Codex, run /hooks, trust the DinoBrain hook if it is pending, then start a new thread and send a prompt."
+  if ($managedHookPresent) {
+    $nextSteps += "The managed DinoBrain hook is healthy and requires no user trust approval. If Codex predates this configuration, fully restart it and use a fresh thread."
+  } else {
+    $nextSteps += "Open Codex, run /hooks, trust the DinoBrain fallback user hook if it is pending, then start a new thread and send a prompt."
+  }
 } else {
   if ($failCount -gt 0) {
     $nextSteps += "Fix any FAIL rows first."
@@ -451,9 +459,9 @@ if ($failCount -eq 0 -and $warnCount -eq 0) {
   if (@($checks | Where-Object { $_.name -eq "codex_managed_hook" -and $_.status -eq "warn" }).Count -gt 0) {
     $nextSteps += "For a trust-free supported path, run npm run codex:hooks:managed or DinoBrain Codex Managed Hook Admin.cmd, then restart Codex and rerun live proof."
   }
-  $nextSteps += "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again."
+  $nextSteps += $(if ($managedHookPresent) { "If only codex_reload is WARN, fully quit Codex and open it again." } else { "If only codex_reload is WARN, run DinoBrain Codex Hook Approval.cmd or fully quit Codex and open it again." })
   $nextSteps += "If codex_thread_freshness is WARN, run the live proof in a new Codex Desktop thread created after the latest hook config reload."
-  $nextSteps += "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the DinoBrain UserPromptSubmit hook."
+  $nextSteps += $(if ($managedHookPresent) { "If hook_probe is PASS but live prompts do not trigger, reinstall the managed hook, fully restart Codex, and retry in a fresh thread." } else { "If hook_probe is PASS but live prompts do not trigger, run DinoBrain Codex Hook Approval.cmd or open /hooks in Codex and trust the fallback UserPromptSubmit hook." })
 }
 
 $report = [ordered]@{

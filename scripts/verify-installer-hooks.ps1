@@ -68,16 +68,29 @@ try {
       throw "DinoBrain hook auto-compound env missing for case $($case.Name)"
     }
     $dinoHookCount = 0
+    $dinoHookCommand = $null
     foreach ($group in $groups) {
       foreach ($hook in @($group.hooks)) {
         $hookText = $hook | ConvertTo-Json -Depth 20 -Compress
         if ($hookText -match "dinobrain-user-prompt-hook\.ps1") {
           $dinoHookCount += 1
+          $dinoHookCommand = [string]$hook.command
         }
       }
     }
     if ($dinoHookCount -ne 1) {
       throw "Unexpected DinoBrain hook count for case $($case.Name): $dinoHookCount"
+    }
+    foreach ($setting in @(
+      "DINOBRAIN_HOOK_IMPORT_SESSION = '0'",
+      "DINOBRAIN_HOOK_CONTEXT_LIMIT = '3'",
+      "DINOBRAIN_HOOK_LEASE_SECONDS = '3600'",
+      "DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = '6000'",
+      "DINOBRAIN_HOOK_TIMEOUT_SECONDS = '8'"
+    )) {
+      if ($dinoHookCommand -notmatch [regex]::Escape($setting)) {
+        throw "DinoBrain lean hook setting missing for case $($case.Name): $setting"
+      }
     }
     if (($case.Name -eq "array" -or $case.Name -eq "single-object" -or $case.Name -eq "mixed-dinobrain") -and $text -notmatch "echo old") {
       throw "Existing non-DinoBrain hook was not preserved for case $($case.Name)"
@@ -100,6 +113,25 @@ try {
     }
   }
 
+  $managedOnlyHooksPath = Join-Path $temp "managed-only-hooks.json"
+  [System.IO.File]::WriteAllText(
+    $managedOnlyHooksPath,
+    '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo keep-first"},{"type":"command","command":"powershell dinobrain-user-prompt-hook.ps1"}]},{"hooks":[{"type":"command","command":"echo keep-second"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"echo keep-post"}]}]}}',
+    [System.Text.UTF8Encoding]::new($false)
+  )
+  if (-not (Remove-DinoBrainCodexUserHookRecords -HooksPath $managedOnlyHooksPath)) {
+    throw "Managed-only transition did not remove the duplicate DinoBrain user hook"
+  }
+  $managedOnlyText = [System.IO.File]::ReadAllText($managedOnlyHooksPath)
+  if ($managedOnlyText -match "dinobrain-user-prompt-hook\.ps1") {
+    throw "Managed-only transition left a duplicate DinoBrain user hook"
+  }
+  foreach ($preserved in @("echo keep-first", "echo keep-second", "echo keep-post")) {
+    if ($managedOnlyText -notmatch [regex]::Escape($preserved)) {
+      throw "Managed-only transition removed an unrelated hook: $preserved"
+    }
+  }
+
   $claudeSettingsPath = Join-Path $temp "claude-settings.json"
   [System.IO.File]::WriteAllText($claudeSettingsPath, '{"hooks":{"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"echo claude-old"}]}]}}', [System.Text.UTF8Encoding]::new($false))
   Set-DinoBrainClaudeUserHook -SettingsPath $claudeSettingsPath -AppPath (Join-Path $temp "dinobrain") -VaultPath (Join-Path $temp "dinobrain-data")
@@ -114,6 +146,29 @@ try {
   }
   if ($claudeRaw -notmatch "DINOBRAIN_AUTO_COMPOUND") {
     throw "Claude DinoBrain hook auto-compound env missing"
+  }
+  $claudeCommand = $null
+  foreach ($group in $claudeGroups) {
+    foreach ($hook in @($group.hooks)) {
+      if (([string]$hook.command) -match "dinobrain-user-prompt-hook\.ps1") {
+        $claudeCommand = [string]$hook.command
+      }
+    }
+  }
+  foreach ($setting in @(
+    "DINOBRAIN_AUTO_GROWTH = '0'",
+    "DINOBRAIN_AUTO_COMPOUND = '0'",
+    "DINOBRAIN_AUTO_SYNC = '0'",
+    "DINOBRAIN_HOOK_AUTO_SYNC = '0'",
+    "DINOBRAIN_HOOK_IMPORT_SESSION = '0'",
+    "DINOBRAIN_HOOK_CONTEXT_LIMIT = '3'",
+    "DINOBRAIN_HOOK_LEASE_SECONDS = '3600'",
+    "DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = '6000'",
+    "DINOBRAIN_HOOK_TIMEOUT_SECONDS = '8'"
+  )) {
+    if ($claudeCommand -notmatch [regex]::Escape($setting)) {
+      throw "Claude lean hook setting missing: $setting"
+    }
   }
   if ($claudeRaw -notmatch "echo claude-old") {
     throw "Existing Claude non-DinoBrain hook was not preserved"
@@ -142,8 +197,8 @@ try {
     throw "DinoBrain MCP config was not written"
   }
   foreach ($envName in @("DINOBRAIN_AUTO_GROWTH", "DINOBRAIN_AUTO_COMPOUND", "DINOBRAIN_AUTO_SYNC")) {
-    if ($configText -notmatch "(?m)^$envName = `"1`"\r?$") {
-      throw "DinoBrain MCP env missing: $envName"
+    if ($configText -notmatch "(?m)^$envName = `"0`"\r?$") {
+      throw "DinoBrain MCP lean-mode env missing: $envName"
     }
   }
   foreach ($envName in @("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", "DINOBRAIN_AUTO_SYNC_PUSH")) {

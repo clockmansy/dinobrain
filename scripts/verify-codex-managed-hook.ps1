@@ -40,6 +40,22 @@ try {
   if (-not (Test-Path -LiteralPath $json.managed_wrapper)) {
     throw "Managed wrapper was not created: $($json.managed_wrapper)"
   }
+  $managedWrapper = [System.IO.File]::ReadAllText($json.managed_wrapper)
+  foreach ($setting in @(
+    'DINOBRAIN_AUTO_GROWTH = "0"',
+    'DINOBRAIN_AUTO_COMPOUND = "0"',
+    'DINOBRAIN_AUTO_SYNC = "0"',
+    'DINOBRAIN_HOOK_AUTO_SYNC = "0"',
+    'DINOBRAIN_HOOK_IMPORT_SESSION = "0"',
+    'DINOBRAIN_HOOK_CONTEXT_LIMIT = "3"',
+    'DINOBRAIN_HOOK_LEASE_SECONDS = "3600"',
+    'DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = "6000"',
+    'DINOBRAIN_HOOK_TIMEOUT_SECONDS = "8"'
+  )) {
+    if ($managedWrapper -notmatch [regex]::Escape($setting)) {
+      throw "Managed wrapper missing lean hook setting: $setting"
+    }
+  }
   $requirements = [System.IO.File]::ReadAllText($requirementsPath)
   foreach ($needle in @("[features]", "hooks = true", "[hooks]", "windows_managed_dir", "[[hooks.UserPromptSubmit]]", "[[hooks.UserPromptSubmit.hooks]]", "command_windows", "dinobrain-managed-user-prompt-hook.ps1")) {
     if ($requirements -notmatch [regex]::Escape($needle)) {
@@ -48,6 +64,9 @@ try {
   }
   if (([regex]::Matches($requirements, "DinoBrain managed UserPromptSubmit begin")).Count -ne 1) {
     throw "Expected exactly one DinoBrain managed hook block after first install."
+  }
+  if ($requirements -notmatch "(?m)^timeout = 12\r?$") {
+    throw "Managed hook timeout budget is not 12 seconds."
   }
 
   $second = & powershell.exe `

@@ -178,7 +178,7 @@ async function call(name, args) {
 
 async function completeRecurringTask(run) {
   const begin = await call("os_begin_task", {
-    request: `Release parity verification recurrence run ${run}`,
+    request: `Release parity verification recurrence run ${run}\nAttachment: C:/Users/example-user/AppData/Local/Temp/release-proof-${run}.png`,
     project: "dinobrain",
     sensitivity: "normal",
     limit: 6,

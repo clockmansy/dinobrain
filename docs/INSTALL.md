@@ -52,7 +52,7 @@ the server cache refreshes at most every 5 seconds while the browser polls every
 Run `DinoBrain Codex Live Proof.cmd` after install/update when you need to prove
 that a freshly restarted Codex Desktop session is dispatching the real
 `UserPromptSubmit` hook. It restarts stale Codex/MCP processes, guides the
-required `/hooks` trust step, copies a unique proof prompt, and watches
+fallback-only `/hooks` trust step when needed, copies a unique proof prompt, and watches
 `verify:codex-live` until the real `codex_desktop` preflight event appears.
 
 After restoring an encrypted private backup on a new PC, run
@@ -189,18 +189,16 @@ startup_timeout_sec = 120
 
 [mcp_servers.dinobrain.env]
 DINOBRAIN_DATA_DIR = 'C:\Users\<you>\Documents\dinobrain-data'
-DINOBRAIN_AUTO_GROWTH = '1'
-DINOBRAIN_AUTO_COMPOUND = '1'
-DINOBRAIN_AUTO_SYNC = '1'
+DINOBRAIN_AUTO_GROWTH = '0'
+DINOBRAIN_AUTO_COMPOUND = '0'
+DINOBRAIN_AUTO_SYNC = '0'
 DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'
 DINOBRAIN_AUTO_SYNC_PUSH = '0'
 ```
 
-`DINOBRAIN_AUTO_SYNC=1` keeps the sync policy evaluator active, but the default
-installed posture is public-safe: prompt-derived conditional artifacts are not
-auto-committed and hook preflight does not auto-push unless you explicitly opt
-in with `DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL=1` and
-`DINOBRAIN_AUTO_SYNC_PUSH=1`.
+The installed posture is lean and public-safe: prompt submission performs only
+pre-response context/gate work. Session import, growth, compounding, commit, and
+push require an explicit bounded task action.
 
 10. Registers Codex prompt hooks.
 
@@ -213,7 +211,7 @@ C:\ProgramData\OpenAI\Codex\DinoBrainHooks\dinobrain-managed-user-prompt-hook.ps
 
 Codex treats hooks declared through managed requirements as policy-managed hooks, so this is the trust-free install path. The installer tries to write the managed hook directly. If the current process cannot write ProgramData, it still creates `DinoBrain Codex Managed Hook Admin.cmd`; run that launcher as administrator to install the managed hook later.
 
-The installer also registers a user-level fallback prompt hook at `C:\Users\<you>\.codex\hooks.json`.
+The installer stages a user-level fallback prompt hook at `C:\Users\<you>\.codex\hooks.json`. If managed-hook installation succeeds, it removes only the DinoBrain fallback record while preserving unrelated user hooks. The fallback remains only when managed registration is unavailable.
 
 This hook calls:
 
@@ -221,7 +219,7 @@ This hook calls:
 C:\Users\<you>\Documents\dinobrain\scripts\dinobrain-user-prompt-hook.ps1
 ```
 
-Because this fallback is a user-level hook, Codex can run the DinoBrain preflight from any workspace after Codex reloads and the hook is trusted. The installer also makes sure `[features] hooks = true` is present in `C:\Users\<you>\.codex\config.toml` when hook registration is enabled. The hook records only bounded, redacted prompt previews and Context Pack trace metadata into the local data vault.
+The managed hook is the authoritative global Codex path and needs no `/hooks` trust click. The fallback supports environments where managed registration fails. The installer also makes sure `[features] hooks = true` is present in `C:\Users\<you>\.codex\config.toml`. Hook preflight uses lean defaults: three Context Pack items, a one-hour task lease, no automatic session import/sync/growth/compounding, and bounded redacted trace metadata.
 
 The Codex config writer normalizes line endings to CRLF, rejects bare carriage return bytes after writing, and validates the DinoBrain TOML block before reporting success. This prevents hidden `\r` bytes in `config.toml` from breaking Codex startup.
 
@@ -229,11 +227,11 @@ The Codex config writer normalizes line endings to CRLF, rejects bare carriage r
 
 The installer immediately simulates a `UserPromptSubmit` event through the same PowerShell hook wrapper that Codex will call. This proves the installed hook can start DinoBrain preflight, use the portable Node runtime, reach the data vault, and return `hookSpecificOutput.additionalContext` without requiring a manual first hook run. The handshake is tagged as `dinobrain-installer` and disables session import so it does not create review candidates from the synthetic prompt.
 
-This handshake proves the wrapper path but it is not live Codex Desktop proof. After hook registration, the installer creates `DinoBrain Codex Hook Approval.cmd`, `DinoBrain Codex Managed Hook Admin.cmd`, and `DinoBrain Codex Live Proof.cmd`.
+This handshake proves the wrapper path but it is not live Codex Desktop proof. The installer also creates managed-hook recovery and live-proof launchers. The approval helper is relevant only when the user-level fallback remains active.
 
 Use the managed-hook admin launcher when ProgramData registration was skipped or failed. Use the approval helper only for the user-level fallback hook; it restarts stale Codex desktop processes when they were already running before `hooks.json` changed, launches Codex again, copies `/hooks` to the clipboard, and shows the approval steps. The final trust/approve click for user hooks still has to be done by the user in Codex.
 
-After a managed hook or user hook changes, fully restart Codex and run the live proof in a newly created Codex Desktop workspace thread. Threads created before the latest `hooks.json` or `requirements.toml` write time are not accepted as proof.
+After a managed hook or fallback hook changes, fully restart Codex and run the live proof in a newly created Codex Desktop workspace thread. Threads created before the latest `requirements.toml` or fallback `hooks.json` write time are not accepted as proof.
 
 12. Registers DinoBrain in Claude Code. The installer writes a user-level `UserPromptSubmit` hook to `C:\Users\<you>\.claude\settings.json` so Claude Code can receive DinoBrain pre-response context before it processes a prompt. When `claude` is available, it also registers the DinoBrain MCP server:
 
@@ -250,19 +248,19 @@ claude mcp add `
 14. Runs `npm run verify:codex-loop` against a temporary data vault and bare Git remote to prove the Codex hook, Context Pack, finish_task, auto-growth, and auto-sync push path can close end to end.
 15. Creates `DinoBrain Observatory.cmd` launchers for the live graph and operations view.
 16. Creates `DinoBrain Hook Diagnose.cmd` launchers that verify the installed hook file, Codex hook feature setting, stale Codex processes, and the real PowerShell wrapper probe.
-17. Creates `DinoBrain Codex Hook Approval.cmd` launchers that restart stale Codex desktop sessions, open Codex, copy `/hooks`, and guide the user through the required hook trust prompt.
+17. Keeps the `/hooks` approval helper only as a fallback path; a healthy managed hook requires no trust approval.
 18. Creates `DinoBrain Codex Live Proof.cmd` launchers that combine stale-process restart, hook trust guidance, a unique proof prompt, and live `codex_desktop` verification.
 19. Creates `DinoBrain Private Backup.cmd` and `DinoBrain Private Restore.cmd` launchers for encrypted local-only recovery. Restore writes a local-only authenticated receipt under `%LOCALAPPDATA%\DinoBrain\proofs\private-restore\latest.json`.
 20. Creates `DinoBrain Recovery Equivalence Proof.cmd` to bind immutable install, encrypted restore, both clients, retrieval, behavior, Observatory, and scoped sync evidence into one signed run.
 21. Creates `DinoBrain Uninstall Everything.cmd` launchers that run the purge uninstaller from a temporary script copy so the app folder can remove itself.
 
-`hooks:data:verify` proves the data repo Git hook is configured and blocks unreviewed auto-generated accepted memories plus local-only event/index paths at commit/push time. This is the last safety line for stale MCP processes that were started before an update. `verify:os` uses the configured MCP command, checks the Codex user-level hook registration, lists the DinoBrain tools, checks the compounding memory loop, runs retrieval evaluation, and checks sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the live wrapper smoke test for the installed user-level hook command.
+`hooks:data:verify` proves the data repo Git hook is configured and blocks unreviewed auto-generated accepted memories plus local-only event/index paths at commit/push time. `verify:os` validates the managed Codex hook, lean environment values, optional fallback exclusivity, MCP tools, compounding, retrieval, and sync safety. `verify:codex-loop` proves the invoked Codex loop can push policy-approved data to a remote. The separate hook handshake is the wrapper smoke test.
 
-The repository also contains a project Codex hook at `.codex/hooks.json` for repo-local verification and fallback. The runtime hook has duplicate protection so a trusted project hook and a trusted user-level hook do not create duplicate task records for the same prompt.
+The repository `.codex/hooks.json` intentionally contains no DinoBrain prompt hook. This prevents a project hook from competing with the global managed hook.
 
-Codex requires you to review and trust hooks before they run in a live session. The installer can restart/reopen Codex and put `/hooks` on the clipboard, but it cannot and should not click the trust approval for you. Once trusted, you should not need to manually force a first DinoBrain hook run; the installer already exercised the wrapper path.
+Codex requires review and trust only when the user-level fallback is used. A healthy managed hook is policy-trusted and does not need a manual approval click.
 
-If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd` from the install folder. If the probe passes but live Codex prompts are silent, open `/hooks` in Codex, trust the DinoBrain `UserPromptSubmit` hook, then start a new thread.
+If live prompts still do not trigger DinoBrain, run `DinoBrain Hook Diagnose.cmd`. When the managed hook is healthy, fully restart Codex and retry in a fresh thread; use `/hooks` approval only when diagnostics report that the fallback user hook is active.
 
 From the app repo, the same diagnose and approval flow is:
 

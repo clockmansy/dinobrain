@@ -329,23 +329,23 @@ Then the script starts the configured MCP command and verifies that these tools 
 
 If Codex was already running before the MCP block was added, the app may need to restart or reload before the new tool appears in future thread tool surfaces. The verifier still proves that the configured command is startable by an MCP client.
 
-### Codex User-Level Hook Integration
+### Codex Managed Hook And Fallback Integration
 
-The installer writes a user-level hook file:
+The installer stages a fallback user hook file:
 
 ```text
 C:\Users\<you>\.codex\hooks.json
 ```
 
-The hook listens for `UserPromptSubmit` and calls the installed DinoBrain PowerShell wrapper by absolute path. This makes DinoBrain preflight available outside the `dinobrain` repo after Codex reloads and the hook is trusted.
+The fallback listens for `UserPromptSubmit` and calls the installed DinoBrain PowerShell wrapper by absolute path. When managed registration succeeds, the installer removes only DinoBrain from this file so Codex has one authoritative prompt hook.
 
-During installer verification, `DINOBRAIN_REQUIRE_CODEX_USER_HOOK=1` requires this hook to be present. Manual `npm run verify:os` reports the hook state but does not fail solely because the user-level hook is absent.
+During staged installer verification, `DINOBRAIN_REQUIRE_CODEX_USER_HOOK=1` proves the fallback works. Final verification requires either the managed hook or, if managed registration failed, the fallback.
 
 The verifier also reports `hook_runtime_config`. This catches `hooks = false` under `[features]` and `allow_managed_hooks_only = true`, either of which can make a registered user hook look installed while Codex skips it at runtime.
 
-The verifier also reports `managed_prompt_hook`. A passing managed hook means `C:\ProgramData\OpenAI\Codex\requirements.toml` contains the DinoBrain `UserPromptSubmit` declaration and the configured managed wrapper exists. This satisfies the registration/trust-path check, but not the live-behavior check; `verify:codex-live` must still find real `codex_desktop` events.
+The verifier also reports `managed_prompt_hook`. A passing result requires the ProgramData declaration, wrapper, lean environment values, and the 12-second Codex hook budget. This satisfies the registration/trust-path check, but `verify:codex-live` must still find real `codex_desktop` events.
 
-The project hook in `.codex/hooks.json` remains for local verification and fallback. The runtime hook uses a short lock in `.dino/hook-locks` so project-level and user-level hooks do not both create task records for the same prompt.
+The project `.codex/hooks.json` intentionally contains no DinoBrain hook. Integration tests invoke the hook script directly and verify that managed/user/project duplication cannot return.
 
 ### Claude Code MCP Integration
 
@@ -392,7 +392,7 @@ It checks `git_sync` in the temporary vault:
 - classifies review queue paths as conditional
 - classifies ordinary Wiki paths as syncable
 
-Live hook task records under `.dino/tasks` and `.dino/context-packs` are reported as operational noise in retrieval evaluation, but they are not counted against the curated-memory noise target. They are expected to grow as the user-level hook runs.
+Live hook task records under `.dino/tasks` and `.dino/context-packs` are operational evidence, not curated-memory noise. Installed lean mode limits each Context Pack to three items and uses one-hour leases.
 
 ### Session Ingest Safety
 
@@ -558,17 +558,16 @@ The current `eval:behavior` gate checks both context retrieval and an explicit s
 
 It verifies:
 
-- `.codex/hooks.json` contains a `UserPromptSubmit` hook.
+- `.codex/hooks.json` contains no duplicate DinoBrain `UserPromptSubmit` hook, while the managed-hook installer and wrapper are present.
 - the hook wrapper can start the DinoBrain preflight script.
-- `start_task` creates a task.
-- `get_context_pack` creates a trace and returns relevant memory.
-- `import_session` creates a local-only prompt archive and pending review candidates.
+- `os_begin_task` creates a task, verified Context Pack, and action gate.
+- the test fixture can explicitly enable `import_session` to validate local-only archives and pending review candidates even though installed lean mode leaves it off.
 - the hook returns `hookSpecificOutput.additionalContext`.
 - the final `additionalContext` SHA-256 matches the last delivery-ready event.
 - events are ordered as `codex_prompt_submitted`, `task_started`,
   `context_pack_created`, `os_begin_task_completed`, then
   `codex_preflight_completed`.
-- the PowerShell wrapper fails closed with a blocking hook decision when Node cannot be found.
+- missing Node, duplicate-lock, and timeout failures return degraded non-blocking context with no `decision:block`; timeout also kills the marked MCP process tree.
 
 `npm run pre-response:gate:verify` exercises the independent action policy in
 separate temporary vaults. It proves that forged context declarations, missing
@@ -583,15 +582,15 @@ Claude live-client evidence required by HG-01.
 
 `npm run verify:codex-live` does not simulate Codex. It reads the real `.dino/events/*.jsonl` files plus `reports/live-hooks/*.json` and fails unless the selected prompt snippet has a matching `codex_prompt_submitted` event, `codex_preflight_completed` event, and live hook report with selected memory paths. On Windows it also reports stale Codex and DinoBrain MCP processes whose start time predates `hooks.json` or `dist/index.js`, so a missing live event can be separated from hook registration failures.
 
-The same live verifier reports the user-level hook trust surface. If the
-DinoBrain `UserPromptSubmit` hook is registered but no visible `trusted_hash`
-or hook `state` is present and no live event appears, the failure is classified
-as a likely `/hooks` trust-review blocker instead of a stale-thread-only
+The same live verifier reports the fallback user-hook trust surface. If the
+fallback is active but no visible `trusted_hash` or hook `state` is present and
+no live event appears, the failure is classified as a likely `/hooks`
+trust-review blocker instead of a stale-thread-only
 problem. Codex may store trust outside `hooks.json`, so the decisive proof is
 still the real live event pair plus the hook report.
 
 `npm run verify:codex-live` also reports whether the current `CODEX_THREAD_ID` was created before `hooks.json` was updated. That stale-thread condition means the next proof attempt must happen in a fresh Codex Desktop thread, not the old long-running thread.
 
-If `verify:codex-live` reports fresh threads after `hooks.json` but still has no `codex_prompt_submitted` event, a new Codex thread existed but did not dispatch the user-level `UserPromptSubmit` hook. Do not count `send_message_to_thread`, app-tool delegation, or background thread messages as live proof. The proof prompt must be pasted manually into a trusted Codex Desktop workspace thread after `/hooks` approval.
+If `verify:codex-live` reports a fresh thread but still has no `codex_prompt_submitted` event, the selected managed or fallback `UserPromptSubmit` hook did not dispatch. Do not count `send_message_to_thread`, app-tool delegation, or background thread messages as live proof. Paste the proof prompt manually into a fresh Codex Desktop workspace thread; `/hooks` approval is required only when diagnostics report that the user-level fallback is active.
 
 `npm run codex:live-proof` wraps the live proof into an operator flow. It opens a separate proof window, restarts stale Codex/MCP processes through the approval helper, copies a unique proof prompt to the clipboard, and polls `verify:codex-live` until a fresh Codex Desktop thread emits the real `codex_desktop` preflight evidence. The npm command returns once the proof window has started.

@@ -105,7 +105,7 @@ Update, reinstall, and uninstall entrypoints:
 
 See `docs/INSTALL.md` for custom paths, repository access prerequisites, reinstall behavior, and removal flags.
 
-The installer configures Codex MCP, registers a user-level Codex prompt hook, starts the Codex hook approval helper, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
+The installer configures Codex MCP, installs one policy-trusted managed Codex prompt hook, keeps a user hook only when managed registration is unavailable, and registers Claude Code automatically when `claude` is on `PATH`. If Claude Code is installed later, rerun `.\setup.ps1`.
 
 By default the Windows installer tracks the app and data repositories at `main` and verifies that the local checkouts match their requested GitHub refs after update. A tag or commit can still be passed deliberately for rollback/recovery, but normal installs should not leave Codex running a stale DinoBrain app against newer GitHub data.
 
@@ -178,7 +178,7 @@ Set `DINOBRAIN_DATA_DIR` to point at a data vault. If omitted, the server uses `
 
 `npm run session:verify` proves that `import_session` stores only redacted local-only session excerpts, extracts hot/warm/cold review candidates, excludes unreviewed imports from retrieval, and keeps raw archives blocked from git sync.
 
-`npm run hook:verify` simulates the Codex `UserPromptSubmit` hook and proves it calls DinoBrain preflight, imports the redacted prompt through `import_session`, and avoids leaking obvious secret patterns. The installed user-level hook is written to `~/.codex/hooks.json`; the repo-level `.codex/hooks.json` remains as local verification and fallback.
+`npm run hook:verify` simulates `UserPromptSubmit` and proves preflight ordering, attachment-path redaction with stable prompt identity, non-blocking degradation, and timeout process-tree cleanup. The managed hook is authoritative; `~/.codex/hooks.json` is fallback-only and the repo `.codex/hooks.json` intentionally contains no DinoBrain hook.
 
 `npm run observatory` starts a local live view at `http://127.0.0.1:3847/` so Codex/DinoBrain events, OS health chips, read traces, node lifecycle, sync risk, and the LLM Wiki graph can be watched while working. See `docs/CODEX_HOOKS.md`.
 
