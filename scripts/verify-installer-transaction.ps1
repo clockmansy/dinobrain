@@ -88,6 +88,38 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-installer-transaction-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
+  $retryRoot = Join-Path $temp "retry-removal"
+  $retryFile = Join-Path $retryRoot "locked.txt"
+  $retryReady = Join-Path $temp "retry-ready.txt"
+  New-Item -ItemType Directory -Force -Path $retryRoot | Out-Null
+  [System.IO.File]::WriteAllText($retryFile, "locked", [System.Text.UTF8Encoding]::new($false))
+  $lockJob = Start-Job -ScriptBlock {
+    param([string]$LockedFile, [string]$ReadyFile)
+    $stream = [System.IO.File]::Open($LockedFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try {
+      [System.IO.File]::WriteAllText($ReadyFile, "ready")
+      Start-Sleep -Milliseconds 1200
+    } finally {
+      $stream.Dispose()
+    }
+  } -ArgumentList $retryFile, $retryReady
+  try {
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $retryReady)) {
+      if ([DateTime]::UtcNow -ge $readyDeadline) { throw "Transient lock fixture did not become ready." }
+      Start-Sleep -Milliseconds 50
+    }
+    $retryWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Remove-DinoBrainPathWithRetry -Path $retryRoot -Attempts 30 -DelayMilliseconds 100
+    $retryWatch.Stop()
+    if ($retryWatch.ElapsedMilliseconds -lt 700 -or (Test-Path -LiteralPath $retryRoot)) {
+      throw "Installer cleanup did not wait for and recover from a transient file lock."
+    }
+  } finally {
+    Wait-Job -Job $lockJob -Timeout 10 | Out-Null
+    Remove-Job -Job $lockJob -Force -ErrorAction SilentlyContinue
+  }
+
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   Add-Type -AssemblyName System.IO.Compression
   $zipSource = Join-Path $temp "zip-source"
@@ -338,6 +370,7 @@ try {
   [pscustomobject]@{
     ok = $true
     rollback_exact = $true
+    transient_lock_retry = $true
     dirty_data_preserved = $true
     moving_branch_frozen = $true
     dirty_update_fail_closed = $true

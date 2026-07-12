@@ -260,7 +260,11 @@ try {
   Write-Host "[matrix 4/5] induced failure and byte-exact rollback"
   $failed = Invoke-IsolatedInstaller -InstallScript $installScript -Arguments $installArguments -FailurePoint "after_config" -ExpectFailure
   $failedResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-  Assert-Matrix ($failedResult.status -eq "rolled_back") "injected failure did not report rolled_back"
+  if ($failedResult.status -ne "rolled_back") {
+    $failedDetail = $failedResult | ConvertTo-Json -Depth 10 -Compress
+    $childTail = @($failed.Tail) -join "`n"
+    throw "injected failure did not report rolled_back; result=$failedDetail`nchild_tail=$childTail"
+  }
   Assert-Matrix ((Get-MatrixManifest (Join-Path $installRoot "dinobrain")) -eq $appBeforeFailure) "app bytes changed after rollback"
   Assert-Matrix ((Get-MatrixManifest (Join-Path $installRoot "dinobrain-data")) -eq $dataBeforeFailure) "data bytes changed after rollback"
   Assert-Matrix ([System.IO.File]::ReadAllText($codexConfig) -eq $configBeforeFailure) "Codex config bytes changed after rollback"

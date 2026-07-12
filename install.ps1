@@ -505,6 +505,28 @@ function Assert-DinoBrainTransactionalSiblingPath {
   return $candidate
 }
 
+function Remove-DinoBrainPathWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [int]$Attempts = 60,
+    [int]$DelayMilliseconds = 500
+  )
+
+  $lastError = $null
+  for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    try {
+      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+      if (-not (Test-Path -LiteralPath $Path)) { return }
+    } catch {
+      $lastError = $_
+    }
+    if ($attempt -lt $Attempts) { Start-Sleep -Milliseconds $DelayMilliseconds }
+  }
+  $message = if ($null -ne $lastError) { [string]$lastError } else { "path still exists" }
+  throw "Could not remove path after $Attempts attempts: $Path. $message"
+}
+
 function Remove-DinoBrainTransactionalSiblingPath {
   param(
     [Parameter(Mandatory = $true)][string]$CandidatePath,
@@ -514,7 +536,7 @@ function Remove-DinoBrainTransactionalSiblingPath {
 
   $safe = Assert-DinoBrainTransactionalSiblingPath -CandidatePath $CandidatePath -TargetPath $TargetPath -Kind $Kind
   if (Test-Path -LiteralPath $safe) {
-    Remove-Item -LiteralPath $safe -Recurse -Force
+    Remove-DinoBrainPathWithRetry -Path $safe
   }
 }
 
@@ -1090,16 +1112,17 @@ function Move-DinoBrainPathWithRetry {
   )
 
   $lastError = $null
-  for ($attempt = 0; $attempt -lt 12; $attempt += 1) {
+  for ($attempt = 1; $attempt -le 60; $attempt += 1) {
     try {
-      Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
-      return
+      Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+      if (-not (Test-Path -LiteralPath $SourcePath) -and (Test-Path -LiteralPath $DestinationPath)) { return }
     } catch {
       $lastError = $_
-      Start-Sleep -Milliseconds (100 * ($attempt + 1))
     }
+    if ($attempt -lt 60) { Start-Sleep -Milliseconds 500 }
   }
-  throw $lastError
+  $message = if ($null -ne $lastError) { [string]$lastError } else { "source or destination state did not settle" }
+  throw "Could not move path after 60 attempts: $SourcePath -> $DestinationPath. $message"
 }
 
 function Promote-DinoBrainInstallTransaction {
@@ -1142,14 +1165,14 @@ function Rollback-DinoBrainInstallTransaction {
     if (Test-Path -LiteralPath $backup) {
       if (Test-Path -LiteralPath $target) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $quarantine) | Out-Null
-        if (Test-Path -LiteralPath $quarantine) { Remove-Item -LiteralPath $quarantine -Recurse -Force }
+        if (Test-Path -LiteralPath $quarantine) { Remove-DinoBrainPathWithRetry -Path $quarantine }
         Move-DinoBrainPathWithRetry -SourcePath $target -DestinationPath $quarantine
         if ($Transaction.RecoveredFromInterrupt) { [void]$Transaction.RecoveryQuarantinePaths.Add($quarantine) }
       }
       Move-DinoBrainPathWithRetry -SourcePath $backup -DestinationPath $target
     } elseif (-not $originalExisted -and (Test-Path -LiteralPath $target)) {
       New-Item -ItemType Directory -Force -Path (Split-Path -Parent $quarantine) | Out-Null
-      if (Test-Path -LiteralPath $quarantine) { Remove-Item -LiteralPath $quarantine -Recurse -Force }
+      if (Test-Path -LiteralPath $quarantine) { Remove-DinoBrainPathWithRetry -Path $quarantine }
       Move-DinoBrainPathWithRetry -SourcePath $target -DestinationPath $quarantine
       if ($Transaction.RecoveredFromInterrupt) { [void]$Transaction.RecoveryQuarantinePaths.Add($quarantine) }
     } elseif ($originalExisted -and -not (Test-Path -LiteralPath $target)) {
@@ -1173,7 +1196,7 @@ function Rollback-DinoBrainInstallTransaction {
   if (-not $Transaction.RecoveredFromInterrupt) { $cleanupPaths += (Join-Path $Transaction.Root "rollback-current") }
   foreach ($internalPath in $cleanupPaths) {
     if ((Test-Path -LiteralPath $internalPath) -and (Test-DinoBrainPathUnderRoot -TargetPath $internalPath -AllowedRoot $Transaction.Root)) {
-      Remove-Item -LiteralPath $internalPath -Recurse -Force
+      Remove-DinoBrainPathWithRetry -Path $internalPath
     }
   }
   $Transaction.Status = "rolled_back"
@@ -1199,7 +1222,7 @@ function Complete-DinoBrainInstallTransaction {
     (Join-Path $Transaction.Root "rollback-current")
   )) {
     if ((Test-Path -LiteralPath $internalPath) -and (Test-DinoBrainPathUnderRoot -TargetPath $internalPath -AllowedRoot $Transaction.Root)) {
-      Remove-Item -LiteralPath $internalPath -Recurse -Force
+      Remove-DinoBrainPathWithRetry -Path $internalPath
     }
   }
   $Transaction.Status = "complete"
