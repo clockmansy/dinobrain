@@ -240,7 +240,7 @@ try {
   if ([bool]$script:Config.private_restore_available) {
     Write-Utf8Text -Path $repairScript -Text @"
 `$ErrorActionPreference = 'Stop'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-private-restore.ps1' -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -ArchivePath '$([string]$script:Config.guest_private_backup)' -KeyFile '$([string]$script:Config.guest_recovery_key)' -IncludeUserConfig -OverwritePrivate -Yes
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-private-restore.ps1' -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -ArchivePath '$([string]$script:Config.guest_private_backup)' -KeyFile '$([string]$script:Config.guest_recovery_key)' -IncludeUserConfig -AllowAppUpgrade -OverwritePrivate -Yes
 if (`$LASTEXITCODE -ne 0) { throw 'Private restore failed.' }
 & powershell.exe $repairInstallArguments -ClaudeCommand '$nativeClaude'
 if (`$LASTEXITCODE -ne 0) { throw 'Post-restore path repair failed.' }

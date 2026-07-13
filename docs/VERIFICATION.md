@@ -253,6 +253,12 @@ bypass is confined to the dedicated Windows Sandbox and Claude receives only
 the challenge MCP allowlist; a missing, stale, or unusable credential
 capsule fails before any completion claim.
 
+The unattended guest uses `-AllowAppUpgrade` for private restore. This is not a
+general source-identity bypass: the backup app commit must be a Git ancestor of
+the installed app commit, while the data commit and data contract version stay
+exact. The backup regression separately proves descendant success, exact-mode
+failure, unrelated-history failure, data-drift failure, and receipt provenance.
+
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one
 run ID, asks for one fresh challenge prompt in Codex and one in Claude Code, and

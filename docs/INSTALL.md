@@ -96,6 +96,11 @@ value or auth-status payload
 is written to the public evidence. If either restored login is unusable, the
 proof fails and the ordinary manual sign-in launchers remain available.
 
+The Sandbox restore permits an app-version difference only when the backup's
+app commit is a Git ancestor of the installed release. The data commit and data
+contract version must still match exactly. An unrelated app history or changed
+memory data remains fail-closed.
+
 Run `DinoBrain Private Backup.cmd` to create an authenticated encrypted archive
 of local-only conversations, private sources, attachments, local event evidence,
 Codex/Claude user configuration, and credential files. The default archive is

@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.27` for this release) and
+  drift from the current authoritative version (`2.2.28` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -1114,6 +1114,14 @@ calls, so that flag is confined to the dedicated Windows Sandbox. Claude uses
 an exact seven-tool DinoBrain MCP allowlist. This removes the human-login
 availability dependency but does not itself satisfy DIST-02 until the released
 artifact completes the fresh Sandbox run.
+
+The first unattended Sandbox attempt reached private restore and exposed a
+release-identity defect: the private backup was created on `v2.2.25`, while the
+installed app was a verified descendant release. The restore now accepts this
+case only through an explicit ancestor check. Data commit and data contract
+remain exact-match gates, unrelated app histories remain blocked, and the
+receipt preserves the backup's original source identity. A released `v2.2.28`
+Sandbox rerun is still required before DIST-02 can be marked complete.
 
 #### REL-01: Immutable release parity
 

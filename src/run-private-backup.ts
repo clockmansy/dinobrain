@@ -11,6 +11,7 @@ import {
   inspectPrivateBackupHeader,
   readRecoveryKeyFile,
   restoreEncryptedPrivateBackup,
+  PrivateBackupError,
   type PrivateBackupRoot,
   type PrivateBackupSourceIdentity,
 } from "./private-backup.js";
@@ -43,6 +44,19 @@ function gitHead(root: string): string {
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+function gitIsAncestor(root: string, ancestor: string, descendant: string): boolean {
+  try {
+    execFileSync(
+      "git",
+      ["-c", `safe.directory=${path.resolve(root)}`, "-C", root, "merge-base", "--is-ancestor", ancestor, descendant],
+      { windowsHide: true, stdio: ["ignore", "ignore", "ignore"] },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sourceIdentity(appRoot: string, dataRoot: string): PrivateBackupSourceIdentity {
@@ -134,6 +148,24 @@ async function main(): Promise<void> {
     const keyFile = path.resolve(required(map, "key-file"));
     assertRecoveryKeyOutsideRoots(keyFile, [appRoot, dataRoot, path.dirname(archivePath)]);
     const key = await readRecoveryKeyFile(keyFile);
+    const currentIdentity = sourceIdentity(appRoot, dataRoot);
+    let expectedSourceIdentity: Partial<PrivateBackupSourceIdentity> = currentIdentity;
+    if (flag(map, "allow-app-upgrade")) {
+      const header = await inspectPrivateBackupHeader(archivePath);
+      if (
+        header.source_identity.app_commit !== currentIdentity.app_commit &&
+        !gitIsAncestor(appRoot, header.source_identity.app_commit, currentIdentity.app_commit)
+      ) {
+        throw new PrivateBackupError(
+          "backup_app_upgrade_not_ancestor",
+          "Encrypted backup app commit is not an ancestor of the installed app commit",
+        );
+      }
+      expectedSourceIdentity = {
+        data_commit: currentIdentity.data_commit,
+        data_contract_version: currentIdentity.data_contract_version,
+      };
+    }
     const targetRoots: Record<string, string> = { data: dataRoot };
     if (flag(map, "include-user-config") || flag(map, "include-client-auth")) {
       targetRoots.codex_config = path.resolve(map.get("codex-home")?.at(-1) ?? path.join(homedir(), ".codex"));
@@ -145,7 +177,7 @@ async function main(): Promise<void> {
         archive_path: archivePath,
         recovery_key: key,
         target_roots: targetRoots,
-        expected_source_identity: sourceIdentity(appRoot, dataRoot),
+        expected_source_identity: expectedSourceIdentity,
         max_age_ms: Number.isFinite(maxAgeDays) && maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : undefined,
         overwrite_private: flag(map, "overwrite-private"),
         receipt_path: map.get("receipt")?.at(-1) ? path.resolve(map.get("receipt")!.at(-1)!) : undefined,

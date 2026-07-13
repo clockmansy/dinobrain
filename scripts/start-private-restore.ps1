@@ -9,6 +9,7 @@ param(
   [string]$ReceiptPath = "",
   [ValidateRange(1, 3650)][int]$MaxAgeDays = 90,
   [switch]$IncludeUserConfig,
+  [switch]$AllowAppUpgrade,
   [switch]$OverwritePrivate,
   [switch]$Yes
 )
@@ -72,6 +73,7 @@ $arguments = @(
   "--receipt", $receipt
 )
 if ($IncludeUserConfig) { $arguments += "--include-user-config" }
+if ($AllowAppUpgrade) { $arguments += "--allow-app-upgrade" }
 if ($OverwritePrivate) { $arguments += "--overwrite-private" }
 & $node @arguments
 if ($LASTEXITCODE -ne 0) { throw "Private restore failed with exit code $LASTEXITCODE." }

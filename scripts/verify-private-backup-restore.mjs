@@ -81,6 +81,18 @@ function runCli(args) {
   return JSON.parse(output);
 }
 
+function expectCliFailure(code, args) {
+  try {
+    runCli(args);
+    assert.fail(`Expected CLI failure ${code}`);
+  } catch (error) {
+    const stderr = error?.stderr?.toString?.() ?? "";
+    const parsed = JSON.parse(stderr);
+    assert.equal(parsed.error_code, code);
+    return parsed;
+  }
+}
+
 function expectFailure(code, operation) {
   return operation().then(
     () => assert.fail(`Expected ${code}`),
@@ -325,6 +337,74 @@ try {
   );
   assert.equal(gitHead(cliClone), gitHead(cliData));
 
+  const backupAppCommit = cliCreated.source_identity.app_commit;
+  write(cliApp, "CHANGELOG.md", "# Forward-compatible restore fixture\n");
+  git(cliApp, ["add", "CHANGELOG.md"]);
+  git(cliApp, ["commit", "-m", "fixture app upgrade"]);
+  const upgradedAppCommit = gitHead(cliApp);
+  assert.notEqual(upgradedAppCommit, backupAppCommit);
+
+  const exactMismatchClone = path.join(fixtureRoot, "cli-exact-mismatch-clone");
+  execFileSync("git", ["clone", cliData, exactMismatchClone], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  expectCliFailure("backup_source_identity_mismatch", [
+    "restore", "--apply",
+    "--app-root", cliApp,
+    "--data-root", exactMismatchClone,
+    "--archive", cliArchive,
+    "--key-file", cliKey,
+  ]);
+
+  const upgradedClone = path.join(fixtureRoot, "cli-upgraded-clone");
+  const upgradedReceipt = path.join(fixtureRoot, "cli-upgraded-receipt.json");
+  execFileSync("git", ["clone", cliData, upgradedClone], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const upgradedRestore = runCli([
+    "restore", "--apply",
+    "--app-root", cliApp,
+    "--data-root", upgradedClone,
+    "--archive", cliArchive,
+    "--key-file", cliKey,
+    "--allow-app-upgrade",
+    "--receipt", upgradedReceipt,
+  ]);
+  assert.equal(upgradedRestore.status, "restored");
+  assert.equal(upgradedRestore.source_identity.app_commit, backupAppCommit);
+  assert.equal(JSON.parse(readFileSync(upgradedReceipt, "utf8")).source_identity.app_commit, backupAppCommit);
+
+  const unrelatedApp = path.join(fixtureRoot, "cli-unrelated-app");
+  const unrelatedClone = path.join(fixtureRoot, "cli-unrelated-clone");
+  mkdirSync(unrelatedApp, { recursive: true });
+  write(unrelatedApp, "README.md", "# Unrelated app history\n");
+  git(unrelatedApp, ["init", "-b", "main"]);
+  git(unrelatedApp, ["config", "user.email", "safe03@example.invalid"]);
+  git(unrelatedApp, ["config", "user.name", "SAFE-03 Verifier"]);
+  git(unrelatedApp, ["add", "."]);
+  git(unrelatedApp, ["commit", "-m", "unrelated fixture baseline"]);
+  execFileSync("git", ["clone", cliData, unrelatedClone], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  expectCliFailure("backup_app_upgrade_not_ancestor", [
+    "restore", "--apply",
+    "--app-root", unrelatedApp,
+    "--data-root", unrelatedClone,
+    "--archive", cliArchive,
+    "--key-file", cliKey,
+    "--allow-app-upgrade",
+  ]);
+
+  const changedDataClone = path.join(fixtureRoot, "cli-changed-data-clone");
+  execFileSync("git", ["clone", cliData, changedDataClone], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  git(changedDataClone, ["config", "user.email", "safe03@example.invalid"]);
+  git(changedDataClone, ["config", "user.name", "SAFE-03 Verifier"]);
+  write(changedDataClone, "20_Wiki/changed.md", "# Changed public memory\n");
+  git(changedDataClone, ["add", "20_Wiki/changed.md"]);
+  git(changedDataClone, ["commit", "-m", "fixture data drift"]);
+  expectCliFailure("backup_source_identity_mismatch", [
+    "restore", "--apply",
+    "--app-root", cliApp,
+    "--data-root", changedDataClone,
+    "--archive", cliArchive,
+    "--key-file", cliKey,
+    "--allow-app-upgrade",
+  ]);
+
   const authCreated = runCli([
     "create",
     "--app-root", cliApp,
@@ -415,6 +495,11 @@ try {
       "existing_archive_not_overwritten",
       "cli_keygen_create_inspect_restore",
       "git_clone_plus_private_restore",
+      "ancestor_app_upgrade_restore",
+      "exact_app_identity_mismatch_blocked_without_upgrade_flag",
+      "unrelated_app_history_blocked",
+      "data_commit_drift_blocked_during_app_upgrade",
+      "restore_receipt_preserves_backup_source_identity",
       "encrypted_client_auth_capsule_round_trip",
       "incomplete_client_auth_capsule_removed",
     ],

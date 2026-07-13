@@ -212,6 +212,7 @@ try {
     "09-client-auth-restore",
     "10-unattended-clean-machine-proof",
     "--include-client-auth",
+    "-AllowAppUpgrade",
     "-Unattended -CodexCommand",
     "-OverwritePrivate",
     "start-clean-machine-equivalence-proof.ps1",
