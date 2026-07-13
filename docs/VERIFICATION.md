@@ -264,6 +264,10 @@ restore-then-path-repair transaction; an older receipt remains blocked.
 The PowerShell launcher validates the final JSON shape before reading optional
 fields. A failed Node finalizer now reports its original `error` instead of
 being replaced by a StrictMode missing-property exception.
+When the finalizer is launched directly from PowerShell, required npm checks run
+as `node npm-cli.js run <script>` rather than spawning `npm.cmd` with
+`shell:false`. The regression executes the resolved portable npm CLI and rejects
+the Windows `spawn EINVAL` path.
 
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one

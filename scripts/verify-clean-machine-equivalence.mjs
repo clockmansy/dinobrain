@@ -13,6 +13,7 @@ const [{
   CLEAN_MACHINE_REQUIRED_SCENARIOS,
   beginCleanMachineEquivalenceRun,
   classifyCleanMachineTrackedPaths,
+  resolveCleanMachineNpmInvocation,
   signCleanMachineEquivalenceEvidence,
   validateCleanMachineEquivalenceEvidence,
 }, { runCompletionAudit }, { DINOBRAIN_DATA_CONTRACT_VERSION, DINOBRAIN_VERSION }] = await Promise.all([
@@ -25,6 +26,15 @@ const hash = (character) => character.repeat(64);
 const commit = (character) => character.repeat(40);
 const start = "2026-07-11T00:00:00.000Z";
 const finish = "2026-07-11T00:10:00.000Z";
+
+const npmInvocation = resolveCleanMachineNpmInvocation("check");
+assert.doesNotMatch(npmInvocation.command, /npm\.cmd$/i);
+assert.match(npmInvocation.args[0], /npm-cli\.(?:c?js|mjs)$/i);
+assert.match(execFileSync(npmInvocation.command, [npmInvocation.args[0], "--version"], {
+  encoding: "utf8",
+  windowsHide: true,
+  stdio: ["ignore", "pipe", "pipe"],
+}).trim(), /^\d+\.\d+\.\d+/);
 
 const runtimeDirty = classifyCleanMachineTrackedPaths("data", [
   ".dino/state/client_mcp_direct_status.json",
@@ -536,6 +546,7 @@ try {
       "ancestor_app_restore_identity_accepted",
       "unrelated_app_restore_identity_rejected",
       "stale_restore_receipt_rejected",
+      "portable_npm_cli_spawn_verified",
       "invalid_restore_cannot_authorize_dirty",
       "porcelain_leading_space_preserved",
       "degraded_begin_rejected",

@@ -770,14 +770,9 @@ async function runNpmScript(params: {
   let stdoutBytes = 0;
   let stderrBytes = 0;
   const started = new Date();
-  const npmExecPath = process.env.npm_execpath;
-  const siblingNpm = path.join(path.dirname(process.execPath), process.platform === "win32" ? "npm.cmd" : "npm");
-  const command = npmExecPath
-    ? process.execPath
-    : existsSync(siblingNpm)
-      ? siblingNpm
-      : process.platform === "win32" ? "npm.cmd" : "npm";
-  const args = npmExecPath ? [npmExecPath, "run", params.commandId] : ["run", params.commandId];
+  const invocation = resolveCleanMachineNpmInvocation(params.commandId);
+  const command = invocation.command;
+  const args = invocation.args;
   const child = spawn(command, args, {
     cwd: params.appRoot,
     windowsHide: true,
@@ -835,6 +830,26 @@ async function runNpmScript(params: {
     peak_process_tree_working_set_bytes: peak,
     memory_measurement: peak === null ? "unavailable" : "windows_process_tree_sampled",
   };
+}
+
+export function resolveCleanMachineNpmInvocation(commandId: string): { command: string; args: string[] } {
+  const configuredNpmCli = process.env.npm_execpath && /npm-cli\.(?:c?js|mjs)$/i.test(process.env.npm_execpath)
+    ? path.resolve(process.env.npm_execpath)
+    : null;
+  const portableNpmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  const npmCli = configuredNpmCli && existsSync(configuredNpmCli)
+    ? configuredNpmCli
+    : existsSync(portableNpmCli)
+      ? portableNpmCli
+      : null;
+  if (npmCli) return { command: process.execPath, args: [npmCli, "run", commandId] };
+  if (process.platform === "win32") {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", `npm run ${commandId}`],
+    };
+  }
+  return { command: "npm", args: ["run", commandId] };
 }
 
 export async function runCleanMachineVerificationCommands(options: {

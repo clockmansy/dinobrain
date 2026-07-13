@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.30` for this release) and
+  drift from the current authoritative version (`2.2.31` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -1132,6 +1132,12 @@ server-signed Codex and Claude MCP proof artifacts. Finalization then returned
 a failure object that the PowerShell launcher masked by reading a missing
 `status` property under StrictMode. `v2.2.30` validates the result shape first
 and preserves the underlying finalizer error without weakening completion.
+
+The `v2.2.30` rerun again produced both server-signed real-client proofs and
+exposed the preserved finalizer error as Windows `spawn EINVAL`. The direct
+PowerShell launch had no `npm_execpath`, so Node attempted to spawn portable
+`npm.cmd` with `shell:false`. `v2.2.31` resolves and runs `npm-cli.js` through
+the active Node executable and regression-tests that invocation directly.
 
 #### REL-01: Immutable release parity
 
