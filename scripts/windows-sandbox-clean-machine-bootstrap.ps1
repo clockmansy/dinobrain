@@ -57,8 +57,13 @@ function Assert-Config {
   if ([string]::IsNullOrWhiteSpace([string]$script:Config.codex_version)) { throw "codex_version is required." }
   if ([string]::IsNullOrWhiteSpace([string]$script:Config.claude_version)) { throw "claude_version is required." }
   if (-not ($script:Config.PSObject.Properties.Name -contains "auto_restore_private")) { throw "auto_restore_private is required." }
+  if (-not ($script:Config.PSObject.Properties.Name -contains "client_auth_capsule_available")) { throw "client_auth_capsule_available is required." }
+  if (-not ($script:Config.PSObject.Properties.Name -contains "unattended_client_proof")) { throw "unattended_client_proof is required." }
   if ([bool]$script:Config.auto_restore_private -and -not [bool]$script:Config.private_restore_available) {
     throw "auto_restore_private requires private restore inputs."
+  }
+  if ([bool]$script:Config.unattended_client_proof -and -not [bool]$script:Config.client_auth_capsule_available) {
+    throw "unattended_client_proof requires an encrypted client auth capsule."
   }
   if ([bool]$script:Config.private_restore_available) {
     $backupRoot = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath([string]$script:Config.guest_private_backup))
@@ -66,6 +71,10 @@ function Assert-Config {
     if ($backupRoot.Equals($keyRoot, [StringComparison]::OrdinalIgnoreCase)) {
       throw "Private backup and recovery key must use separate guest roots."
     }
+  }
+  if ([bool]$script:Config.client_auth_capsule_available) {
+    if ([string]::IsNullOrWhiteSpace([string]$script:Config.guest_client_auth_capsule)) { throw "guest_client_auth_capsule is required." }
+    if (-not [bool]$script:Config.private_restore_available) { throw "Client auth capsule requires the separately mapped recovery key." }
   }
 }
 
@@ -227,6 +236,7 @@ try {
   $repairInstallArguments = ($baseInstallArguments | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join " "
   $repairScript = Join-Path $workRoot "restore-and-repair.ps1"
   $privateRestoreCompleted = $false
+  $clientAuthRestored = $false
   if ([bool]$script:Config.private_restore_available) {
     Write-Utf8Text -Path $repairScript -Text @"
 `$ErrorActionPreference = 'Stop'
@@ -250,6 +260,41 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "$repairScript"
     Write-Utf8Text -Path (Join-Path $desktop "1 Private Backup Required.txt") -Text "Full both-client equivalence requires an encrypted .dinobrain backup and its recovery key. Close the Sandbox and relaunch the host proof with -PrivateBackupPath and -RecoveryKeyPath.`r`n"
   }
 
+  if ([bool]$script:Config.client_auth_capsule_available) {
+    $authReceipt = Join-Path $env:LOCALAPPDATA "DinoBrain\proofs\client-auth-restore\latest.json"
+    $authArguments = @(
+      (Join-Path $appPath "dist\run-private-backup.js"), "restore",
+      "--apply",
+      "--app-root", $appPath,
+      "--data-root", $vaultPath,
+      "--archive", [string]$script:Config.guest_client_auth_capsule,
+      "--key-file", [string]$script:Config.guest_recovery_key,
+      "--include-client-auth",
+      "--overwrite-private",
+      "--max-age-days", "1",
+      "--receipt", $authReceipt
+    )
+    Invoke-LoggedProcess -FilePath $nodeExe -Arguments $authArguments -LogName "09-client-auth-restore"
+    if (-not (Test-Path -LiteralPath (Join-Path $HOME ".codex\auth.json") -PathType Leaf)) { throw "Codex auth capsule restore is missing auth.json." }
+    if (-not (Test-Path -LiteralPath (Join-Path $HOME ".claude\.credentials.json") -PathType Leaf)) { throw "Claude auth capsule restore is missing .credentials.json." }
+
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $null = @(& $codexCmd login status 2>&1)
+      $codexAuthExit = $LASTEXITCODE
+      $claudeAuthOutput = @(& $nativeClaude auth status --json 2>&1)
+      $claudeAuthExit = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $oldPreference
+    }
+    if ($codexAuthExit -ne 0) { throw "Restored Codex authentication is not usable." }
+    if ($claudeAuthExit -ne 0) { throw "Restored Claude authentication is not usable." }
+    try { $claudeAuthStatus = ($claudeAuthOutput -join [Environment]::NewLine) | ConvertFrom-Json } catch { throw "Claude auth status did not return JSON." }
+    if ($claudeAuthStatus.loggedIn -ne $true) { throw "Restored Claude authentication is not logged in." }
+    $clientAuthRestored = $true
+  }
+
   Write-Utf8Text -Path (Join-Path $desktop "2 Sign in Codex.cmd") -Text @"
 @echo off
 set "PATH=$pathPrefix;%PATH%"
@@ -266,6 +311,11 @@ cd /d "$appPath"
 "@
 
   $proofExportScript = Join-Path $workRoot "run-proof-and-export.ps1"
+  $proofModeArguments = if ([bool]$script:Config.unattended_client_proof) {
+    " -Unattended -CodexCommand '$codexCmd' -ClaudeCommand '$nativeClaude'"
+  } else {
+    ""
+  }
   Write-Utf8Text -Path $proofExportScript -Text @"
 `$ErrorActionPreference = 'Stop'
 `$receipt = Join-Path `$env:LOCALAPPDATA 'DinoBrain\proofs\private-restore\latest.json'
@@ -276,7 +326,7 @@ New-Item -ItemType Directory -Force -Path `$destination | Out-Null
 `$oldPreference = `$ErrorActionPreference
 `$ErrorActionPreference = 'Continue'
 try {
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-clean-machine-equivalence-proof.ps1' -Mode both_clients -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -InstallResultPath '$resultPath' -RestoreReceiptPath `$receipt *>&1 |
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$appPath\scripts\start-clean-machine-equivalence-proof.ps1' -Mode both_clients -AppPath '$appPath' -VaultPath '$vaultPath' -NodeExe '$nodeExe' -InstallResultPath '$resultPath' -RestoreReceiptPath `$receipt$proofModeArguments *>&1 |
     Tee-Object -FilePath `$proofLog
   `$proofExit = `$LASTEXITCODE
 } finally {
@@ -309,9 +359,9 @@ Pinned data commit: $([string]$script:Config.data_commit)
 Installer SHA-256: $([string]$script:Config.installer_sha256)
 
 $restoreStep
-2. Run '2 Sign in Codex.cmd' and complete ChatGPT sign-in.
-3. Run '3 Sign in Claude.cmd' and complete Claude sign-in.
-4. Run '4 Run Full Recovery Proof.cmd'. Paste each copied challenge into the matching client.
+$(if ($clientAuthRestored) { "2. Codex and Claude authentication restored from the encrypted one-time capsule." } else { "2. Run '2 Sign in Codex.cmd' and complete ChatGPT sign-in." })
+$(if ($clientAuthRestored) { "3. Manual client sign-in is not required." } else { "3. Run '3 Sign in Claude.cmd' and complete Claude sign-in." })
+$(if ([bool]$script:Config.unattended_client_proof) { "4. The real Codex and Claude clients will execute both challenges automatically." } else { "4. Run '4 Run Full Recovery Proof.cmd'. Paste each copied challenge into the matching client." })
 5. Wait for PASS, then close Sandbox. Public-safe evidence is copied to C:\DinoBrainExchange\evidence on the host.
 
 The Sandbox is disposable. Do not store credentials in C:\DinoBrainExchange.
@@ -322,15 +372,28 @@ The Sandbox is disposable. Do not store credentials in C:\DinoBrainExchange.
   } else {
     "Pinned install, reinstall, client install, and isolated matrix passed."
   }
-  Write-GuestStatus -Status "ready_for_login" -Message $readyMessage -Extra @{
+  if ([bool]$script:Config.unattended_client_proof) {
+    if (-not $privateRestoreCompleted -or -not $clientAuthRestored) { throw "Unattended proof prerequisites are incomplete." }
+    Write-GuestStatus -Status "running_unattended_proof" -Message "Encrypted auth restored; real Codex and Claude proof clients are running."
+    Invoke-LoggedProcess -FilePath "powershell.exe" -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $proofExportScript) -LogName "10-unattended-clean-machine-proof"
+    Write-GuestStatus -Status "proof_complete" -Message "Unattended both-client clean-machine proof completed." -Extra @{
+      app_commit = [string]$script:Config.app_commit
+      data_commit = [string]$script:Config.data_commit
+      client_auth_restored = $true
+      evidence_root = "C:\DinoBrainExchange\evidence"
+    }
+  } else {
+    Write-GuestStatus -Status "ready_for_login" -Message $readyMessage -Extra @{
     app_commit = [string]$script:Config.app_commit
     data_commit = [string]$script:Config.data_commit
     install_result = [string]$resultPath
     private_restore_available = [bool]$script:Config.private_restore_available
     private_restore_completed = [bool]$privateRestoreCompleted
+    client_auth_restored = [bool]$clientAuthRestored
   }
-  Start-Process explorer.exe -ArgumentList ('"' + $desktop + '"') | Out-Null
-  Start-Process notepad.exe -ArgumentList ('"' + $readmePath + '"') | Out-Null
+    Start-Process explorer.exe -ArgumentList ('"' + $desktop + '"') | Out-Null
+    Start-Process notepad.exe -ArgumentList ('"' + $readmePath + '"') | Out-Null
+  }
 } catch {
   Write-GuestStatus -Status "failed" -Message $_.Exception.Message
   $errorPath = Join-Path $exchangeRoot "SANDBOX-BOOTSTRAP-FAILED.txt"

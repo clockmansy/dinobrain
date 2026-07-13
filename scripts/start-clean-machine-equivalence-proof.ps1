@@ -9,7 +9,10 @@ param(
   [string]$InstallResultPath = "",
   [string]$RestoreReceiptPath = "",
   [string]$ResumeRunId = "",
+  [string]$CodexCommand = "",
+  [string]$ClaudeCommand = "",
   [ValidateRange(60, 7200)][int]$ClientProofTimeoutSeconds = 3600,
+  [switch]$Unattended,
   [switch]$SkipCodexProof,
   [switch]$SkipClaudeProof,
   [switch]$SkipVerificationCommands
@@ -74,6 +77,14 @@ $script:Runner = Join-Path $AppPath "dist\run-clean-machine-equivalence.js"
 $clientProofScript = Join-Path $AppPath "scripts\start-client-mcp-proof.ps1"
 if (-not (Test-Path -LiteralPath $script:Runner -PathType Leaf)) { throw "Clean-machine proof CLI is not built: $script:Runner" }
 if (-not (Test-Path -LiteralPath $clientProofScript -PathType Leaf)) { throw "Direct MCP proof script is missing: $clientProofScript" }
+if ($Unattended) {
+  if ([string]::IsNullOrWhiteSpace($CodexCommand) -or -not (Test-Path -LiteralPath (Resolve-ProofPath $CodexCommand) -PathType Leaf)) {
+    throw "Unattended proof requires a real CodexCommand executable."
+  }
+  if ($Mode -eq "both_clients" -and ([string]::IsNullOrWhiteSpace($ClaudeCommand) -or -not (Test-Path -LiteralPath (Resolve-ProofPath $ClaudeCommand) -PathType Leaf))) {
+    throw "Unattended both-client proof requires a real ClaudeCommand executable."
+  }
+}
 
 if ([string]::IsNullOrWhiteSpace($InstallResultPath)) {
   $InstallResultPath = Join-Path (Split-Path -Parent $AppPath) "dinobrain-install-result.json"
@@ -131,11 +142,32 @@ foreach ($agent in @("codex", "claude")) {
   if ($agent -eq "claude" -and $SkipClaudeProof) { continue }
   Write-Host ""
   Write-Host "Starting $agent direct MCP plus live pre-response proof."
-  Write-Host "Paste the copied challenge into a fresh $agent session. The same prompt proves both paths."
+  if ($Unattended) {
+    Write-Host "Launching the real $agent client non-interactively inside the isolated proof machine."
+  } else {
+    Write-Host "Paste the copied challenge into a fresh $agent session. The same prompt proves both paths."
+  }
   $oldPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $clientProofScript -Agent $agent -AppPath $AppPath -VaultPath $VaultPath -NodeExe $script:Node -TimeoutSeconds $ClientProofTimeoutSeconds -NoDialog
+    $clientArguments = @(
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $clientProofScript,
+      "-Agent", $agent,
+      "-AppPath", $AppPath,
+      "-VaultPath", $VaultPath,
+      "-NodeExe", $script:Node,
+      "-TimeoutSeconds", [string]$ClientProofTimeoutSeconds,
+      "-NoDialog"
+    )
+    if ($Unattended) {
+      $clientArguments += @(
+        "-Unattended",
+        "-CodexCommand", $CodexCommand,
+        "-ClaudeCommand", $ClaudeCommand,
+        "-ClientLogRoot", (Join-Path $VaultPath ".dino\proofs\client-mcp\unattended-logs")
+      )
+    }
+    & powershell.exe @clientArguments
     $clientExit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $oldPreference

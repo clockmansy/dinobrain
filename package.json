@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.26",
+  "version": "2.2.27",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -120,6 +120,7 @@
     "proof:clean-machine": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-clean-machine-equivalence-proof.ps1 -Mode both_clients",
     "proof:clean-machine:codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-clean-machine-equivalence-proof.ps1 -Mode codex_only",
     "proof:clean-machine:sandbox": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-windows-sandbox-clean-machine-proof.ps1",
+    "proof:clean-machine:sandbox:unattended": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-windows-sandbox-clean-machine-proof.ps1 -AutoRestorePrivate -ReuseHostClientAuth -UnattendedClientProof",
     "proof:clean-machine:sandbox:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-windows-sandbox-clean-machine-proof.ps1 -PrepareOnly",
     "proof:clean-machine:validate": "npm run build --silent && node dist/run-clean-machine-equivalence.js validate",
     "codex:hooks:approval": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-codex-hook-approval.ps1 -RestartStaleCodex -RestartStaleMcp",

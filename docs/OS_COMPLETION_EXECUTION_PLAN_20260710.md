@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.26` for this release) and
+  drift from the current authoritative version (`2.2.27` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -1100,6 +1100,20 @@ regression covers pre-mutation network failure, staged-build rollback, config
 interruption recovery, and no-Git fresh-only degraded behavior. DIST-02 remains
 `NOT COMPLETE` until this runner returns `complete` on a clean Windows profile
 with both real clients and its scoped evidence is imported.
+
+**Implementation update (2026-07-13): unattended client execution is
+implemented; the fresh Sandbox run remains pending.** The host can opt in to a
+two-file AES-256-GCM client-auth capsule protected by the existing recovery key.
+The capsule is mapped read-only outside the evidence exchange, restored only to
+the disposable Sandbox profile, and deleted with the private proof inputs when
+the Sandbox closes. Codex and Claude then run the same challenge through their
+real non-interactive clients without login, paste, or approval dialogs. Local
+real-client trials produced fresh server-signed Codex and Claude proofs; the
+Codex path requires broad approval bypass because `approval=never` rejects MCP
+calls, so that flag is confined to the dedicated Windows Sandbox. Claude uses
+an exact seven-tool DinoBrain MCP allowlist. This removes the human-login
+availability dependency but does not itself satisfy DIST-02 until the released
+artifact completes the fresh Sandbox run.
 
 #### REL-01: Immutable release parity
 

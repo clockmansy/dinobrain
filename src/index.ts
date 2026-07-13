@@ -165,7 +165,7 @@ function relDataPath(filePath: string): string {
 }
 
 function normalizeVaultPath(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = value.replace(/[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "").trim();
   if (
     path.win32.isAbsolute(trimmed) ||
     path.posix.isAbsolute(trimmed) ||
@@ -183,7 +183,7 @@ function normalizeVaultPaths(values: string[]): string[] {
   return Array.from(
     new Set(
       values
-        .map((value) => value.trim())
+        .map((value) => value.replace(/[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "").trim())
         .filter(Boolean)
         .map((value) => normalizeVaultPath(value)),
     ),

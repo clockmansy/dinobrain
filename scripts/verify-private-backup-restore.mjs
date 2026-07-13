@@ -267,7 +267,12 @@ try {
   const cliClone = path.join(fixtureRoot, "cli-clone");
   const cliBackupDir = path.join(fixtureRoot, "cli-encrypted");
   const cliArchive = path.join(cliBackupDir, "private.dinobrain");
+  const clientAuthArchive = path.join(cliBackupDir, "client-auth.dinobrain");
   const cliKey = path.join(fixtureRoot, "cli-recovery-key.txt");
+  const cliCodex = path.join(fixtureRoot, "cli-codex");
+  const cliClaude = path.join(fixtureRoot, "cli-claude");
+  const restoredCodex = path.join(fixtureRoot, "restored-codex");
+  const restoredClaude = path.join(fixtureRoot, "restored-claude");
   mkdirSync(cliApp, { recursive: true });
   mkdirSync(cliData, { recursive: true });
   mkdirSync(cliBackupDir, { recursive: true });
@@ -283,6 +288,8 @@ try {
   }
   write(cliData, "10_Conversations/raw/cli-session.json", '{"private":"cli-private-SAFE03"}\n');
   write(cliData, ".dino/local.json", '{"local":"cli-local-SAFE03"}\n');
+  write(cliCodex, "auth.json", '{"tokens":"codex-auth-capsule-SAFE03"}\n');
+  write(cliClaude, ".credentials.json", '{"oauth":"claude-auth-capsule-SAFE03"}\n');
   const keygen = runCli([
     "keygen", "--key-file", cliKey,
     "--protect-root", cliApp,
@@ -318,10 +325,57 @@ try {
   );
   assert.equal(gitHead(cliClone), gitHead(cliData));
 
+  const authCreated = runCli([
+    "create",
+    "--app-root", cliApp,
+    "--data-root", cliData,
+    "--output", clientAuthArchive,
+    "--key-file", cliKey,
+    "--client-auth-only",
+    "--include-client-auth",
+    "--codex-home", cliCodex,
+    "--claude-home", cliClaude,
+  ]);
+  assert.equal(authCreated.status, "created");
+  assert.equal(authCreated.entry_count, 2);
+  assert.equal(fileContains(clientAuthArchive, "codex-auth-capsule-SAFE03"), false);
+  assert.equal(fileContains(clientAuthArchive, "claude-auth-capsule-SAFE03"), false);
+  const authRestored = runCli([
+    "restore",
+    "--apply",
+    "--app-root", cliApp,
+    "--data-root", cliData,
+    "--archive", clientAuthArchive,
+    "--key-file", cliKey,
+    "--include-client-auth",
+    "--codex-home", restoredCodex,
+    "--claude-home", restoredClaude,
+  ]);
+  assert.equal(authRestored.status, "restored");
+  assert.equal(authRestored.restored_entry_count, 2);
+  assert.equal(readFileSync(path.join(restoredCodex, "auth.json"), "utf8"), '{"tokens":"codex-auth-capsule-SAFE03"}\n');
+  assert.equal(readFileSync(path.join(restoredClaude, ".credentials.json"), "utf8"), '{"oauth":"claude-auth-capsule-SAFE03"}\n');
+  assert.equal(existsSync(path.join(restoredCodex, "config.toml")), false);
+  assert.equal(existsSync(path.join(restoredClaude, "settings.json")), false);
+  const incompleteAuthArchive = path.join(cliBackupDir, "incomplete-client-auth.dinobrain");
+  assert.throws(() => runCli([
+    "create",
+    "--app-root", cliApp,
+    "--data-root", cliData,
+    "--output", incompleteAuthArchive,
+    "--key-file", cliKey,
+    "--client-auth-only",
+    "--include-client-auth",
+    "--codex-home", cliCodex,
+    "--claude-home", path.join(fixtureRoot, "missing-claude-home"),
+  ]));
+  assert.equal(existsSync(incompleteAuthArchive), false);
+
   const rssDeltaBytes = Math.max(0, process.memoryUsage().rss - rssBefore);
   assert(rssDeltaBytes < 192 * 1024 * 1024, `Streaming backup/restore RSS delta exceeded 192 MiB: ${rssDeltaBytes}`);
   const implementationSha256 = createHash("sha256")
     .update(readFileSync(path.join(root, "dist", "private-backup.js")))
+    .update(readFileSync(path.join(root, "dist", "run-private-backup.js")))
     .update(readFileSync(path.join(root, "scripts", "verify-private-backup-restore.mjs")))
     .digest("hex");
   const status = {
@@ -361,6 +415,8 @@ try {
       "existing_archive_not_overwritten",
       "cli_keygen_create_inspect_restore",
       "git_clone_plus_private_restore",
+      "encrypted_client_auth_capsule_round_trip",
+      "incomplete_client_auth_capsule_removed",
     ],
     proof_hashes: {
       archive_sha256: created.archive_sha256,

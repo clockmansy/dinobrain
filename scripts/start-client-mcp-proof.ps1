@@ -9,6 +9,10 @@ param(
   [string]$NodeExe = "",
   [int]$TimeoutSeconds = 3600,
   [int]$PollSeconds = 5,
+  [string]$CodexCommand = "",
+  [string]$ClaudeCommand = "",
+  [string]$ClientLogRoot = "",
+  [switch]$Unattended,
   [switch]$NoDialog,
   [switch]$NoUi,
   [switch]$Json
@@ -75,6 +79,71 @@ function Show-ProofInstructions {
   }
 }
 
+function Quote-ProcessArgument {
+  param([string]$Value)
+  if ($Value -notmatch '[\s"]') { return $Value }
+  return '"' + ($Value -replace '"', '\"') + '"'
+}
+
+function Invoke-UnattendedClient {
+  param([Parameter(Mandatory = $true)][string]$PromptPath)
+  if ([string]::IsNullOrWhiteSpace($ClientLogRoot)) {
+    $script:ClientLogRoot = Join-Path $AppPath "reports\client-mcp-proofs\unattended"
+  } else {
+    $script:ClientLogRoot = Resolve-FullPath $ClientLogRoot
+  }
+  New-Item -ItemType Directory -Force -Path $script:ClientLogRoot | Out-Null
+  $stdout = Join-Path $script:ClientLogRoot ("{0}-{1}.stdout.log" -f $Agent, $challenge.challenge_id)
+  $stderr = Join-Path $script:ClientLogRoot ("{0}-{1}.stderr.log" -f $Agent, $challenge.challenge_id)
+
+  if ($Agent -eq "codex") {
+    if ([string]::IsNullOrWhiteSpace($CodexCommand)) { throw "CodexCommand is required for unattended proof." }
+    $client = Resolve-FullPath $CodexCommand
+    $arguments = @(
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--dangerously-bypass-hook-trust",
+      "exec",
+      "--ephemeral",
+      "--cd", $AppPath,
+      "--json",
+      "-"
+    )
+  } else {
+    if ([string]::IsNullOrWhiteSpace($ClaudeCommand)) { throw "ClaudeCommand is required for unattended proof." }
+    $client = Resolve-FullPath $ClaudeCommand
+    $arguments = @(
+      "-p",
+      "--output-format", "json",
+      "--max-turns", "40",
+      "--no-session-persistence",
+      "--permission-mode", "dontAsk",
+      "--allowedTools",
+      "mcp__dinobrain__begin_client_mcp_proof",
+      "mcp__dinobrain__os_begin_task",
+      "mcp__dinobrain__get_context_pack",
+      "mcp__dinobrain__wiki_search",
+      "mcp__dinobrain__search_memory",
+      "mcp__dinobrain__finish_task",
+      "mcp__dinobrain__finalize_client_mcp_proof"
+    )
+  }
+  if (-not (Test-Path -LiteralPath $client -PathType Leaf)) { throw "Unattended client executable is missing: $client" }
+  $clientArgumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
+  if ([System.IO.Path]::GetExtension($client).Equals(".cmd", [StringComparison]::OrdinalIgnoreCase)) {
+    $processFile = $env:ComSpec
+    $argumentLine = '/d /s /c ""' + $client + '" ' + $clientArgumentLine + '"'
+  } else {
+    $processFile = $client
+    $argumentLine = $clientArgumentLine
+  }
+  $process = Start-Process -FilePath $processFile -ArgumentList $argumentLine -WorkingDirectory $AppPath -RedirectStandardInput $PromptPath -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -Wait -WindowStyle Hidden
+  return [ordered]@{
+    exit_code = [int]$process.ExitCode
+    stdout_path = $stdout
+    stderr_path = $stderr
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($AppPath)) {
   $AppPath = Resolve-FullPath (Join-Path $PSScriptRoot "..")
 } else {
@@ -104,10 +173,18 @@ try {
   $promptPath = Join-Path $reportDir ("pending-{0}-{1}.txt" -f $Agent, $challenge.challenge_id)
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($promptPath, [string]$challenge.prompt, $utf8NoBom)
-  $clipboardOk = if ($Json -or $NoUi) { $false } else { Set-ProofClipboard -Text ([string]$challenge.prompt) }
+  $clipboardOk = if ($Json -or $NoUi -or $Unattended) { $false } else { Set-ProofClipboard -Text ([string]$challenge.prompt) }
+  $unattendedRun = $null
 
   $clientName = if ($Agent -eq "codex") { "a fully restarted Codex Desktop task" } else { "a fresh Claude Code session" }
-  $message = @"
+  $message = if ($Unattended) { @"
+DinoBrain direct MCP proof is ready for $Agent.
+
+The encrypted-auth Windows Sandbox runner will execute this challenge through the real non-interactive client.
+
+Challenge: $($challenge.challenge_id)
+Prompt file: $promptPath
+"@ } else { @"
 DinoBrain direct MCP proof is ready for $Agent.
 
 1. Open $clientName after this DinoBrain build was installed.
@@ -120,11 +197,20 @@ Prompt file: $promptPath
 Clipboard copied: $clipboardOk
 
 If begin_client_mcp_proof is not visible, fully restart the client and open a new task. Configuration or a synthetic stdio client cannot satisfy this proof.
-"@
+"@ }
   Show-ProofInstructions -Message $message
   if (-not $Json) { Write-Host $message }
 
-  $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+  if ($Unattended) {
+    if (-not $Json) { Write-Host "Launching isolated unattended $Agent proof client." }
+    $unattendedRun = Invoke-UnattendedClient -PromptPath $promptPath
+    if ($unattendedRun.exit_code -ne 0 -and -not $Json) {
+      Write-Warning "$Agent unattended client exited with code $($unattendedRun.exit_code); receipt verification will still run."
+    }
+  }
+
+  $effectiveTimeoutSeconds = if ($Unattended) { [Math]::Min(30, [Math]::Max(1, $TimeoutSeconds)) } else { [Math]::Max(1, $TimeoutSeconds) }
+  $deadline = (Get-Date).AddSeconds($effectiveTimeoutSeconds)
   $verified = $false
   $agentReport = $null
   while ((Get-Date) -lt $deadline) {
@@ -160,6 +246,10 @@ If begin_client_mcp_proof is not visible, fully restart the client and open a ne
     proof_sha256 = if ($agentReport) { $agentReport.proof_sha256 } else { $null }
     client_name = if ($agentReport) { $agentReport.client_name } else { $null }
     client_version = if ($agentReport) { $agentReport.client_version } else { $null }
+    unattended = [bool]$Unattended
+    unattended_client_exit_code = if ($unattendedRun) { $unattendedRun.exit_code } else { $null }
+    unattended_stdout_path = if ($unattendedRun) { $unattendedRun.stdout_path } else { $null }
+    unattended_stderr_path = if ($unattendedRun) { $unattendedRun.stderr_path } else { $null }
   }
   if ($Json) {
     $result | ConvertTo-Json -Depth 8

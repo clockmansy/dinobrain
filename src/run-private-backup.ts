@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -49,17 +50,25 @@ function sourceIdentity(appRoot: string, dataRoot: string): PrivateBackupSourceI
 }
 
 function userConfigRoots(map: Map<string, string[]>): PrivateBackupRoot[] {
-  if (!flag(map, "include-user-config")) return [];
+  const includeUserConfig = flag(map, "include-user-config");
+  const includeClientAuth = flag(map, "include-client-auth");
+  if (!includeUserConfig && !includeClientAuth) return [];
   return [
     {
       scope: "codex_config",
       root: path.resolve(map.get("codex-home")?.at(-1) ?? path.join(homedir(), ".codex")),
-      relative_paths: ["config.toml", "hooks.json"],
+      relative_paths: [
+        ...(includeUserConfig ? ["config.toml", "hooks.json"] : []),
+        ...(includeClientAuth ? ["auth.json"] : []),
+      ],
     },
     {
       scope: "claude_config",
       root: path.resolve(map.get("claude-home")?.at(-1) ?? path.join(homedir(), ".claude")),
-      relative_paths: ["settings.json"],
+      relative_paths: [
+        ...(includeUserConfig ? ["settings.json"] : []),
+        ...(includeClientAuth ? [".credentials.json"] : []),
+      ],
     },
   ];
 }
@@ -86,11 +95,19 @@ async function main(): Promise<void> {
     assertRecoveryKeyOutsideRoots(keyFile, [appRoot, dataRoot, path.dirname(outputPath)]);
     const key = await readRecoveryKeyFile(keyFile);
     try {
+      const clientAuthOnly = flag(map, "client-auth-only");
+      if (clientAuthOnly && !flag(map, "include-client-auth")) {
+        throw new Error("--client-auth-only requires --include-client-auth.");
+      }
       const roots = [
-        await defaultPrivateDataRoot(dataRoot, {
-          include_credentials: flag(map, "include-credentials"),
-          include_local_backups: flag(map, "include-local-backups"),
-        }),
+        ...(clientAuthOnly
+          ? []
+          : [
+              await defaultPrivateDataRoot(dataRoot, {
+                include_credentials: flag(map, "include-credentials"),
+                include_local_backups: flag(map, "include-local-backups"),
+              }),
+            ]),
         ...userConfigRoots(map),
       ];
       const result = await createEncryptedPrivateBackup({
@@ -99,6 +116,10 @@ async function main(): Promise<void> {
         recovery_key: key,
         source_identity: sourceIdentity(appRoot, dataRoot),
       });
+      if (clientAuthOnly && result.entry_count !== 2) {
+        await rm(outputPath, { force: true });
+        throw new Error("Client auth capsule requires both Codex auth.json and Claude .credentials.json.");
+      }
       console.log(JSON.stringify(result, null, 2));
     } finally {
       key.fill(0);
@@ -114,7 +135,7 @@ async function main(): Promise<void> {
     assertRecoveryKeyOutsideRoots(keyFile, [appRoot, dataRoot, path.dirname(archivePath)]);
     const key = await readRecoveryKeyFile(keyFile);
     const targetRoots: Record<string, string> = { data: dataRoot };
-    if (flag(map, "include-user-config")) {
+    if (flag(map, "include-user-config") || flag(map, "include-client-auth")) {
       targetRoots.codex_config = path.resolve(map.get("codex-home")?.at(-1) ?? path.join(homedir(), ".codex"));
       targetRoots.claude_config = path.resolve(map.get("claude-home")?.at(-1) ?? path.join(homedir(), ".claude"));
     }

@@ -17,8 +17,12 @@ param(
   [string]$CodexVersion = "",
   [string]$ClaudeVersion = "",
   [string]$SandboxExecutable = "",
+  [string]$CodexHome = "",
+  [string]$ClaudeHome = "",
   [switch]$DisablePrivateAutoDetect,
   [switch]$AutoRestorePrivate,
+  [switch]$ReuseHostClientAuth,
+  [switch]$UnattendedClientProof,
   [switch]$AllowReleaseMismatch,
   [switch]$PrepareOnly,
   [switch]$NoWait,
@@ -207,6 +211,12 @@ if ($privateAvailable -and ([string]::IsNullOrWhiteSpace($PrivateBackupPath) -or
 if ($AutoRestorePrivate -and -not $privateAvailable) {
   throw "AutoRestorePrivate requires a private backup and recovery key."
 }
+if ($ReuseHostClientAuth -and -not $privateAvailable) {
+  throw "ReuseHostClientAuth requires the recovery key used to encrypt the temporary auth capsule."
+}
+if ($UnattendedClientProof -and -not $ReuseHostClientAuth) {
+  throw "UnattendedClientProof requires ReuseHostClientAuth."
+}
 if ($privateAvailable -and $NoWait) {
   throw "NoWait is not allowed with private restore inputs because the host must delete their temporary copies when Sandbox closes."
 }
@@ -220,6 +230,44 @@ if ($privateAvailable) {
   New-Item -ItemType Directory -Force -Path $privateBackupRoot, $privateKeyRoot | Out-Null
   Copy-Item -LiteralPath $backup -Destination (Join-Path $privateBackupRoot "backup.dinobrain") -Force
   Copy-Item -LiteralPath $key -Destination (Join-Path $privateKeyRoot "recovery-key.txt") -Force
+}
+
+$clientAuthAvailable = $false
+if ($ReuseHostClientAuth) {
+  try {
+  $resolvedCodexHome = [System.IO.Path]::GetFullPath($(if ([string]::IsNullOrWhiteSpace($CodexHome)) { Join-Path $HOME ".codex" } else { $CodexHome }))
+  $resolvedClaudeHome = [System.IO.Path]::GetFullPath($(if ([string]::IsNullOrWhiteSpace($ClaudeHome)) { Join-Path $HOME ".claude" } else { $ClaudeHome }))
+  $codexAuth = Join-Path $resolvedCodexHome "auth.json"
+  $claudeAuth = Join-Path $resolvedClaudeHome ".credentials.json"
+  if (-not (Test-Path -LiteralPath $codexAuth -PathType Leaf)) { throw "Codex auth.json is missing: $codexAuth" }
+  if (-not (Test-Path -LiteralPath $claudeAuth -PathType Leaf)) { throw "Claude .credentials.json is missing: $claudeAuth" }
+  $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $nodeCommand -and $env:LOCALAPPDATA) {
+    $nodeCommand = Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA "DinoBrain\tools") -Recurse -Filter "node.exe" -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.DirectoryName -match "node-v[^\\]+-win-x64$" } |
+      Sort-Object FullName -Descending |
+      Select-Object -First 1
+  }
+  if (-not $nodeCommand) { throw "Node.js is required to create the encrypted client-auth capsule." }
+  $nodePath = [string]$(if ($nodeCommand.PSObject.Properties.Name -contains "Source") { $nodeCommand.Source } else { $nodeCommand.FullName })
+  $authCapsuleRoot = Join-Path $privateRoot "client-auth"
+  New-Item -ItemType Directory -Force -Path $authCapsuleRoot | Out-Null
+  $authCapsule = Join-Path $authCapsuleRoot "client-auth.dinobrain"
+  $privateBackupCli = Join-Path $root "dist\run-private-backup.js"
+  if (-not (Test-Path -LiteralPath $privateBackupCli -PathType Leaf)) { throw "Built private backup CLI is missing: $privateBackupCli" }
+  $dataRoot = [System.IO.Path]::GetFullPath((Join-Path $root "..\dinobrain-data"))
+  $authOutput = @(& $nodePath $privateBackupCli create --app-root $root --data-root $dataRoot --output $authCapsule --key-file $key --client-auth-only --include-client-auth --codex-home $resolvedCodexHome --claude-home $resolvedClaudeHome 2>&1)
+  if ($LASTEXITCODE -ne 0) { throw "Encrypted client-auth capsule creation failed." }
+  $authResult = ($authOutput -join [Environment]::NewLine) | ConvertFrom-Json
+  if ($authResult.status -ne "created" -or [int]$authResult.entry_count -ne 2) { throw "Encrypted client-auth capsule did not contain exactly both client credentials." }
+  $clientAuthAvailable = $true
+  } catch {
+    if (Test-Path -LiteralPath $privateRoot) {
+      $cleanup = Remove-DirectoryWithRetry -Path $privateRoot -AllowedRoot $OutputRoot
+      if (-not $cleanup.ok) { throw "Client-auth capsule preparation failed and private-input cleanup also failed: $($cleanup.error)" }
+    }
+    throw
+  }
 }
 
 $guestSource = Join-Path $root "scripts\windows-sandbox-clean-machine-bootstrap.ps1"
@@ -252,8 +300,11 @@ $config = [ordered]@{
   guest_exchange_root = "C:\DinoBrainExchange"
   private_restore_available = [bool]$privateAvailable
   auto_restore_private = [bool]$AutoRestorePrivate
+  client_auth_capsule_available = [bool]$clientAuthAvailable
+  unattended_client_proof = [bool]$UnattendedClientProof
   guest_private_backup = $(if ($privateAvailable) { "C:\DinoBrainPrivateBackup\backup.dinobrain" } else { $null })
   guest_recovery_key = $(if ($privateAvailable) { "C:\DinoBrainRecoveryKey\recovery-key.txt" } else { $null })
+  guest_client_auth_capsule = $(if ($clientAuthAvailable) { "C:\DinoBrainClientAuth\client-auth.dinobrain" } else { $null })
   install_root = "C:\DinoBrainHome"
   client_root = "C:\DinoBrainClients"
 }
@@ -274,6 +325,16 @@ if ($privateAvailable) {
       <MappedFolder>
         <HostFolder>$escapedPrivateKey</HostFolder>
         <SandboxFolder>C:\DinoBrainRecoveryKey</SandboxFolder>
+        <ReadOnly>true</ReadOnly>
+      </MappedFolder>
+"@
+}
+if ($clientAuthAvailable) {
+  $escapedClientAuth = [System.Security.SecurityElement]::Escape((Join-Path $privateRoot "client-auth"))
+  $privateMapping += @"
+      <MappedFolder>
+        <HostFolder>$escapedClientAuth</HostFolder>
+        <SandboxFolder>C:\DinoBrainClientAuth</SandboxFolder>
         <ReadOnly>true</ReadOnly>
       </MappedFolder>
 "@
@@ -315,6 +376,8 @@ $result = [ordered]@{
   memory_in_mb = $MemoryInMB
   private_restore_available = [bool]$privateAvailable
   auto_restore_private = [bool]$AutoRestorePrivate
+  client_auth_capsule_available = [bool]$clientAuthAvailable
+  unattended_client_proof = [bool]$UnattendedClientProof
   run_root = $runRoot
   exchange_root = $exchangeRoot
   config_path = $configPath

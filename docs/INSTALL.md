@@ -82,6 +82,20 @@ four numbered desktop steps for restore, client sign-in, and final proof. A
 physical second PC is not required, but missing backup/key inputs or skipped
 client sign-in still leaves the release hard gate pending.
 
+For an unattended disposable proof, run
+`npm run proof:clean-machine:sandbox:unattended`. This opt-in path creates a
+temporary AES-256-GCM capsule containing only the current host's Codex
+`auth.json` and Claude `.credentials.json`, encrypted with the existing
+recovery key. The capsule and key are mapped read-only outside the writable
+evidence exchange, restored only into the Sandbox user's home, and removed from
+the host proof directory after Sandbox closes. The real clients then execute
+the challenge non-interactively. Codex's approval bypass is enabled only inside
+the dedicated Windows Sandbox because `approval=never` rejects MCP proof calls;
+Claude allowlists only the seven DinoBrain MCP challenge tools. No credential
+value or auth-status payload
+is written to the public evidence. If either restored login is unusable, the
+proof fails and the ordinary manual sign-in launchers remain available.
+
 Run `DinoBrain Private Backup.cmd` to create an authenticated encrypted archive
 of local-only conversations, private sources, attachments, local event evidence,
 Codex/Claude user configuration, and credential files. The default archive is

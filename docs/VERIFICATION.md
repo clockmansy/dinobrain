@@ -244,6 +244,15 @@ Windows Sandbox run; preparation alone cannot satisfy the hard gate because
 private restore and both real-client challenges must still produce the signed
 clean-machine evidence bundle.
 
+`npm run proof:clean-machine:sandbox:unattended` exercises the same real-client
+gate without interactive login or challenge pasting. The regression verifies a
+two-file encrypted auth capsule round trip, absence of plaintext auth canaries,
+separate read-only capsule/key mappings, automatic auth-status checks, and the
+real Codex `exec` plus Claude print-mode launch paths. Codex's broad approval
+bypass is confined to the dedicated Windows Sandbox and Claude receives only
+the challenge MCP allowlist; a missing, stale, or unusable credential
+capsule fails before any completion claim.
+
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one
 run ID, asks for one fresh challenge prompt in Codex and one in Claude Code, and
