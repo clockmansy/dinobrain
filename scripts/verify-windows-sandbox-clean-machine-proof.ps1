@@ -231,6 +231,8 @@ try {
   Assert-True (-not $clientProofText.Contains('--dangerously-skip-permissions')) "Claude proof uses an unnecessarily broad permission bypass."
   Assert-True ($clientProofText.Contains('[Math]::Min(30')) "Failed unattended clients can still consume the full interactive proof timeout."
   Assert-True ($fullProofText.Contains('"-NoDialog"')) "Full recovery proof can still block behind a hidden direct-MCP dialog."
+  Assert-True ($fullProofText.Contains('$finalPropertyNames = @($final.PSObject.Properties.Name)')) "Full recovery proof reads optional final-result fields under StrictMode without a shape guard."
+  Assert-True ($fullProofText.Contains('Final clean-machine proof failed: $finalError')) "Full recovery proof can still hide the underlying finalizer error."
   Assert-True ($installerText.Contains("function Expand-DinoBrainZip")) "Installer is missing its module-independent ZIP extractor."
   Assert-True (-not $installerText.Contains("Expand-Archive")) "Installer still depends on the incomplete Windows Sandbox Archive module."
   Assert-True ($installerText.Contains("Install-DinoBrainVisualCppRuntime")) "Installer does not provision the semantic native runtime on a clean machine."

@@ -192,14 +192,26 @@ try {
 }
 $finalText = $finalOutput -join [Environment]::NewLine
 try { $final = $finalText | ConvertFrom-Json } catch { throw "Final clean-machine proof returned invalid JSON: $finalText" }
+$finalPropertyNames = @($final.PSObject.Properties.Name)
+$finalOk = $finalPropertyNames -contains "ok" -and [bool]$final.ok
+if ($finalExit -ne 0 -or -not $finalOk) {
+  $finalError = if ($finalPropertyNames -contains "error") { [string]$final.error } else { $finalText }
+  Write-Error "Final clean-machine proof failed: $finalError"
+  Write-Warning "Clean-machine equivalence is not complete. Resume with: powershell -File `"$PSCommandPath`" -ResumeRunId $runId"
+  exit 1
+}
+if (-not ($finalPropertyNames -contains "status") -or -not ($finalPropertyNames -contains "evidence_path")) {
+  throw "Final clean-machine proof returned an incomplete success object: $finalText"
+}
 
 Write-Host ""
 Write-Host "DinoBrain recovery-equivalence status: $($final.status)"
 Write-Host "Evidence: $($final.evidence_path)"
-if ($final.resource_usage.peak_process_tree_working_set_mib) {
+$hasResourceUsage = $finalPropertyNames -contains "resource_usage" -and $null -ne $final.resource_usage
+if ($hasResourceUsage -and $final.resource_usage.PSObject.Properties.Name -contains "peak_process_tree_working_set_mib" -and $final.resource_usage.peak_process_tree_working_set_mib) {
   Write-Host "Peak verification process-tree RAM: $($final.resource_usage.peak_process_tree_working_set_mib) MiB"
 }
-if (@($final.blockers).Count -gt 0) {
+if ($finalPropertyNames -contains "blockers" -and @($final.blockers).Count -gt 0) {
   Write-Host "Remaining blockers:"
   @($final.blockers) | ForEach-Object { Write-Host "- $_" }
 }
@@ -207,9 +219,4 @@ if ($clientFailures.Count -gt 0) {
   Write-Host "Client proof failures:"
   $clientFailures | ForEach-Object { Write-Host "- $_" }
 }
-if ($finalExit -ne 0 -or -not $final.ok) {
-  Write-Warning "Clean-machine equivalence is not complete. Resume with: powershell -File `"$PSCommandPath`" -ResumeRunId $runId"
-  exit 1
-}
-
 Write-Host "Clean-machine recovery equivalence verified."

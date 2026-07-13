@@ -261,6 +261,9 @@ failure, unrelated-history failure, data-drift failure, and receipt provenance.
 The clean-machine validator independently repeats the app-ancestor check and
 allows only a five-minute pre-install receipt window for the immediate
 restore-then-path-repair transaction; an older receipt remains blocked.
+The PowerShell launcher validates the final JSON shape before reading optional
+fields. A failed Node finalizer now reports its original `error` instead of
+being replaced by a StrictMode missing-property exception.
 
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one

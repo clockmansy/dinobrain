@@ -84,7 +84,7 @@ The first foundation slice is implemented and remains intentionally
 - FND-03 now uses root `version.json` as the release authority for the OS
   contract, hook, Observatory, installer builder, release publisher, and release
   manifest; build/check fail when package, lock, installer, or runtime metadata
-  drift from the current authoritative version (`2.2.29` for this release) and
+  drift from the current authoritative version (`2.2.30` for this release) and
   data contract version `3`.
 - FND-02 now covers production TypeScript and operational script state writers
   with common atomic helpers. Status/index output is staged under an immutable
@@ -1126,6 +1126,12 @@ validator assumptions: exact app identity and a restore receipt newer than the
 final path-repair install. `v2.2.29` applies the same ancestor check in the
 final validator and permits only a five-minute restore-before-repair window. A
 released Sandbox rerun is still required before DIST-02 can be marked complete.
+
+The `v2.2.29` rerun subsequently proved both real unattended clients and wrote
+server-signed Codex and Claude MCP proof artifacts. Finalization then returned
+a failure object that the PowerShell launcher masked by reading a missing
+`status` property under StrictMode. `v2.2.30` validates the result shape first
+and preserves the underlying finalizer error without weakening completion.
 
 #### REL-01: Immutable release parity
 
