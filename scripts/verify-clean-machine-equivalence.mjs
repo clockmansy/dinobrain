@@ -37,7 +37,18 @@ assert.deepEqual(runtimeDirty.runtimeGenerated, [
   ".dino/state/client_mcp_direct_status.json",
   ".dino/tasks/task-proof.json",
 ]);
+assert.deepEqual(runtimeDirty.authorizedRestore, []);
 assert.deepEqual(runtimeDirty.unexpected, ["50_Instances/accepted/changed-memory.json"]);
+const restoredPrivateDirty = classifyCleanMachineTrackedPaths("data", [
+  "10_Conversations/raw/session.json",
+  "30_Sources/private/source.txt",
+  "README.md",
+], { allowPrivateRestore: true });
+assert.deepEqual(restoredPrivateDirty.authorizedRestore, [
+  "10_Conversations/raw/session.json",
+  "30_Sources/private/source.txt",
+]);
+assert.deepEqual(restoredPrivateDirty.unexpected, ["README.md"]);
 assert.deepEqual(
   classifyCleanMachineTrackedPaths("app", [".dino/state/runtime.json", "src/index.ts"]).unexpected,
   [".dino/state/runtime.json", "src/index.ts"],
@@ -236,6 +247,13 @@ try {
   const localStateRoot = path.join(fixtureRoot, "local-state");
   const appFixture = createRepositoryFixture(fixtureRoot, "app", "clockmansy/dinobrain");
   const dataFixture = createRepositoryFixture(fixtureRoot, "data-repo", "clockmansy/dinobrain-data");
+  mkdirSync(path.join(dataFixture.repo, "10_Conversations", "raw"), { recursive: true });
+  const restoredPrivatePath = path.join(dataFixture.repo, "10_Conversations", "raw", "session.json");
+  writeFileSync(restoredPrivatePath, '{"value":"public-baseline"}\n', "utf8");
+  git(dataFixture.repo, ["add", "10_Conversations/raw/session.json"]);
+  git(dataFixture.repo, ["commit", "-m", "add private restore fixture"]);
+  git(dataFixture.repo, ["push"]);
+  dataFixture.commit = git(dataFixture.repo, ["rev-parse", "HEAD"]);
   const installResultPath = path.join(fixtureRoot, "dinobrain-install-result.json");
   const restoreReceiptPath = path.join(fixtureRoot, "restore-receipt.json");
   writeFileSync(installResultPath, `${JSON.stringify({
@@ -251,7 +269,24 @@ try {
     full_equivalence: true,
     snapshot_count: 4,
   }, null, 2)}\n`, "utf8");
-  writeFileSync(restoreReceiptPath, `${JSON.stringify({ status: "restored" })}\n`, "utf8");
+  writeFileSync(restoreReceiptPath, `${JSON.stringify({
+    ok: true,
+    status: "restored",
+    version: "dinobrain_private_backup_v1",
+    inventory_policy_version: "private_inventory_20260711_v1",
+    archive_sha256: hash("1"),
+    inventory_sha256: hash("2"),
+    restored_entry_count: 1,
+    source_identity: {
+      app_commit: appFixture.commit,
+      data_commit: dataFixture.commit,
+      data_contract_version: DINOBRAIN_DATA_CONTRACT_VERSION,
+    },
+  })}\n`, "utf8");
+  writeFileSync(restoredPrivatePath, '{"value":"private-restored"}\n', "utf8");
+  const fixtureStatus = git(dataFixture.repo, ["status", "--porcelain=v1"]);
+  assert.match(fixtureStatus, /10_Conversations\/raw\/session\.json/, `private restore fixture is missing: ${fixtureStatus}`);
+  assert(!fixtureStatus.split(/\r?\n/).some((line) => !line.includes("10_Conversations/raw/session.json")), `unexpected fixture dirt: ${fixtureStatus}`);
   const begun = await beginCleanMachineEquivalenceRun({
     appRoot: appFixture.repo,
     dataRoot: dataFixture.repo,
@@ -265,6 +300,53 @@ try {
   assert.equal(begun.descriptor.installed_data_commit, dataFixture.commit);
   assert.equal(begun.descriptor.app_repository, "clockmansy/dinobrain");
   assert.equal(begun.descriptor.data_repository, "clockmansy/dinobrain-data");
+
+  git(appFixture.repo, ["update-ref", "refs/remotes/origin/main", appFixture.commit]);
+  git(dataFixture.repo, ["update-ref", "refs/remotes/origin/main", dataFixture.commit]);
+  git(appFixture.repo, ["checkout", "--detach", appFixture.commit]);
+  git(dataFixture.repo, ["checkout", "--detach", dataFixture.commit]);
+  writeFileSync(restoredPrivatePath, '{"value":"private-restored"}\n', "utf8");
+  const detachedRun = await beginCleanMachineEquivalenceRun({
+    appRoot: appFixture.repo,
+    dataRoot: dataFixture.repo,
+    mode: "both_clients",
+    installResultPath,
+    restoreReceiptPath,
+    localStateRoot,
+  });
+  assert.equal(detachedRun.descriptor.app_upstream_commit, appFixture.commit);
+  assert.equal(detachedRun.descriptor.data_upstream_commit, dataFixture.commit);
+
+  const validRestoreReceipt = readFileSync(restoreReceiptPath, "utf8");
+  const invalidRestoreReceipt = JSON.parse(validRestoreReceipt);
+  invalidRestoreReceipt.ok = false;
+  writeFileSync(restoreReceiptPath, `${JSON.stringify(invalidRestoreReceipt)}\n`, "utf8");
+  await assert.rejects(
+    () => beginCleanMachineEquivalenceRun({
+      appRoot: appFixture.repo,
+      dataRoot: dataFixture.repo,
+      mode: "both_clients",
+      installResultPath,
+      restoreReceiptPath,
+      localStateRoot,
+    }),
+    /data_tracked_dirty.*restore_not_verified/,
+  );
+  writeFileSync(restoreReceiptPath, validRestoreReceipt, "utf8");
+
+  writeFileSync(path.join(appFixture.repo, "README.md"), "unexpected source drift\n", "utf8");
+  await assert.rejects(
+    () => beginCleanMachineEquivalenceRun({
+      appRoot: appFixture.repo,
+      dataRoot: dataFixture.repo,
+      mode: "both_clients",
+      installResultPath,
+      restoreReceiptPath,
+      localStateRoot,
+    }),
+    /app_tracked_dirty/,
+  );
+  git(appFixture.repo, ["checkout", "--", "README.md"]);
 
   const degradedInstall = JSON.parse(readFileSync(installResultPath, "utf8"));
   degradedInstall.full_equivalence = false;
@@ -399,6 +481,10 @@ try {
     checks: [
       "ed25519_attestation_verified",
       "real_git_begin_contract_verified",
+      "detached_origin_main_install_verified",
+      "authenticated_private_restore_dirty_accepted",
+      "invalid_restore_cannot_authorize_dirty",
+      "porcelain_leading_space_preserved",
       "degraded_begin_rejected",
       "tamper_rejected",
       "missing_claude_rejected",

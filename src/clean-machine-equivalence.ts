@@ -25,6 +25,11 @@ import {
 } from "./client-mcp-proof.js";
 import { atomicCreateText, atomicWriteJson, withFileLock } from "./concurrency.js";
 import { findClientLivePreResponseProof, type LivePreResponseProof } from "./live-pre-response-proof.js";
+import {
+  DEFAULT_PRIVATE_DATA_PATHS,
+  PRIVATE_BACKUP_INVENTORY_POLICY_VERSION,
+  PRIVATE_BACKUP_VERSION,
+} from "./private-backup.js";
 import { DINOBRAIN_DATA_CONTRACT_VERSION, DINOBRAIN_VERSION } from "./version.js";
 
 const execFileAsync = promisify(execFile);
@@ -119,6 +124,7 @@ export type PublicGitIdentity = {
   installed_commit_is_ancestor: boolean;
   tracked_dirty_count: number;
   runtime_generated_tracked_dirty_count: number;
+  authorized_restore_tracked_dirty_count: number;
   unexpected_tracked_dirty_count: number;
 };
 
@@ -318,15 +324,25 @@ const DATA_RUNTIME_TRACKED_PREFIXES = [
 export function classifyCleanMachineTrackedPaths(
   repository: "app" | "data",
   paths: string[],
-): { runtimeGenerated: string[]; unexpected: string[] } {
+  options: { allowPrivateRestore?: boolean } = {},
+): { runtimeGenerated: string[]; authorizedRestore: string[]; unexpected: string[] } {
   const normalized = unique(paths.map((value) => value.replace(/\\/g, "/").replace(/^\.\//, "")));
-  if (repository === "app") return { runtimeGenerated: [], unexpected: normalized };
+  if (repository === "app") return { runtimeGenerated: [], authorizedRestore: [], unexpected: normalized };
   const runtimeGenerated = normalized.filter((value) =>
     DATA_RUNTIME_TRACKED_PREFIXES.some((prefix) => value.startsWith(prefix)),
   );
-  const allowed = new Set(runtimeGenerated);
+  const runtime = new Set(runtimeGenerated);
+  const authorizedRestore = options.allowPrivateRestore
+    ? normalized.filter((value) =>
+      !runtime.has(value) && DEFAULT_PRIVATE_DATA_PATHS.some((selector) =>
+        value === selector || value.startsWith(`${selector}/`),
+      )
+    )
+    : [];
+  const allowed = new Set([...runtimeGenerated, ...authorizedRestore]);
   return {
     runtimeGenerated,
+    authorizedRestore,
     unexpected: normalized.filter((value) => !allowed.has(value)),
   };
 }
@@ -377,13 +393,20 @@ async function fileHash(filePath: string): Promise<string> {
   return sha256Bytes(await fs.readFile(filePath));
 }
 
-async function gitText(root: string, args: string[], required = true): Promise<string | null> {
+async function gitText(
+  root: string,
+  args: string[],
+  required = true,
+  preserveLeadingWhitespace = false,
+): Promise<string | null> {
   try {
     const result = await execFileAsync("git", ["-c", `safe.directory=${path.resolve(root)}`, "-C", root, ...args], {
       windowsHide: true,
       maxBuffer: 8 * 1024 * 1024,
     });
-    const value = result.stdout.trim();
+    const value = preserveLeadingWhitespace
+      ? result.stdout.replace(/(?:\r?\n)+$/, "")
+      : result.stdout.trim();
     return value || null;
   } catch (error) {
     if (required) throw error;
@@ -407,11 +430,12 @@ function githubRepository(remote: string | null): string | null {
 }
 
 async function gitState(root: string): Promise<GitState> {
-  const [head, upstream, origin, status] = await Promise.all([
+  const [head, branchUpstream, originMain, origin, status] = await Promise.all([
     gitText(root, ["rev-parse", "HEAD"]),
     gitText(root, ["rev-parse", "@{u}"], false),
+    gitText(root, ["rev-parse", "refs/remotes/origin/main"], false),
     gitText(root, ["remote", "get-url", "origin"], false),
-    gitText(root, ["status", "--porcelain=v1"], false),
+    gitText(root, ["status", "--porcelain=v1"], false, true),
   ]);
   if (!head || !isCommit(head)) throw new Error(`Repository HEAD is not a full commit: ${root}`);
   const lines = status?.split(/\r?\n/).filter(Boolean) ?? [];
@@ -425,7 +449,11 @@ async function gitState(root: string): Promise<GitState> {
     });
   return {
     head: head.toLowerCase(),
-    upstream: upstream && isCommit(upstream) ? upstream.toLowerCase() : null,
+    upstream: branchUpstream && isCommit(branchUpstream)
+      ? branchUpstream.toLowerCase()
+      : originMain && isCommit(originMain)
+        ? originMain.toLowerCase()
+        : null,
     origin,
     repository: githubRepository(origin),
     trackedDirtyCount: trackedDirtyPaths.length,
@@ -512,6 +540,8 @@ async function inspectRestore(filePath: string | null, descriptor: Pick<CleanMac
   const source = asObject(value.source_identity);
   const installStarted = descriptor.install_started_at ? Date.parse(descriptor.install_started_at) : null;
   const reasons = unique([
+    value.version !== PRIVATE_BACKUP_VERSION ? "restore_version_invalid" : "",
+    value.inventory_policy_version !== PRIVATE_BACKUP_INVENTORY_POLICY_VERSION ? "restore_inventory_policy_invalid" : "",
     value.status !== "restored" || value.ok !== true ? "restore_not_verified" : "",
     !isSha256(value.archive_sha256) ? "restore_archive_hash_invalid" : "",
     !isSha256(value.inventory_sha256) ? "restore_inventory_hash_invalid" : "",
@@ -568,12 +598,37 @@ export async function beginCleanMachineEquivalenceRun(options: {
   const [app, data] = await Promise.all([gitState(appRoot), gitState(dataRoot)]);
   const installResultPath = options.installResultPath ? path.resolve(options.installResultPath) : null;
   const restoreReceiptPath = options.restoreReceiptPath ? path.resolve(options.restoreReceiptPath) : null;
-  const install = await inspectInstall(installResultPath, app, data, appRoot, dataRoot);
+  const installValue = await readJsonObjectOrNull(installResultPath);
+  const restore = await inspectRestore(restoreReceiptPath, {
+    installed_app_commit: app.head,
+    installed_data_commit: data.head,
+    install_started_at: asString(installValue?.started_at) || null,
+  });
+  const restoreVerified = restore.reasons.length === 0;
+  const appDirty = classifyCleanMachineTrackedPaths("app", app.trackedDirtyPaths);
+  const dataDirty = classifyCleanMachineTrackedPaths("data", data.trackedDirtyPaths, {
+    allowPrivateRestore: restoreVerified,
+  });
+  const install: InstallState = {
+    value: installValue,
+    sha256: installResultPath && installValue ? await fileHash(installResultPath) : null,
+    reasons: installReasons(
+      installValue,
+      { ...app, trackedDirtyCount: appDirty.unexpected.length },
+      { ...data, trackedDirtyCount: dataDirty.unexpected.length },
+      appRoot,
+      dataRoot,
+    ),
+  };
   const repositoryReasons = unique([
     app.repository !== expectedAppRepository ? "app_github_repository_mismatch" : "",
     data.repository !== expectedDataRepository ? "data_github_repository_mismatch" : "",
   ]);
-  const initialReasons = unique([...install.reasons, ...repositoryReasons]);
+  const initialReasons = unique([
+    ...install.reasons,
+    ...repositoryReasons,
+    ...(options.mode === "both_clients" ? restore.reasons : []),
+  ]);
   if (options.mode === "both_clients" && initialReasons.length > 0) {
     throw new Error(`Clean-machine proof requires a full immutable GitHub install: ${initialReasons.join(", ")}`);
   }
@@ -920,7 +975,7 @@ function publicGitIdentity(
   state: GitState,
   installedCommit: string,
   ancestor: boolean,
-  classification: { runtimeGenerated: string[]; unexpected: string[] },
+  classification: { runtimeGenerated: string[]; authorizedRestore: string[]; unexpected: string[] },
 ): PublicGitIdentity {
   return {
     repository: state.repository,
@@ -931,6 +986,7 @@ function publicGitIdentity(
     installed_commit_is_ancestor: ancestor,
     tracked_dirty_count: state.trackedDirtyCount,
     runtime_generated_tracked_dirty_count: classification.runtimeGenerated.length,
+    authorized_restore_tracked_dirty_count: classification.authorizedRestore.length,
     unexpected_tracked_dirty_count: classification.unexpected.length,
   };
 }
@@ -1034,8 +1090,12 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
     isAncestor(appRoot, descriptor.installed_app_commit, appState.head),
     isAncestor(dataRoot, descriptor.installed_data_commit, dataState.head),
   ]);
+  const restore = await inspectRestore(descriptor.restore_receipt_path, descriptor);
+  const restoreVerified = restore.reasons.length === 0 && restore.sha256 === descriptor.restore_receipt_sha256;
   const appDirty = classifyCleanMachineTrackedPaths("app", appState.trackedDirtyPaths);
-  const dataDirty = classifyCleanMachineTrackedPaths("data", dataState.trackedDirtyPaths);
+  const dataDirty = classifyCleanMachineTrackedPaths("data", dataState.trackedDirtyPaths, {
+    allowPrivateRestore: restoreVerified,
+  });
   const install = await inspectInstall(descriptor.install_result_path, {
     ...appState,
     head: descriptor.installed_app_commit,
@@ -1047,7 +1107,6 @@ export async function finalizeCleanMachineEquivalenceRun(options: {
     upstream: descriptor.data_upstream_commit,
     trackedDirtyCount: dataDirty.unexpected.length,
   }, appRoot, dataRoot);
-  const restore = await inspectRestore(descriptor.restore_receipt_path, descriptor);
   const installPublic = installEvidence(install, descriptor);
   const recoveryPublic = recoveryEvidence(restore, descriptor);
   const reports = new Map(directStatus.agents.map((report) => [report.agent, report]));
