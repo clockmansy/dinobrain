@@ -258,6 +258,9 @@ general source-identity bypass: the backup app commit must be a Git ancestor of
 the installed app commit, while the data commit and data contract version stay
 exact. The backup regression separately proves descendant success, exact-mode
 failure, unrelated-history failure, data-drift failure, and receipt provenance.
+The clean-machine validator independently repeats the app-ancestor check and
+allows only a five-minute pre-install receipt window for the immediate
+restore-then-path-repair transaction; an older receipt remains blocked.
 
 On a newly installed Windows profile, first run `DinoBrain Private Restore.cmd`
 and then run `DinoBrain Recovery Equivalence Proof.cmd`. The latter creates one

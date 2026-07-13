@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -301,6 +301,56 @@ try {
   assert.equal(begun.descriptor.app_repository, "clockmansy/dinobrain");
   assert.equal(begun.descriptor.data_repository, "clockmansy/dinobrain-data");
 
+  const backupAppCommit = appFixture.commit;
+  writeFileSync(path.join(appFixture.repo, "UPGRADE.md"), "fixture app upgrade\n", "utf8");
+  git(appFixture.repo, ["add", "UPGRADE.md"]);
+  git(appFixture.repo, ["commit", "-m", "fixture app upgrade"]);
+  git(appFixture.repo, ["push"]);
+  appFixture.commit = git(appFixture.repo, ["rev-parse", "HEAD"]);
+  const upgradedInstall = JSON.parse(readFileSync(installResultPath, "utf8"));
+  upgradedInstall.app.resolved_commit = appFixture.commit;
+  writeFileSync(installResultPath, `${JSON.stringify(upgradedInstall, null, 2)}\n`, "utf8");
+  const ancestorRun = await beginCleanMachineEquivalenceRun({
+    appRoot: appFixture.repo,
+    dataRoot: dataFixture.repo,
+    mode: "both_clients",
+    installResultPath,
+    restoreReceiptPath,
+    localStateRoot,
+  });
+  assert.equal(ancestorRun.descriptor.installed_app_commit, appFixture.commit);
+  assert.notEqual(backupAppCommit, appFixture.commit);
+
+  const ancestorReceipt = JSON.parse(readFileSync(restoreReceiptPath, "utf8"));
+  ancestorReceipt.source_identity.app_commit = commit("f");
+  writeFileSync(restoreReceiptPath, `${JSON.stringify(ancestorReceipt, null, 2)}\n`, "utf8");
+  await assert.rejects(
+    () => beginCleanMachineEquivalenceRun({
+      appRoot: appFixture.repo,
+      dataRoot: dataFixture.repo,
+      mode: "both_clients",
+      installResultPath,
+      restoreReceiptPath,
+      localStateRoot,
+    }),
+    /restore_app_identity_mismatch/,
+  );
+  ancestorReceipt.source_identity.app_commit = backupAppCommit;
+  writeFileSync(restoreReceiptPath, `${JSON.stringify(ancestorReceipt, null, 2)}\n`, "utf8");
+  utimesSync(restoreReceiptPath, new Date("2026-07-10T23:00:00.000Z"), new Date("2026-07-10T23:00:00.000Z"));
+  await assert.rejects(
+    () => beginCleanMachineEquivalenceRun({
+      appRoot: appFixture.repo,
+      dataRoot: dataFixture.repo,
+      mode: "both_clients",
+      installResultPath,
+      restoreReceiptPath,
+      localStateRoot,
+    }),
+    /restore_receipt_predates_install/,
+  );
+  utimesSync(restoreReceiptPath, new Date("2026-07-10T23:56:00.000Z"), new Date("2026-07-10T23:56:00.000Z"));
+
   git(appFixture.repo, ["update-ref", "refs/remotes/origin/main", appFixture.commit]);
   git(dataFixture.repo, ["update-ref", "refs/remotes/origin/main", dataFixture.commit]);
   git(appFixture.repo, ["checkout", "--detach", appFixture.commit]);
@@ -483,6 +533,9 @@ try {
       "real_git_begin_contract_verified",
       "detached_origin_main_install_verified",
       "authenticated_private_restore_dirty_accepted",
+      "ancestor_app_restore_identity_accepted",
+      "unrelated_app_restore_identity_rejected",
+      "stale_restore_receipt_rejected",
       "invalid_restore_cannot_authorize_dirty",
       "porcelain_leading_space_preserved",
       "degraded_begin_rejected",

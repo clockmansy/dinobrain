@@ -100,6 +100,9 @@ The Sandbox restore permits an app-version difference only when the backup's
 app commit is a Git ancestor of the installed release. The data commit and data
 contract version must still match exactly. An unrelated app history or changed
 memory data remains fail-closed.
+The clean-machine receipt validator applies the same ancestor rule and accepts
+the receipt up to five minutes before the final installer transaction starts,
+covering the restore-then-path-repair ordering without accepting stale receipts.
 
 Run `DinoBrain Private Backup.cmd` to create an authenticated encrypted archive
 of local-only conversations, private sources, attachments, local event evidence,

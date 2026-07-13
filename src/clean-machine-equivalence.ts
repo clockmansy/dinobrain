@@ -265,6 +265,7 @@ type RestoreState = {
   value: JsonObject | null;
   sha256: string | null;
   mtime: string | null;
+  sourceAppCommitIsAncestor: boolean;
   reasons: string[];
 };
 
@@ -533,12 +534,22 @@ async function inspectInstall(
   };
 }
 
-async function inspectRestore(filePath: string | null, descriptor: Pick<CleanMachineRunDescriptor, "installed_app_commit" | "installed_data_commit" | "install_started_at">): Promise<RestoreState> {
+async function inspectRestore(
+  filePath: string | null,
+  descriptor: Pick<CleanMachineRunDescriptor, "app_root" | "installed_app_commit" | "installed_data_commit" | "install_started_at">,
+): Promise<RestoreState> {
   const value = await readJsonObjectOrNull(filePath);
-  if (!filePath || !value) return { value, sha256: null, mtime: null, reasons: ["restore_receipt_missing"] };
+  if (!filePath || !value) {
+    return { value, sha256: null, mtime: null, sourceAppCommitIsAncestor: false, reasons: ["restore_receipt_missing"] };
+  }
   const stat = await fs.stat(filePath);
   const source = asObject(value.source_identity);
+  const sourceAppCommit = asString(source?.app_commit).toLowerCase();
+  const sourceAppCommitIsAncestor = isCommit(sourceAppCommit)
+    ? await isAncestor(descriptor.app_root, sourceAppCommit, descriptor.installed_app_commit)
+    : false;
   const installStarted = descriptor.install_started_at ? Date.parse(descriptor.install_started_at) : null;
+  const restoreBeforeRepairAllowanceMs = 5 * 60 * 1000;
   const reasons = unique([
     value.version !== PRIVATE_BACKUP_VERSION ? "restore_version_invalid" : "",
     value.inventory_policy_version !== PRIVATE_BACKUP_INVENTORY_POLICY_VERSION ? "restore_inventory_policy_invalid" : "",
@@ -546,12 +557,20 @@ async function inspectRestore(filePath: string | null, descriptor: Pick<CleanMac
     !isSha256(value.archive_sha256) ? "restore_archive_hash_invalid" : "",
     !isSha256(value.inventory_sha256) ? "restore_inventory_hash_invalid" : "",
     asNumber(value.restored_entry_count) < 1 ? "restore_entry_count_empty" : "",
-    asString(source?.app_commit).toLowerCase() !== descriptor.installed_app_commit ? "restore_app_identity_mismatch" : "",
+    !sourceAppCommitIsAncestor ? "restore_app_identity_mismatch" : "",
     asString(source?.data_commit).toLowerCase() !== descriptor.installed_data_commit ? "restore_data_identity_mismatch" : "",
     asNumber(source?.data_contract_version) !== DINOBRAIN_DATA_CONTRACT_VERSION ? "restore_contract_identity_mismatch" : "",
-    installStarted !== null && stat.mtimeMs + 5_000 < installStarted ? "restore_receipt_predates_install" : "",
+    installStarted !== null && stat.mtimeMs + restoreBeforeRepairAllowanceMs < installStarted
+      ? "restore_receipt_predates_install"
+      : "",
   ]);
-  return { value, sha256: await fileHash(filePath), mtime: stat.mtime.toISOString(), reasons };
+  return {
+    value,
+    sha256: await fileHash(filePath),
+    mtime: stat.mtime.toISOString(),
+    sourceAppCommitIsAncestor,
+    reasons,
+  };
 }
 
 async function loadOrCreateAttestationKey(localStateRoot: string): Promise<{
@@ -600,6 +619,7 @@ export async function beginCleanMachineEquivalenceRun(options: {
   const restoreReceiptPath = options.restoreReceiptPath ? path.resolve(options.restoreReceiptPath) : null;
   const installValue = await readJsonObjectOrNull(installResultPath);
   const restore = await inspectRestore(restoreReceiptPath, {
+    app_root: appRoot,
     installed_app_commit: app.head,
     installed_data_commit: data.head,
     install_started_at: asString(installValue?.started_at) || null,
@@ -1034,7 +1054,7 @@ function recoveryEvidence(restore: RestoreState, descriptor: CleanMachineRunDesc
     source_app_commit: sourceApp,
     source_data_commit: sourceData,
     source_identity_matches_install:
-      sourceApp === descriptor.installed_app_commit && sourceData === descriptor.installed_data_commit,
+      restore.sourceAppCommitIsAncestor && sourceData === descriptor.installed_data_commit,
     reason_codes: reasons,
   };
 }
@@ -1428,7 +1448,6 @@ export function validateCleanMachineEquivalenceEvidence(
     if (evidence.recovery?.status !== "PASS" || evidence.recovery?.source_identity_matches_install !== true) {
       errors.push("encrypted_restore_equivalence_missing");
     }
-    if (evidence.recovery?.source_app_commit !== evidence.repositories?.app?.installed_commit) errors.push("restore_app_commit_mismatch");
     if (evidence.recovery?.source_data_commit !== evidence.repositories?.data?.installed_commit) errors.push("restore_data_commit_mismatch");
     const codex = evidence.clients?.codex;
     const claude = evidence.clients?.claude;
