@@ -58,6 +58,15 @@ async function main() {
   const dataRoot = mkdtempSync(path.join(tmpdir(), "dinobrain-contextual-rag-"));
   try {
     text(
+      path.join(dataRoot, "15_Profile", "identity.md"),
+      markdown(
+        "사용자 정체성",
+        "사용자가 직접 밝힌 이름과 안정적인 자기 설명을 보관한다.",
+        ["PROFILE-IDENTITY"],
+        "내 이름은 디노 사용자이며 로컬 지식 시스템을 운영한다.",
+      ),
+    );
+    text(
       path.join(dataRoot, "20_Wiki", "paid-leave.md"),
       markdown(
         "Paid leave handbook",
@@ -112,7 +121,7 @@ async function main() {
     );
 
     const records = await collectCuratedRecords(dataRoot);
-    assert(records.length === 5, `expected five contextual records, got ${records.length}`);
+    assert(records.length === 6, `expected six contextual records, got ${records.length}`);
     assert(!records.some((record) => record.path.startsWith("30_Sources/private/")), "private source entered default retrieval");
     assert(!records.some((record) => record.path.startsWith("30_Sources/fetched/")), "source snapshot entered default retrieval");
     for (const record of records) {
@@ -124,12 +133,14 @@ async function main() {
     assert(records.find((record) => record.path === "30_Sources/chunks/leave-ko.md")?.knowledge_role === "source_citation", "verified source role missing");
     assert(records.find((record) => record.path === "20_Wiki/paid-leave.md")?.knowledge_role === "verified_claim_support", "verified claim-support role missing");
     assert(records.find((record) => record.path === "40_Projects/retrieval.md")?.knowledge_role === "project_context", "project context role missing");
+    assert(records.find((record) => record.path === "15_Profile/identity.md")?.knowledge_role === "user_profile", "user profile role missing");
 
     const paraphrase = "Where can a worker arrange compensated time away and obtain approval?";
     const bilingual = "유급 휴가 approval workflow는 어디에서 처리하나요?";
     const aliasQuery = "PTO-OMEGA";
+    const identityQuery = "내 이름이 뭐야";
     const texts = records.map((record) => hybrid.contextualText(record));
-    const semantic = await semanticModule.tryEmbedTextsWithSemanticProvider([...texts, paraphrase, bilingual, aliasQuery]);
+    const semantic = await semanticModule.tryEmbedTextsWithSemanticProvider([...texts, paraphrase, bilingual, aliasQuery, identityQuery]);
     assert(semantic?.semantic_embedding_provider === true, "real semantic provider unavailable");
     const recordVectors = Object.fromEntries(records.map((record, index) => [record.path, semantic.vectors[index]]));
     const queryOffset = records.length;
@@ -144,6 +155,7 @@ async function main() {
         [hybrid.normalizeVectorKey(paraphrase)]: semantic.vectors[queryOffset],
         [hybrid.normalizeVectorKey(bilingual)]: semantic.vectors[queryOffset + 1],
         [hybrid.normalizeVectorKey(aliasQuery)]: semantic.vectors[queryOffset + 2],
+        [hybrid.normalizeVectorKey(identityQuery)]: semantic.vectors[queryOffset + 3],
       },
     };
 
@@ -162,6 +174,11 @@ async function main() {
     const aliasRanked = hybrid.rankRecordsHybridV2(records, aliasQuery, { limit: 5, denseVectorIndex: denseIndex, denseTopK: 3 });
     assert(aliasRanked[0]?.path === "20_Wiki/paid-leave.md", "rare exact alias was not stable at rank 1");
     assert(aliasRanked[0]?.score_breakdown?.exact_alias >= 42, "exact alias contribution missing");
+
+    const identityRanked = hybrid.rankRecordsHybridV2(records, identityQuery, { limit: 5, denseVectorIndex: denseIndex, denseTopK: 3 });
+    assert(hybrid.rootIntentsForQuery(identityQuery).includes("15_Profile/"), "Korean identity query did not select Profile root intent");
+    assert(identityRanked[0]?.path === "15_Profile/identity.md", "Korean identity query did not rank the user profile first");
+    assert(identityRanked[0]?.retrieval_lane === "profile", "Korean identity result did not retain Profile lane");
 
     const rareBodyRanked = hybrid.rankRecordsHybridV2(records, "checksums", { limit: 5, denseVectorIndex: null });
     assert(rareBodyRanked[0]?.path === "20_Wiki/build-policy.md", "rare exact body token was filtered out");

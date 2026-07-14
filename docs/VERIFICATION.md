@@ -464,7 +464,7 @@ It verifies by construction:
 Run `npm run safety:classifier:verify` first for the deterministic SAFE-01
 regression. It proves that MCP-compatible direct classification, staged Git
 classification, pre-push history classification, and full-history
-classification use policy `data_classification_20260712_v3`. The fixture covers
+classification use policy `data_classification_20260714_v4`. The fixture covers
 explicit path allowlisting, secrets, machine-local paths, raw transcripts,
 review lineage, invalid JSON, strict UTF-8 decoding, symlinks, unsupported binary files,
 the 8 MiB complete-scan limit, and a secret committed and then deleted before

@@ -57,6 +57,8 @@ const clean = classify("20_Wiki/clean.md", "Reviewed public-safe knowledge.\n");
 assert.equal(clean.classification, "syncable");
 assert.equal(clean.scan.complete, true);
 assert.equal(clean.policy_version, DATA_CLASSIFICATION_POLICY_VERSION);
+assert.equal(classify("15_Profile/README.md", "# Local profile policy\n").classification, "syncable");
+assert.equal(classify("15_Profile/Identity.md", "My private identity.\n").classification, "blocked");
 
 const disabledScan = classifyDataFile({
   relativePath: "20_Wiki/scan-disabled.md",

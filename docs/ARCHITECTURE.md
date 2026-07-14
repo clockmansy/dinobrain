@@ -130,7 +130,7 @@ Raw archives, candidates, and review records are excluded from default retrieval
 ## Unified Public Data Classification Boundary
 
 `src/data-classification.ts` is the only public-data classifier. Policy version
-`data_classification_20260712_v3` classifies every path through an explicit
+`data_classification_20260714_v4` classifies every path through an explicit
 allowlist and performs a complete scan of supported regular files before they
 can be treated as syncable. It fails closed on unclassified paths, symlinks,
 submodules, unsupported or binary file types, files over the complete-scan limit, invalid UTF-8, malformed

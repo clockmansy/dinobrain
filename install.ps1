@@ -2692,6 +2692,46 @@ try {
   Invoke-DinoBrainInstallFailurePoint -Name "after_stage_build"
   Promote-DinoBrainInstallTransaction -Transaction $transaction
   if ($gitAvailable) { Enable-DinoBrainDataGitHooks -DataDir $DataDir }
+  $oldFinalDataRoot = $env:DINOBRAIN_DATA_DIR
+  $env:DINOBRAIN_DATA_DIR = $DataDir
+  try {
+    Write-Host "Publishing final-path DinoBrain indexes, evidence graph, and atomic status generation"
+    $refreshStartedAt = [DateTime]::UtcNow.AddSeconds(-2)
+    $oldPortablePath = $env:PATH
+    $env:PATH = "$nodeRoot;$oldPortablePath"
+    try {
+      $refreshResult = Invoke-NativeCommandResult -FilePath $npmCmd -ArgumentList @("run", "status:refresh") -WorkingDirectory $AppDir
+    } finally {
+      $env:PATH = $oldPortablePath
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$refreshResult.Output)) { Write-Host $refreshResult.Output }
+    if ($refreshResult.ExitCode -notin @(0, 1)) {
+      throw "Final-path status refresh failed before publication with exit code $($refreshResult.ExitCode)."
+    }
+    $requiredFinalArtifacts = @(
+      (Join-Path $DataDir ".dino\index\evidence-graph.sqlite"),
+      (Join-Path $DataDir ".dino\state\evidence_graph_status.json"),
+      (Join-Path $DataDir ".dino\state\current-status-generation.json")
+    )
+    foreach ($requiredArtifact in $requiredFinalArtifacts) {
+      if (-not (Test-Path -LiteralPath $requiredArtifact -PathType Leaf)) {
+        throw "Final-path graph/status artifact was not created: $requiredArtifact"
+      }
+    }
+    $generationPointer = Get-Content -LiteralPath (Join-Path $DataDir ".dino\state\current-status-generation.json") -Raw | ConvertFrom-Json
+    $graphStatus = Get-Content -LiteralPath (Join-Path $DataDir ".dino\state\evidence_graph_status.json") -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace([string]$generationPointer.generation_id) -or [DateTime]::Parse([string]$generationPointer.generated_at).ToUniversalTime() -lt $refreshStartedAt) {
+      throw "Final-path status generation was not freshly published by this installation."
+    }
+    if ([string]$graphStatus.status -ne "healthy" -or [DateTime]::Parse([string]$graphStatus.generated_at).ToUniversalTime() -lt $refreshStartedAt) {
+      throw "Final-path evidence graph was not freshly rebuilt as healthy by this installation."
+    }
+    if ($refreshResult.ExitCode -eq 1) {
+      Write-Warning "Final-path graph and status generation were published, but non-graph readiness checks still need attention. Observatory will show those checks separately."
+    }
+  } finally {
+    if ($null -eq $oldFinalDataRoot) { Remove-Item Env:\DINOBRAIN_DATA_DIR -ErrorAction SilentlyContinue } else { $env:DINOBRAIN_DATA_DIR = $oldFinalDataRoot }
+  }
   Invoke-DinoBrainInstallFailurePoint -Name "after_promote"
 
   if (-not $SkipCodexConfig) { Publish-DinoBrainStagedFile -StagedPath $promotionConfigPath -TargetPath $CodexConfigPath }

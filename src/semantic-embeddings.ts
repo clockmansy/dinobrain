@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export const DEFAULT_SEMANTIC_MODEL = "Xenova/all-MiniLM-L6-v2";
+export const DEFAULT_SEMANTIC_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 export const HUGGINGFACE_TRANSFORMERS_PROVIDER = "huggingface_transformers_feature_extraction_v1";
 export const LOCAL_TEXT_HASHING_PROVIDER = "local_text_hashing_v1";
 

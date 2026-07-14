@@ -1,6 +1,6 @@
 {
   "name": "dinobrain",
-  "version": "2.2.31",
+  "version": "2.2.32",
   "private": true,
   "type": "module",
   "description": "DinoBrain MCP server and app",
@@ -143,7 +143,10 @@
     "backup:keygen": "npm run build --silent && node dist/run-private-backup.js keygen",
     "backup:private": "npm run build --silent && node dist/run-private-backup.js create",
     "backup:private:inspect": "npm run build --silent && node dist/run-private-backup.js inspect",
+    "backup:private:archive-verify": "npm run build --silent && node dist/run-private-backup.js verify",
     "backup:private:verify": "npm run build --silent && node scripts/verify-private-backup-restore.mjs --write-status",
+    "local-only:verify": "npm run build --silent && node scripts/verify-local-only-mode.mjs",
+    "local-only:repair-ledger": "node scripts/repair-local-lifecycle-ledger.mjs",
     "restore:private": "npm run build --silent && node dist/run-private-backup.js restore",
     "safety:public-data": "npm run build --silent && node scripts/verify-public-data-safety.mjs --write",
     "safety:public-data:check": "npm run build --silent && node scripts/verify-public-data-safety.mjs",

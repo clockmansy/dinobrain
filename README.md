@@ -2,6 +2,8 @@
 
 DinoBrain is a local-first second-brain OS for AI coding agents.
 
+It can also be sealed after one final reviewed sync and continued as a push-disabled private RAG on `local-main`. In that mode, multilingual Profile/Wiki retrieval, review-gated memory growth, evidence-graph health, and encrypted restore verification remain fully local. See `docs/LOCAL_ONLY_MODE.md`.
+
 This repository contains the app side of DinoBrain:
 
 - MCP server

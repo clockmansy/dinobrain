@@ -17,12 +17,13 @@ import {
   EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH,
   readEvidenceGraphWindow,
 } from "../dist/evidence-graph.js";
+import { localOnlyStatus } from "../dist/local-only.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
 const host = process.env.DINOBRAIN_OBSERVATORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.DINOBRAIN_OBSERVATORY_PORT ?? process.argv.find((arg) => arg.startsWith("--port="))?.split("=")[1] ?? 3847);
-const observatoryVersion = "2026-07-11-evidence-graph-v2";
+const observatoryVersion = "2026-07-14-local-only-v1";
 const execFileAsync = promisify(execFile);
 const configuredCacheTtlMs = Number(process.env.DINOBRAIN_OBSERVATORY_CACHE_TTL_MS ?? 5000);
 const cacheTtlMs = Number.isFinite(configuredCacheTtlMs) ? Math.max(100, configuredCacheTtlMs) : 5000;
@@ -1566,6 +1567,7 @@ function projectStatePayload(payload) {
     controlled_compounding: boundedPayloadValue(payload.controlled_compounding),
     lifecycle: boundedPayloadValue(payload.lifecycle),
     sync_risk: boundedPayloadValue(payload.sync_risk),
+    local_only: boundedPayloadValue(payload.local_only),
     os_v2: boundedPayloadValue(payload.os_v2),
     read_trace: boundedPayloadValue(payload.read_trace),
   });
@@ -1698,6 +1700,7 @@ function enforceSnapshotPayloadBudget(snapshot) {
 }
 
 async function buildState() {
+  const localOnly = localOnlyStatus(dataRoot);
   const [audits, auditCount, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
     readAuditLogs(stateLimits.memory_audits),
     countDirFiles(".dino/audits"),
@@ -1726,6 +1729,9 @@ async function buildState() {
       controlled_compounding_status: controlledCompounding.status,
       lifecycle_status: lifecycle.status,
       sync_risk_status: syncRisk.status,
+      operating_mode: localOnly.mode,
+      push_policy: localOnly.push_policy,
+      backup_status: localOnly.backup?.status ?? "not_verified",
       os_v2_status: osV2.status,
     },
     graph_health: graphHealth,
@@ -1736,6 +1742,7 @@ async function buildState() {
     controlled_compounding: controlledCompounding,
     lifecycle,
     sync_risk: syncRisk,
+    local_only: localOnly,
     os_v2: osV2,
     read_trace: readTraceSummary(payload.events, payload.context_packs, payload.traces),
   });
@@ -2910,9 +2917,10 @@ function html() {
       select.value = normalized.includes(current) ? current : "all";
     }
     function renderGraph(graph) {
-      graphStatsEl.textContent = graph.ok
+      const modePrefix = currentLocalOnly?.enabled ? "LOCAL ONLY / " : "";
+      graphStatsEl.textContent = modePrefix + (graph.ok
         ? graph.stats.shown_nodes + "/" + graph.stats.nodes + " nodes / " + graph.stats.shown_edges + "/" + graph.stats.edges + " edges" + (graph.stats.active_tasks ? " / active " + graph.stats.active_tasks : "") + (graph.stats.memory_edges ? " / memory links " + graph.stats.memory_edges : "")
-        : "index missing";
+        : "index missing");
       setGraphOptions(graphLaneEl, graph.filters?.lanes, "All lanes");
       setGraphOptions(graphRelationEl, graph.filters?.edge_types, "All relations");
       setGraphOptions(graphLifecycleEl, graph.filters?.lifecycle_states, "All lifecycle");
@@ -3196,6 +3204,7 @@ function html() {
     });
     window.addEventListener("resize", graphSize);
     requestAnimationFrame(animateGraph);
+    let currentLocalOnly = null;
     function render(data) {
       statusEl.textContent = "live - " + formatTime(data.summary.generated_at);
       rootEl.textContent = data.summary.data_root;
@@ -3212,6 +3221,8 @@ function html() {
       const controlledCompounding = data.controlled_compounding || { counts: {} };
       const readTrace = data.read_trace || {};
       const syncRisk = data.sync_risk || {};
+      const localOnly = data.local_only || {};
+      currentLocalOnly = localOnly;
       const osV2 = data.os_v2 || { counts: {} };
       renderChip(
         chips.active,
@@ -3270,13 +3281,23 @@ function html() {
         graphHealth.status || "missing",
         healthTone(graphHealth.status),
       );
-      renderChip(
-        chips.sync,
-        "Sync",
-        syncRisk.status || "--",
-        (syncRisk.dirty_count ?? 0) + " dirty / " + (syncRisk.untracked_count ?? 0) + " untracked",
-        healthTone(syncRisk.status),
-      );
+      if (localOnly.enabled) {
+        renderChip(
+          chips.sync,
+          "Local Only",
+          "PUSH BLOCKED",
+          "review loop / backup " + (localOnly.backup?.status || "not verified"),
+          localOnly.backup?.status === "verified" ? "healthy" : "ready",
+        );
+      } else {
+        renderChip(
+          chips.sync,
+          "Sync",
+          syncRisk.status || "--",
+          (syncRisk.dirty_count ?? 0) + " dirty / " + (syncRisk.untracked_count ?? 0) + " untracked",
+          healthTone(syncRisk.status),
+        );
+      }
       kv(osHealthEl, [
         ["status", graphHealth.status],
         ["score", graphHealth.score],
@@ -3397,6 +3418,15 @@ function html() {
         \`).join("")
         : '<p class="muted">No behavior recall blockers.</p>';
       kv(syncRiskEl, [
+        ["mode", localOnly.mode],
+        ["push policy", localOnly.push_policy],
+        ["candidate loop", localOnly.candidate_loop],
+        ["auto accept", localOnly.auto_accept],
+        ["source/runtime split", localOnly.source_runtime_separated],
+        ["backup", localOnly.backup?.status || "not verified"],
+        ["backup verified", localOnly.backup?.verified_at],
+        ["final app", localOnly.final_app_commit],
+        ["final data", localOnly.final_data_commit],
         ["status", syncRisk.status],
         ["branch", syncRisk.branch],
         ["dirty", syncRisk.dirty_count],
@@ -3499,6 +3529,7 @@ const server = http.createServer(async (request, response) => {
         observatory_version: observatoryVersion,
         app_root: root,
         data_root: dataRoot,
+        local_only: localOnlyStatus(dataRoot),
         graph_health: graphHealth,
         readiness: {
           version: readiness.version,

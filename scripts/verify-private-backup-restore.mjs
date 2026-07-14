@@ -320,6 +320,16 @@ try {
   const inspected = runCli(["inspect", "--archive", cliArchive]);
   assert.equal(inspected.header.backup_id, cliCreated.backup_id);
   assert.deepEqual(inspected.header.source_identity, cliCreated.source_identity);
+  const cliVerified = runCli([
+    "verify",
+    "--app-root", cliApp,
+    "--data-root", cliData,
+    "--archive", cliArchive,
+    "--key-file", cliKey,
+  ]);
+  assert.equal(cliVerified.status, "verified");
+  assert.equal(cliVerified.destructive_restore, false);
+  assert.equal(cliVerified.archive_sha256, cliCreated.archive_sha256);
   execFileSync("git", ["clone", cliData, cliClone], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   const cliRestored = runCli([
     "restore",

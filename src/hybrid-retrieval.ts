@@ -793,6 +793,7 @@ function rootIntentBonus(record: RankedRecord, query: string): number {
 export function rootIntentsForQuery(query: string): string[] {
   const lower = query.toLowerCase();
   const intents: Array<[string, RegExp]> = [
+    ["15_Profile/", /(?:\b(profile|identity|name|preference|preferences|about me|who am i)\b|내\s*(?:이름|정보|프로필)|나는\s*(?:누구|어떤\s*사람)|내가\s*(?:좋아|선호|중요))/iu],
     ["20_Wiki/", /\b(wiki|knowledge|curated|reusable)\b/],
     ["30_Sources/", /\b(source|sources|provenance|evidence|citation|citations)\b/],
     ["40_Projects/", /\b(project|projects|handoff|implementation|constraints|state|installer|release|version|new pc|roadmap)\b/],
@@ -833,7 +834,9 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
   const intentPrefixes = rootIntentsForQuery(query);
   const intentLanes = new Set(
     intentPrefixes.map((prefix) =>
-      prefix.startsWith("20_Wiki/")
+      prefix.startsWith("15_Profile/")
+        ? "profile"
+        : prefix.startsWith("20_Wiki/")
         ? "wiki"
         : prefix.startsWith("30_Sources/")
           ? "source"
@@ -848,6 +851,7 @@ export function takeWithContextPackBudgets(records: RankedRecord[], limit: numbe
   );
   const laneLimit = (lane: RankedRecord["retrieval_lane"]): number => {
     if (lane === "recent_task") return maxRecentTasks;
+    if (lane === "profile") return Math.min(intentLanes.has(lane) ? Math.max(3, Math.ceil(limit * 0.75)) : 1, limit);
     if (lane === "operations") return Math.min(intentLanes.has(lane) ? 4 : 1, limit);
     if (lane === "other") return Math.min(1, limit);
     if (intentLanes.has(lane)) return lane === "accepted_behavior" ? Math.max(3, Math.ceil(limit * 0.75)) : limit;

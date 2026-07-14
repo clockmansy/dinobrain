@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -140,6 +140,40 @@ async function main(): Promise<void> {
     }
     return;
   }
+  if (command === "verify") {
+    const appRoot = path.resolve(map.get("app-root")?.at(-1) ?? process.cwd());
+    const dataRoot = path.resolve(required(map, "data-root"));
+    const archivePath = path.resolve(required(map, "archive"));
+    const keyFile = path.resolve(required(map, "key-file"));
+    assertRecoveryKeyOutsideRoots(keyFile, [appRoot, dataRoot, path.dirname(archivePath)]);
+    const key = await readRecoveryKeyFile(keyFile);
+    const verifyRoot = await mkdtemp(path.join(tmpdir(), "dinobrain-private-backup-verify-"));
+    const maxAgeDays = Number(map.get("max-age-days")?.at(-1) ?? 90);
+    try {
+      const result = await restoreEncryptedPrivateBackup({
+        archive_path: archivePath,
+        recovery_key: key,
+        target_roots: {
+          data: path.join(verifyRoot, "data"),
+          codex_config: path.join(verifyRoot, "codex_config"),
+          claude_config: path.join(verifyRoot, "claude_config"),
+        },
+        expected_source_identity: sourceIdentity(appRoot, dataRoot),
+        max_age_ms: Number.isFinite(maxAgeDays) && maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : undefined,
+        staging_parent: verifyRoot,
+      });
+      console.log(JSON.stringify({
+        ...result,
+        status: "verified",
+        verified_at: new Date().toISOString(),
+        destructive_restore: false,
+      }, null, 2));
+    } finally {
+      key.fill(0);
+      await rm(verifyRoot, { recursive: true, force: true });
+    }
+    return;
+  }
   if (command === "restore") {
     if (!flag(map, "apply")) throw new Error("Restore is dry by default. Pass --apply only after checking target roots and backup identity.");
     const appRoot = path.resolve(map.get("app-root")?.at(-1) ?? process.cwd());
@@ -188,7 +222,7 @@ async function main(): Promise<void> {
     }
     return;
   }
-  throw new Error("Usage: run-private-backup <keygen|inspect|create|restore> [options]");
+  throw new Error("Usage: run-private-backup <keygen|inspect|create|verify|restore> [options]");
 }
 
 main().catch((error) => {

@@ -101,6 +101,7 @@ import {
   type SyncRiskObservation,
 } from "./os-contract.js";
 import { invalidateWikiIndex } from "./wiki-index.js";
+import { localOnlyPushBlock } from "./local-only.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1019,6 +1020,15 @@ async function runDataAutoSyncUnlocked(options: {
   commitMessage: string;
   allowedPaths: string[];
 }): Promise<Record<string, unknown>> {
+  const localOnlyBlock = localOnlyPushBlock(DATA_ROOT, options.push);
+  if (localOnlyBlock) {
+    return {
+      ...localOnlyBlock,
+      data_root: DATA_ROOT,
+      task_id: options.taskId,
+      scope_version: TASK_SYNC_SCOPE_VERSION,
+    };
+  }
   const scopeResolution = await resolveTaskSyncScope({
     dataRoot: DATA_ROOT,
     taskId: options.taskId,

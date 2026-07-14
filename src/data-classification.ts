@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const DATA_CLASSIFICATION_POLICY_VERSION = "data_classification_20260712_v3";
+export const DATA_CLASSIFICATION_POLICY_VERSION = "data_classification_20260714_v4";
 export const PUBLIC_DATA_MAX_SCAN_BYTES = 8 * 1024 * 1024;
 export const MACHINE_LOCAL_PATH_REDACTION = "[REDACTED_MACHINE_LOCAL_PATH]";
 
@@ -53,6 +53,7 @@ const EVALUATION_CANARY_PATH =
 const EVALUATION_CANARY_FIELDS = new Set(["forbidden_terms", "forbidden_answer_terms", "forbidden_context_terms"]);
 
 const BLOCKED_PATH_RULES: PathRule[] = [
+  { id: "private_profile_path", pattern: /^15_Profile\/(?!README\.md$)/ },
   { id: "raw_conversation_path", pattern: /^10_Conversations\/raw\// },
   { id: "raw_instance_path", pattern: /^50_Instances\/raw\// },
   { id: "private_source_path", pattern: /^30_Sources\/private\// },
@@ -96,6 +97,7 @@ const CONDITIONAL_PATH_RULES: PathRule[] = [
 const SYNCABLE_PATH_RULES: PathRule[] = [
   { id: "task_sync_public_receipt_path", pattern: /^60_Operations\/task-sync-receipts\/task-sync-receipt-[a-f0-9]{64}\.json$/ },
   { id: "home_path", pattern: /^00_Home\// },
+  { id: "profile_readme_path", pattern: /^15_Profile\/README\.md$/ },
   { id: "wiki_path", pattern: /^20_Wiki\// },
   { id: "source_path", pattern: /^30_Sources\// },
   { id: "project_path", pattern: /^40_Projects\// },

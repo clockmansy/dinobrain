@@ -16,6 +16,7 @@ type RecordValue = string | number | boolean | null | Record<string, unknown> | 
 
 export type RecordLanguage = "ko" | "en" | "mixed" | "unknown";
 export type RetrievalLane =
+  | "profile"
   | "wiki"
   | "source"
   | "project"
@@ -26,6 +27,7 @@ export type RetrievalLane =
   | "other";
 
 export type KnowledgeRole =
+  | "user_profile"
   | "behavior_guidance"
   | "accepted_memory"
   | "source_anchor"
@@ -80,6 +82,7 @@ type QuarantineRecord = {
 };
 
 export const SEARCH_ROOTS = [
+  "15_Profile",
   "20_Wiki",
   "30_Sources",
   "40_Projects",
@@ -235,6 +238,7 @@ function detectLanguage(value: string): RecordLanguage {
 
 export function retrievalLaneForPath(relativePath: string, kind: RankedRecord["kind"] = "curated_record"): RetrievalLane {
   if (kind === "recent_task" || relativePath.startsWith(".dino/tasks/")) return "recent_task";
+  if (relativePath.startsWith("15_Profile/")) return "profile";
   if (relativePath.startsWith("20_Wiki/")) return "wiki";
   if (relativePath.startsWith("30_Sources/")) return "source";
   if (relativePath.startsWith("40_Projects/")) return "project";
@@ -254,6 +258,7 @@ export function knowledgeRoleForRecord(
   if (kind === "recent_task" || relativePath.startsWith("60_Operations/") || relativePath.startsWith(".dino/")) {
     return "operations_evidence";
   }
+  if (relativePath.startsWith("15_Profile/")) return "user_profile";
   if (relativePath.startsWith("30_Sources/")) {
     if (/anchor_only|anchor-only/.test(verification) || tags.includes("source-anchor-unverified")) return "source_anchor";
     if (/verified|reviewed/.test(verification)) return "source_citation";

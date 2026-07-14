@@ -337,6 +337,24 @@ tags: [context-pack]
     ],
     warnings: [],
   });
+  writeJson(".dino/state/local-only-mode.json", {
+    version: "dinobrain_local_only_v1",
+    enabled: true,
+    activated_at: "2026-07-01T00:00:00.000Z",
+    final_app_commit: "a".repeat(40),
+    final_data_commit: "b".repeat(40),
+    push_policy: "blocked",
+    remote_policy: "fetch_only",
+    runtime_paths: [".dino/state/", ".dino/index/"],
+    source_paths: ["15_Profile/", "20_Wiki/"],
+    candidate_loop: "capture_review_required",
+    auto_accept: false,
+  });
+  writeJson(".dino/state/private-backup-status.json", {
+    version: "dinobrain_private_backup_status_v1",
+    status: "verified",
+    verified_at: "2026-07-01T00:00:00.000Z",
+  });
   writeJson(".dino/audits/audit-observatory-readiness.json", {
     audit_id: "audit-observatory-readiness",
     task_id: "task-active-observatory",
@@ -415,6 +433,8 @@ tags: [context-pack]
     );
     assert(state.read_trace && state.read_trace.status, "State endpoint did not include read trace");
     assert(state.sync_risk && state.sync_risk.status, "State endpoint did not include sync risk");
+    assert(state.local_only?.enabled === true && state.local_only.push_policy === "blocked", "State endpoint did not expose local-only push policy");
+    assert(state.local_only?.backup?.status === "verified", "State endpoint did not expose verified backup status");
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert(health.ok === true && health.observatory_version, "Health endpoint did not report Observatory version");
     assert(health.graph_health && typeof health.graph_health.score === "number", "Health endpoint did not include graph health");
@@ -422,6 +442,7 @@ tags: [context-pack]
     assert(health.endpoints.includes("/api/snapshot"), "Health endpoint did not list snapshot endpoint");
     assert(health.cache?.resources?.state && health.cache?.resources?.snapshot, "Health endpoint did not expose cache counters");
     assert(typeof health.resources?.json_files_read === "number", "Health endpoint did not expose resource counters");
+    assert(health.local_only?.enabled === true && health.local_only.push_policy === "blocked", "Health endpoint did not expose local-only mode");
     const readiness = await fetch(`http://127.0.0.1:${port}/api/readiness`).then((response) => response.json());
     assert(readiness.ok === false, "Readiness should fail while direct MCP and semantic RAG blockers exist");
     assert(readiness.version === "readiness_v2" && readiness.gates.length === 12, "Canonical 12-gate readiness model missing");
@@ -478,6 +499,7 @@ tags: [context-pack]
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
     assert(html.includes("readiness-audit-paths"), "UI does not include audit path container");
     assert(html.includes('fetch("/api/snapshot"'), "UI does not use the combined snapshot endpoint");
+    assert(html.includes('"Local Only"') && html.includes('"PUSH BLOCKED"'), "UI does not render local-only push block state");
     assert(!html.includes("setInterval("), "UI still uses overlapping interval polling");
     assert(html.includes("if (pollInFlight) return;"), "UI does not guard against overlapping polls");
     const pollIntervalMatch = html.match(/const pollIntervalMs = (\d+);/);
