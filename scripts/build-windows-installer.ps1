@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $root "installer\DinoBrainSetup\DinoBrainSetup.csproj"
+$launcherProject = Join-Path $root "installer\DinoBrainObservatoryLauncher\DinoBrainObservatoryLauncher.csproj"
 if ([string]::IsNullOrWhiteSpace($AppRef)) { $AppRef = "main" }
 if ([string]::IsNullOrWhiteSpace($SetupVersion)) {
   $versionManifest = Get-Content (Join-Path $root "version.json") -Raw | ConvertFrom-Json
@@ -41,6 +42,12 @@ Write-Host "Data ref: $DataRef"
 Write-Host "Setup version: $SetupVersion"
 Write-Host "Output: $publishDir"
 
+Write-Host "Restoring the native Observatory launcher once"
+dotnet restore $launcherProject --runtime $Runtime
+if ($LASTEXITCODE -ne 0) {
+  throw "Observatory launcher restore failed with exit code $LASTEXITCODE"
+}
+
 dotnet publish $project `
   --configuration $Configuration `
   --runtime $Runtime `
@@ -65,6 +72,7 @@ if (-not (Test-Path -LiteralPath $publishedExe)) {
 Copy-Item -LiteralPath $publishedExe -Destination $finalExe -Force
 
 $probePath = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-install-probe-" + [guid]::NewGuid().ToString("N") + ".ps1")
+$launcherProbePath = Join-Path ([System.IO.Path]::GetTempPath()) ("dinobrain-observatory-launcher-probe-" + [guid]::NewGuid().ToString("N") + ".exe")
 try {
   $process = Start-Process `
     -FilePath $finalExe `
@@ -102,8 +110,13 @@ try {
       $probeText -notmatch "Rollback-DinoBrainInstallTransaction") {
     throw "Extracted install.ps1 did not include immutable transactional installation and rollback"
   }
+  $launcherProcess = Start-Process -FilePath $finalExe -ArgumentList @("--extract-observatory-launcher", $launcherProbePath) -WindowStyle Hidden -Wait -PassThru
+  if ($launcherProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $launcherProbePath)) {
+    throw "Installer self-test did not extract the native Observatory launcher"
+  }
 } finally {
   Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $launcherProbePath -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

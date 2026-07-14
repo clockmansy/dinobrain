@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const localOnly = await import(pathToFileURL(path.join(root, "dist", "local-only.js")).href);
 const semantic = await import(pathToFileURL(path.join(root, "dist", "semantic-embeddings.js")).href);
 const hybrid = await import(pathToFileURL(path.join(root, "dist", "hybrid-retrieval.js")).href);
+const scheduler = await import(pathToFileURL(path.join(root, "dist", "observatory-sync-state.js")).href);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -78,6 +79,23 @@ try {
   assert(git(data, ["ls-files", "20_Wiki/README.md"]) === "20_Wiki/README.md", "source Wiki was removed from local history");
   assert(localOnly.isLocalOnlyMode(data), "local_only marker was not recognized");
   assert(localOnly.localOnlyPushBlock(data, true)?.reason === "local_only_remote_push_disabled", "MCP push policy did not block");
+  const schedulerState = await scheduler.setSyncSchedulerAutomaticEnabled({ dataRoot: data, enabled: true });
+  assert(schedulerState.automatic_enabled === false, "local-only mode allowed automatic sync to be enabled");
+  let schedulerExecutions = 0;
+  const schedulerResult = await scheduler.runManualSafeScopedSync({
+    dataRoot: data,
+    execute: async () => {
+      schedulerExecutions += 1;
+      throw new Error("local-only scheduler executor must not run");
+    },
+  });
+  assert(schedulerExecutions === 0, "local-only mode invoked the remote sync executor");
+  assert(schedulerResult.executed === false, "local-only mode executed a scheduler attempt");
+  assert(schedulerResult.reason_codes.includes("local_only_remote_push_disabled"), "local-only scheduler block reason missing");
+  const schedulerStatus = await scheduler.readObservatorySyncState({ dataRoot: data });
+  assert(schedulerStatus.push_policy === "blocked", "Observatory scheduler did not expose blocked push policy");
+  assert(schedulerStatus.automatic.enabled === false, "Observatory scheduler exposed automatic sync as enabled");
+  assert(schedulerStatus.manual_sync.enabled === false, "Observatory scheduler exposed manual sync as enabled");
   const hookText = readFileSync(hook, "utf8");
   assert(/DINOBRAIN_HOOK_AUTO_SYNC\s*=\s*"0"/.test(hookText), "managed hook auto-sync remained enabled");
   assert(/DINOBRAIN_HOOK_IMPORT_SESSION\s*=\s*"1"/.test(hookText), "candidate capture was not enabled");

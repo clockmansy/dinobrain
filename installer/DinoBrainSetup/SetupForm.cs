@@ -41,6 +41,8 @@ internal sealed class SetupForm : Form
     private readonly CheckBox _codexRestartFlowCheck = new();
     private readonly CheckBox _claudeCodeCheck = new();
     private readonly CheckBox _verifyCheck = new();
+    private readonly CheckBox _openObservatoryAfterInstallCheck = new();
+    private readonly CheckBox _observatoryStartupCheck = new();
     private readonly CheckBox _forceCheck = new();
 
     private Process? _installProcess;
@@ -204,6 +206,10 @@ internal sealed class SetupForm : Form
         _claudeCodeCheck.Checked = true;
         _verifyCheck.Text = "Run verification after install";
         _verifyCheck.Checked = true;
+        _openObservatoryAfterInstallCheck.Text = "Open Observatory after a successful install";
+        _openObservatoryAfterInstallCheck.Checked = true;
+        _observatoryStartupCheck.Text = "Start Observatory server when I sign in";
+        _observatoryStartupCheck.Checked = true;
         _forceCheck.Text = "Repair changed repo origins";
         _forceCheck.Checked = false;
 
@@ -213,6 +219,8 @@ internal sealed class SetupForm : Form
         panel.Controls.Add(_codexRestartFlowCheck);
         panel.Controls.Add(_claudeCodeCheck);
         panel.Controls.Add(_verifyCheck);
+        panel.Controls.Add(_openObservatoryAfterInstallCheck);
+        panel.Controls.Add(_observatoryStartupCheck);
         panel.Controls.Add(_forceCheck);
 
         AddLabel(panel, "Claude command");
@@ -560,12 +568,14 @@ internal sealed class SetupForm : Form
 
         var tempDir = Path.Combine(Path.GetTempPath(), "DinoBrainSetup", Guid.NewGuid().ToString("N"));
         var installScript = Path.Combine(tempDir, "install.ps1");
+        var observatoryLauncher = Path.Combine(tempDir, "DinoBrain Observatory.exe");
         Directory.CreateDirectory(tempDir);
         InstallerResources.ExtractInstallScript(installScript);
+        InstallerResources.ExtractObservatoryLauncher(observatoryLauncher);
 
         try
         {
-            var exitCode = await RunPowerShellAsync(installScript, installRoot);
+            var exitCode = await RunPowerShellAsync(installScript, installRoot, observatoryLauncher);
             if (exitCode == 0)
             {
                 var transaction = ReadInstallTransactionResult(installRoot);
@@ -587,6 +597,15 @@ internal sealed class SetupForm : Form
                 AppendLog("Codex trust still requires a user click in /hooks.");
                 _openFolderButton.Enabled = Directory.Exists(_installedAppPath);
                 _openObservatoryButton.Enabled = Directory.Exists(_installedAppPath);
+                if (_openObservatoryAfterInstallCheck.Checked)
+                {
+                    var started = await StartObservatoryAfterSuccessfulInstallAsync();
+                    AppendLog(started ? "Observatory started." : "Observatory did not report ready; use Open Observatory to retry.");
+                }
+                else
+                {
+                    AppendLog("Observatory launch skipped by user choice.");
+                }
             }
             else
             {
@@ -646,7 +665,7 @@ internal sealed class SetupForm : Form
         return transaction;
     }
 
-    private Task<int> RunPowerShellAsync(string installScript, string installRoot)
+    private Task<int> RunPowerShellAsync(string installScript, string installRoot, string observatoryLauncher)
     {
         var completion = new TaskCompletionSource<int>();
         var startInfo = new ProcessStartInfo
@@ -664,7 +683,7 @@ internal sealed class SetupForm : Form
             startInfo.Environment["DINOBRAIN_GITHUB_TOKEN"] = githubToken;
         }
 
-        foreach (var argument in BuildInstallArguments(installScript, installRoot))
+        foreach (var argument in BuildInstallArguments(installScript, installRoot, observatoryLauncher))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -694,7 +713,7 @@ internal sealed class SetupForm : Form
         return completion.Task;
     }
 
-    private IEnumerable<string> BuildInstallArguments(string installScript, string installRoot)
+    private IEnumerable<string> BuildInstallArguments(string installScript, string installRoot, string observatoryLauncher)
     {
         yield return "-NoProfile";
         yield return "-ExecutionPolicy";
@@ -703,6 +722,8 @@ internal sealed class SetupForm : Form
         yield return installScript;
         yield return "-InstallRoot";
         yield return installRoot;
+        yield return "-ObservatoryLauncherSource";
+        yield return observatoryLauncher;
         yield return "-AppRepo";
         yield return _appRepoBox.Text.Trim();
         yield return "-DataRepo";
@@ -738,6 +759,33 @@ internal sealed class SetupForm : Form
         {
             yield return "-Force";
         }
+        if (!_observatoryStartupCheck.Checked)
+        {
+            yield return "-SkipObservatoryStartup";
+        }
+    }
+
+    private async Task<bool> StartObservatoryAfterSuccessfulInstallAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_installedAppPath)) return false;
+        var launcher = Path.Combine(_installedAppPath, "DinoBrain Observatory.exe");
+        if (!File.Exists(launcher)) return false;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = launcher,
+                Arguments = "--open",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            }) ?? throw new InvalidOperationException("Launcher process did not start.");
+            return await Task.Run(() => process.WaitForExit(7000)) && process.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Observatory launch diagnostic: {ex.Message}");
+            return false;
+        }
     }
 
     private void CancelInstall()
@@ -760,7 +808,7 @@ internal sealed class SetupForm : Form
         _progressBar.Style = installing ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
         _progressBar.MarqueeAnimationSpeed = installing ? 30 : 0;
 
-        foreach (var control in new Control[] { _installRootBox, _browseInstallRootButton, _autoInstallRootButton, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _codexRestartFlowCheck, _claudeCodeCheck, _verifyCheck, _forceCheck })
+        foreach (var control in new Control[] { _installRootBox, _browseInstallRootButton, _autoInstallRootButton, _appRepoBox, _dataRepoBox, _appRefBox, _dataRefBox, _githubTokenBox, _claudeCommandBox, _codexConfigCheck, _codexHookCheck, _codexRestartFlowCheck, _claudeCodeCheck, _verifyCheck, _openObservatoryAfterInstallCheck, _observatoryStartupCheck, _forceCheck })
         {
             control.Enabled = !installing;
         }
@@ -812,12 +860,13 @@ internal sealed class SetupForm : Form
             return;
         }
 
-        var launcher = Path.Combine(_installedAppPath, "DinoBrain Observatory.cmd");
+        var launcher = Path.Combine(_installedAppPath, "DinoBrain Observatory.exe");
         if (File.Exists(launcher))
         {
             Process.Start(new ProcessStartInfo
             {
                 FileName = launcher,
+                Arguments = "--open",
                 UseShellExecute = true,
             });
             return;

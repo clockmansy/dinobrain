@@ -169,6 +169,16 @@ try {
   for (const name of expected) {
     if (!names.includes(name)) throw new Error(`Missing tool: ${name}`);
   }
+  const osGateTool = tools.tools.find((tool) => tool.name === "os_gate");
+  const osGateAnnotations = osGateTool?.annotations;
+  if (
+    osGateAnnotations?.readOnlyHint !== true ||
+    osGateAnnotations.destructiveHint !== false ||
+    osGateAnnotations.idempotentHint !== true ||
+    osGateAnnotations.openWorldHint !== false
+  ) {
+    throw new Error(`os_gate is not advertised as an automatic safe control-plane tool: ${JSON.stringify(osGateAnnotations)}`);
+  }
 
   const begin = parseTool(
     await client.callTool({

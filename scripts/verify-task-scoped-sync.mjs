@@ -15,12 +15,18 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { scanDataText } from "../dist/data-classification.js";
-import { validatePublicSyncReceipt } from "../dist/public-sync-receipt.js";
+import {
+  PUBLIC_SYNC_RECEIPT_VERSION,
+  publicSyncArtifactBindingSha256,
+  validatePublicSyncReceipt,
+} from "../dist/public-sync-receipt.js";
 import {
   TASK_SYNC_SCOPE_VERSION,
   registerTaskSyncPaths,
+  resolveTaskSyncQueueCandidates,
   taskSyncScopeRelativePath,
 } from "../dist/task-sync-scope.js";
+import { readSyncSchedulerState } from "../dist/observatory-sync-state.js";
 import { classifyPrePushGitHistory } from "./lib/data-classifier-git.mjs";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
@@ -248,6 +254,21 @@ try {
   const currentScope = JSON.parse(readFileSync(path.join(dataRoot, scopePath), "utf8"));
   const successScopeEntry = currentScope.entries.find((entry) => entry.path === "20_Wiki/success.md");
   assert.match(successScopeEntry?.git_blob_oid ?? "", /^[a-f0-9]{40,64}$/);
+  const queueCandidate = await resolveTaskSyncQueueCandidates({
+    dataRoot,
+    taskId: task.task_id,
+    requestedPaths: ["20_Wiki/success.md"],
+  });
+  assert.equal(queueCandidate.ok, true, JSON.stringify(queueCandidate.reason_codes));
+  assert.equal(queueCandidate.candidates[0]?.path, "20_Wiki/success.md");
+  assert.match(
+    publicSyncArtifactBindingSha256({
+      ...queueCandidate.candidates[0],
+      git_blob_oid: queueCandidate.candidates[0].git_blob_oid,
+    }),
+    /^[a-f0-9]{64}$/,
+  );
+  assert.equal(PUBLIC_SYNC_RECEIPT_VERSION, "task_sync_public_receipt_20260712_v1");
   write("20_Wiki/neighbor.md", "# Neighbor\n\nDirty neighboring backlog must remain untouched.\n");
   git(dataRoot, ["add", "20_Wiki/neighbor.md"]);
   const stagedConflict = await callAutoSync(client, task.task_id, ["20_Wiki/success.md"]);
@@ -372,6 +393,43 @@ try {
   assert.equal(noOp.state, "no_op");
   assert.equal(noOp.committed, false);
 
+  const queuedTask = parseTool(
+    await client.callTool({
+      name: "os_begin_task",
+      arguments: {
+        request: "Verify finish_task queues bounded sync without an immediate commit or push.",
+        project: "sync-scheduler-finish-fixture",
+        mode: "standard",
+        sensitivity: "normal",
+        launch_kind: "verification_fixture",
+      },
+    }),
+  );
+  const headBeforeQueuedFinish = git(dataRoot, ["rev-parse", "HEAD"]);
+  const queuedFinish = parseTool(
+    await client.callTool({
+      name: "finish_task",
+      arguments: {
+        task_id: queuedTask.task_id,
+        lease_id: queuedTask.lease.lease_id,
+        summary: "Queue only; do not push from finish_task.",
+        outcome: "completed",
+        growth_policy: "auto",
+        context_pack_paths: [queuedTask.context_pack.trace_path],
+      },
+    }),
+  );
+  assert.equal(queuedFinish.auto_sync?.state, "queued", JSON.stringify(queuedFinish.auto_sync));
+  assert.equal(queuedFinish.auto_sync?.immediate_push, false);
+  assert.equal(queuedFinish.auto_sync?.queued_path_count, 2);
+  assert.equal(git(dataRoot, ["rev-parse", "HEAD"]), headBeforeQueuedFinish, "finish_task created an immediate Git commit");
+  const queuedState = await readSyncSchedulerState({ dataRoot });
+  const queuedFinishPaths = queuedState.queue
+    .filter((item) => item.task_id === queuedTask.task_id)
+    .map((item) => item.path)
+    .sort();
+  assert.deepEqual(queuedFinishPaths, [queuedFinish.task_path, queuedFinish.trace_path].sort());
+
   write("20_Wiki/retry.md", "# Retry\n\nThe commit must survive an unavailable remote.\n");
   await registerTaskSyncPaths({
     dataRoot,
@@ -414,6 +472,8 @@ try {
           "post_review_tamper_blocked",
           "changed_content_downgrades_prior_approval",
           "git_filtered_blob_identity_bound",
+          "scheduler_candidate_reuses_scope_and_classifier_contract",
+          "public_receipt_schema_version_preserved",
           "sensitive_content_blocked",
           "preexisting_staged_file_blocked",
           "single_scoped_file_committed_and_pushed",
@@ -424,6 +484,7 @@ try {
           "missing_receipt_trailers_blocked",
           "neighboring_backlog_preserved",
           "no_op_state",
+          "finish_task_queues_without_immediate_commit_or_push",
           "push_failure_returns_retry_with_commit",
           "task_context_gate_machine_paths_redacted",
           "finish_trace_machine_paths_redacted",

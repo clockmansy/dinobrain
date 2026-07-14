@@ -99,6 +99,26 @@ export function publicSyncReceiptId(payload: PublicSyncReceiptPayload): string {
   return sha256Bytes(canonicalPublicSyncReceipt(payload));
 }
 
+export function publicSyncArtifactBindingSha256(
+  artifact: Pick<
+    PublicSyncReceiptArtifact,
+    "path" | "sha256" | "git_blob_oid" | "size_bytes" | "classification" | "policy" | "approval" | "source"
+  >,
+): string {
+  return sha256Bytes(
+    canonicalPublicSyncReceipt({
+      path: normalizedRelativePath(artifact.path),
+      sha256: artifact.sha256,
+      git_blob_oid: artifact.git_blob_oid,
+      size_bytes: artifact.size_bytes,
+      classification: artifact.classification,
+      policy: artifact.policy,
+      approval: artifact.approval,
+      source: artifact.source,
+    }),
+  );
+}
+
 export function publicSyncReceiptRelativePath(receiptId: string): string {
   if (!SHA256_PATTERN.test(receiptId)) throw new Error("Public sync receipt id must be SHA-256");
   return `${PUBLIC_SYNC_RECEIPT_ROOT}/task-sync-receipt-${receiptId}.json`;

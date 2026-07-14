@@ -252,6 +252,8 @@ async function main() {
     assert(unknownSensitivity.fail_closed === false, "Unknown sensitivity incorrectly blocked safe local work");
     assert(unknownSensitivity.action_decision === "constrained_action", "Unknown sensitivity was not constrained");
     assert(unknownSensitivity.gates.some((gate) => gate.id === "sensitivity_unknown"), "Unknown sensitivity reason is missing");
+    assert(unknownSensitivity.request_intent.sync === false, "Negated sync request was classified as an affirmative sync action");
+    assert(unknownSensitivity.request_intent.data_sync === false, "Negated sync request triggered a data-repository scan");
     await finish(normalClient, unknownSensitivity, "Unknown-sensitivity constrained action verified.");
 
     const fallbackStart = await call(normalClient, "start_task", {

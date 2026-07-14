@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -19,7 +20,12 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\..\install.ps1" LogicalName="install.ps1" />
+    <EmbeddedResource Include="$(BaseIntermediateOutputPath)observatory-launcher\DinoBrain Observatory.exe" LogicalName="observatory-launcher.exe" />
   </ItemGroup>
+
+  <Target Name="PublishObservatoryLauncher" BeforeTargets="CoreCompile">
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\..\DinoBrainObservatoryLauncher\DinoBrainObservatoryLauncher.csproj&quot; --configuration $(Configuration) --runtime $(RuntimeIdentifier) --self-contained true -p:PublishSingleFile=true --no-restore --output &quot;$(BaseIntermediateOutputPath)observatory-launcher&quot;" />
+  </Target>
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">

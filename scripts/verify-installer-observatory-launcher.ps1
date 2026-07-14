@@ -24,6 +24,8 @@ try {
   $nodeRoot = Join-Path $temp "node-v24.18.0-win-x64"
   New-Item -ItemType Directory -Force -Path (Join-Path $appPath "scripts"), $vaultPath, $nodeRoot | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-dinobrain-observatory.ps1"), "# test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\dinobrain-observatory.mjs"), "// test`n")
+  [System.IO.File]::WriteAllText((Join-Path $appPath "DinoBrain Observatory.exe"), "test launcher")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\diagnose-codex-hook.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-hook-approval.ps1"), "# test`n")
   [System.IO.File]::WriteAllText((Join-Path $appPath "scripts\start-codex-live-proof.ps1"), "# test`n")
@@ -44,13 +46,67 @@ try {
       throw "Launcher was not created: $launcher"
     }
     $text = [System.IO.File]::ReadAllText($launcher)
-    if ($text -notmatch "start-dinobrain-observatory\.ps1") {
-      throw "Launcher does not call the Observatory script: $launcher"
+    if ($text -notmatch "DinoBrain Observatory\.exe" -or $text -notmatch "--open") {
+      throw "Launcher does not call the native Observatory executable: $launcher"
     }
-    if (-not $text.Contains($vaultPath) -or -not $text.Contains($nodeRoot)) {
-      throw "Launcher does not contain expected vault/node paths: $launcher"
+    if (-not $text.Contains($appPath)) {
+      throw "Launcher does not contain expected app path: $launcher"
     }
   }
+
+  $nativeSource = Join-Path $temp "native-launcher.exe"
+  [System.IO.File]::WriteAllText($nativeSource, "native launcher")
+  $installedNative = Install-DinoBrainObservatoryNativeLauncher -AppPath $appPath -SourcePath $nativeSource
+  if ($installedNative -ne (Join-Path $appPath "DinoBrain Observatory.exe") -or -not (Test-Path -LiteralPath $installedNative)) {
+    throw "Native Observatory launcher was not installed into the app root"
+  }
+
+  $lockedTarget = Join-Path $appPath "DinoBrain Observatory.exe"
+  [System.IO.File]::WriteAllText($lockedTarget, "known-good-launcher")
+  $lock = [System.IO.File]::Open($lockedTarget, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+  $replacementFailed = $false
+  try {
+    try { Install-DinoBrainObservatoryNativeLauncher -AppPath $appPath -SourcePath $nativeSource | Out-Null } catch { $replacementFailed = $true }
+    if (-not $replacementFailed) {
+      throw "Locked native launcher replacement did not preserve the known-good executable"
+    }
+  } finally { $lock.Dispose() }
+  if ([System.IO.File]::ReadAllText($lockedTarget) -ne "known-good-launcher") { throw "Locked native launcher replacement did not preserve the known-good executable" }
+  if (@(Get-ChildItem -LiteralPath $appPath -Filter "DinoBrain Observatory.exe.new-*" -ErrorAction SilentlyContinue).Count -ne 0) { throw "Locked native launcher replacement left a temporary file behind" }
+  $installedNative = Install-DinoBrainObservatoryNativeLauncher -AppPath $appPath -SourcePath $nativeSource
+  if ([System.IO.File]::ReadAllText($installedNative) -ne "native launcher") { throw "Native launcher replacement did not complete after the lock was released" }
+
+  $hookCommandSource = [System.IO.File]::ReadAllText($installScript)
+  if ($hookCommandSource -notmatch "--ensure-running" -or $hookCommandSource -notmatch 'Start-Process -FilePath \$launcherLiteral' -or $hookCommandSource -notmatch "--app-root" -or $hookCommandSource -notmatch "--data-dir") {
+    throw "Codex/Claude hook command does not contain the non-blocking Observatory repair"
+  }
+  if ($hookCommandSource.IndexOf('`$env:DINOBRAIN_DATA_DIR = $vaultLiteral') -gt $hookCommandSource.IndexOf('Start-Process -FilePath $launcherLiteral')) {
+    throw "Codex/Claude hook command starts the launcher before setting DINOBRAIN_DATA_DIR"
+  }
+  if ($hookCommandSource -notmatch "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -or $hookCommandSource -notmatch "SkipObservatoryStartup") {
+    throw "Installer does not contain per-user Observatory startup registration and opt-out"
+  }
+  $launcherProject = Join-Path $root "installer\DinoBrainObservatoryLauncher\DinoBrainObservatoryLauncher.csproj"
+  $projectText = [System.IO.File]::ReadAllText($launcherProject)
+  if ($projectText -notmatch "SelfContained" -or $projectText -notmatch "PublishSingleFile") {
+    throw "Native launcher project is not configured for self-contained single-file publishing"
+  }
+  if ($hookCommandSource -notmatch 'Save-DinoBrainInstallSnapshot -Transaction \$transaction -TargetPath \(Join-Path \$AppDir "DinoBrain Observatory.exe"\)' -or $hookCommandSource.LastIndexOf('Complete-DinoBrainInstallTransaction -Transaction $transaction') -gt $hookCommandSource.LastIndexOf('$postCommitObservatoryStartup =')) {
+    throw "Native launcher snapshot or post-commit startup ordering is missing"
+  }
+  $nativeProgram = [System.IO.File]::ReadAllText((Join-Path $root "installer\DinoBrainObservatoryLauncher\Program.cs"))
+  if ($nativeProgram -notmatch 'TryClaimBrowserOpen\(TimeSpan\.FromSeconds\(3\)\)' -or $nativeProgram -notmatch 'StopProcessTree\(hostProcess' -or $nativeProgram -notmatch 'HasExactPort') {
+    throw "Native launcher does not contain debounce, timeout cleanup, and exact port matching safeguards"
+  }
+  if ($nativeProgram -notmatch 'new Semaphore\(1, 1,' -or $nativeProgram -match 'ReleaseMutex\(') {
+    throw "Native launcher start serialization is not safe across async continuations"
+  }
+  $setupProjectText = [System.IO.File]::ReadAllText((Join-Path $root "installer\DinoBrainSetup\DinoBrainSetup.csproj"))
+  $buildScriptText = [System.IO.File]::ReadAllText((Join-Path $root "scripts\build-windows-installer.ps1"))
+  if ($setupProjectText -notmatch 'PublishObservatoryLauncher[\s\S]+--no-restore' -or $buildScriptText -notmatch 'dotnet restore \$launcherProject --runtime \$Runtime') {
+    throw "Installer build does not explicitly restore the launcher once before offline nested publish"
+  }
+
 
   $diagnoseLaunchers = @(New-DinoBrainHookDiagnoseLauncher -InstallRoot $installRoot -AppPath $appPath -VaultPath $vaultPath -NodeRoot $nodeRoot -ConfigPath (Join-Path $temp "config.toml") -HooksPath (Join-Path $temp "hooks.json") -RequirementsPath (Join-Path $temp "requirements.toml"))
   if ($diagnoseLaunchers.Count -ne 2) {

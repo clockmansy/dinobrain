@@ -38,6 +38,18 @@ import { makeUniqueId } from "./ids.js";
 import { buildMemoryAudit } from "./memory-audit.js";
 import { applyNodeLifecycle } from "./lifecycle.js";
 import {
+  enqueueTaskScopedSync,
+  readObservatorySyncState,
+  readSyncSchedulerState,
+  runAutomaticSyncScheduler,
+  runManualSafeScopedSync,
+  setSyncSchedulerAutomaticEnabled,
+  SYNC_SCHEDULER_POLICY,
+  type SyncSchedulerExecutionBatch,
+  type SyncSchedulerExecutionResult,
+  type SyncSchedulerRunResult,
+} from "./observatory-sync-state.js";
+import {
   evaluateAcceptedEligibility,
   getNodeLifecycleState,
   NODE_LIFECYCLE_STATES,
@@ -101,7 +113,7 @@ import {
   type SyncRiskObservation,
 } from "./os-contract.js";
 import { invalidateWikiIndex } from "./wiki-index.js";
-import { localOnlyPushBlock } from "./local-only.js";
+import { isLocalOnlyMode, localOnlyPushBlock } from "./local-only.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1367,6 +1379,175 @@ async function runDataAutoSync(options: {
     () => runDataAutoSyncUnlocked(options),
     { timeoutMs: 60_000, staleMs: 10 * 60_000 },
   );
+}
+
+function syncResultString(result: Record<string, unknown>, key: string): string | null {
+  const value = result[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function executeSyncSchedulerBatch(
+  batch: SyncSchedulerExecutionBatch,
+): Promise<SyncSchedulerExecutionResult> {
+  if (batch.tasks.length !== 1) {
+    return {
+      outcome: "blocked",
+      reason: "scheduler_executor_requires_one_task_scope",
+      pushed: false,
+    };
+  }
+  const task = batch.tasks[0];
+  const result = await runDataAutoSync({
+    taskId: task.task_id,
+    includeSensitiveScan: true,
+    allowConditional: task.allow_conditional,
+    push: true,
+    commitMessage: `data: scheduled sync ${safeSlug(task.task_id).slice(0, 48)}`,
+    allowedPaths: task.allowed_paths,
+  });
+  const state = syncResultString(result, "state");
+  const reason = syncResultString(result, "reason") ?? `task_sync_${state ?? "unknown"}`;
+  if (state === "pushed" && result.pushed === true) {
+    const commit = syncResultString(result, "commit");
+    const branch = syncResultString(result, "branch");
+    if (commit && branch) {
+      return {
+        outcome: "pushed",
+        reason,
+        pushed: true,
+        commit,
+        branch,
+        remote_ref: `refs/heads/${branch}`,
+      };
+    }
+    return { outcome: "retry_required", reason: "scheduler_executor_push_proof_missing", pushed: false };
+  }
+  if (state === "no_op") {
+    try {
+      const [commit, branch] = await Promise.all([
+        gitOutput(["rev-parse", "HEAD"]),
+        gitOutput(["branch", "--show-current"]),
+      ]);
+      if (!commit || !branch) throw new Error("git head or branch is unavailable");
+      return {
+        outcome: "no_op",
+        reason,
+        pushed: false,
+        commit,
+        branch,
+        remote_ref: `refs/heads/${branch}`,
+      };
+    } catch {
+      return { outcome: "retry_required", reason: "scheduler_executor_no_op_proof_missing", pushed: false };
+    }
+  }
+  if (state === "blocked") return { outcome: "blocked", reason, pushed: false };
+  return { outcome: "retry_required", reason, pushed: false };
+}
+
+async function latestUserActivityAt(): Promise<number> {
+  const eventDir = dataPath(".dino", "events");
+  try {
+    const files = (await fs.readdir(eventDir))
+      .filter((entry) => entry.endsWith(".jsonl"))
+      .sort()
+      .reverse()
+      .slice(0, 3);
+    for (const entry of files) {
+      const filePath = path.join(eventDir, entry);
+      const handle = await fs.open(filePath, "r");
+      try {
+        const stat = await handle.stat();
+        const length = Math.min(stat.size, 256 * 1024);
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, stat.size - length);
+        const lines = buffer.toString("utf8").split(/\r?\n/).filter(Boolean).reverse();
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line) as Record<string, unknown>;
+            const eventName = typeof event.event === "string" ? event.event : "";
+            if (!/(?:prompt_submitted|preflight_completed|task_started|task_finished)$/i.test(eventName)) continue;
+            const value = [event.at, event.created_at, event.finished_at, event.timestamp]
+              .find((candidate) => typeof candidate === "string");
+            const observed = typeof value === "string" ? Date.parse(value) : Number.NaN;
+            if (Number.isFinite(observed)) return observed;
+          } catch {
+            // Ignore a partial first line or a damaged historical event.
+          }
+        }
+      } finally {
+        await handle.close();
+      }
+    }
+  } catch {
+    // Missing event evidence must keep automatic sync in the idle grace period.
+  }
+  return Date.now();
+}
+
+async function runBoundedSyncScheduler(mode: "automatic" | "manual_safe_scoped"): Promise<SyncSchedulerRunResult | Record<string, unknown>> {
+  const now = Date.now();
+  if (mode === "automatic") {
+    const state = await readSyncSchedulerState({ dataRoot: DATA_ROOT, now, automaticEnabledDefault: true });
+    if (!state.automatic_enabled) {
+      return { executed: false, outcome: "skipped", reason_codes: ["automatic_sync_disabled"], next_eligible_at: null };
+    }
+    if (state.queue.length === 0) {
+      return { executed: false, outcome: "skipped", reason_codes: ["queue_empty"], next_eligible_at: null };
+    }
+    const earliestEligible = Math.min(...state.queue.map((item) => Date.parse(item.eligible_at)));
+    if (Number.isFinite(earliestEligible) && earliestEligible > now) {
+      return {
+        executed: false,
+        outcome: "skipped",
+        reason_codes: ["coalescing"],
+        next_eligible_at: new Date(earliestEligible).toISOString(),
+      };
+    }
+    const retryAt = state.retry ? Date.parse(state.retry.next_retry_at) : Number.NaN;
+    if (Number.isFinite(retryAt) && retryAt > now) {
+      return {
+        executed: false,
+        outcome: "skipped",
+        reason_codes: ["retry_backoff"],
+        next_eligible_at: new Date(retryAt).toISOString(),
+      };
+    }
+    const recentPushes = state.automatic_push_history
+      .map((entry) => Date.parse(entry))
+      .filter((entry) => Number.isFinite(entry) && now - entry < SYNC_SCHEDULER_POLICY.rolling_window_ms)
+      .sort((left, right) => left - right);
+    if (recentPushes.length >= SYNC_SCHEDULER_POLICY.max_automatic_pushes) {
+      const next = recentPushes[recentPushes.length - SYNC_SCHEDULER_POLICY.max_automatic_pushes]
+        + SYNC_SCHEDULER_POLICY.rolling_window_ms;
+      return {
+        executed: false,
+        outcome: "skipped",
+        reason_codes: ["automatic_push_rate_limited"],
+        next_eligible_at: new Date(next).toISOString(),
+      };
+    }
+    const lastActivityAt = await latestUserActivityAt();
+    if (now - lastActivityAt < SYNC_SCHEDULER_POLICY.idle_ms) {
+      return {
+        executed: false,
+        outcome: "skipped",
+        reason_codes: ["user_not_idle"],
+        next_eligible_at: new Date(lastActivityAt + SYNC_SCHEDULER_POLICY.idle_ms).toISOString(),
+      };
+    }
+    return runAutomaticSyncScheduler({
+      dataRoot: DATA_ROOT,
+      lastActivityAt,
+      now,
+      execute: executeSyncSchedulerBatch,
+    });
+  }
+  return runManualSafeScopedSync({
+    dataRoot: DATA_ROOT,
+    now,
+    execute: executeSyncSchedulerBatch,
+  });
 }
 
 function isAutoSyncConditionalPath(normalizedPath: string): boolean {
@@ -3165,19 +3346,41 @@ registerTool(
       });
     }
     let autoSync: Record<string, unknown> | null = null;
-    if (!traceOnly && envFlag("DINOBRAIN_AUTO_SYNC", false)) {
+    if (!traceOnly && isLocalOnlyMode(DATA_ROOT)) {
+      autoSync = {
+        ok: true,
+        state: "blocked",
+        skipped: true,
+        immediate_push: false,
+        reason: "local_only_remote_push_disabled",
+      };
+    } else if (!traceOnly) {
       try {
-        autoSync = await runDataAutoSync({
+        const queued = await enqueueTaskScopedSync({
+          dataRoot: DATA_ROOT,
           taskId: task_id,
-          includeSensitiveScan: true,
-          allowConditional: envFlag("DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL", false),
-          push: envFlag("DINOBRAIN_AUTO_SYNC_PUSH", false),
-          commitMessage: `data: auto sync ${safeSlug(task_id).slice(0, 48)}`,
-          allowedPaths: [taskRelativePath, traceRelativePath],
+          requestedPaths: [taskRelativePath, traceRelativePath],
+          allowConditional: true,
+          automaticEnabledDefault: envFlag("DINOBRAIN_SYNC_SCHEDULER_ENABLED", true),
         });
+        autoSync = {
+          ok: queued.resolution.ok,
+          state: "queued",
+          immediate_push: false,
+          scheduler: "bounded_task_sync_scheduler",
+          automatic_enabled: queued.state.automatic_enabled,
+          queued_path_count: queued.queued.length,
+          queued_paths: queued.queued.map((item) => item.path),
+          rejected_paths: queued.resolution.rejected_paths,
+          reason_codes: queued.resolution.reason_codes,
+          next_eligible_at: queued.queued
+            .map((item) => item.eligible_at)
+            .sort()[0] ?? null,
+        };
       } catch (error) {
         autoSync = {
           ok: false,
+          state: "retry_required",
           error: safeError(error),
         };
       }
@@ -3400,6 +3603,12 @@ registerTool(
   {
     title: "OS Action Gate",
     description: "Evaluate DinoBrain OS v2 action gates and write a gate report.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       request: z.string().min(1),
       task_id: z.string().optional(),
@@ -5057,6 +5266,72 @@ registerTool(
         trace_limit,
         rollback_cycle_path: rollback_cycle_path ?? null,
         reapply_cycle_path: reapply_cycle_path ?? null,
+      });
+    }
+  },
+);
+
+registerTool(
+  "sync_scheduler_status",
+  {
+    title: "Sync Scheduler Status",
+    description: "Read the bounded task-scoped GitHub sync queue and cadence without pushing.",
+    inputSchema: {},
+  },
+  async () => jsonResult(await readObservatorySyncState({ dataRoot: DATA_ROOT })),
+);
+
+registerTool(
+  "sync_scheduler_set_automatic",
+  {
+    title: "Set Automatic Sync",
+    description: "Enable or disable bounded automatic task-scoped sync. This never performs a sync immediately.",
+    inputSchema: {
+      enabled: z.boolean(),
+    },
+  },
+  async ({ enabled }) => {
+    const state = await setSyncSchedulerAutomaticEnabled({ dataRoot: DATA_ROOT, enabled });
+    const blocked = enabled && !state.automatic_enabled && isLocalOnlyMode(DATA_ROOT);
+    return jsonResult({
+      ok: !blocked,
+      automatic_enabled: state.automatic_enabled,
+      immediate_push: false,
+      reason: blocked ? "local_only_remote_push_disabled" : null,
+      updated_at: state.updated_at,
+    });
+  },
+);
+
+registerTool(
+  "sync_scheduler_run",
+  {
+    title: "Run Bounded Sync Scheduler",
+    description: "Run one oldest task-scoped sync attempt, or evaluate the automatic cadence and idle gates.",
+    inputSchema: {
+      mode: z.enum(["automatic", "manual_safe_scoped"]).default("manual_safe_scoped"),
+    },
+  },
+  async ({ mode }) => {
+    try {
+      const result = await runBoundedSyncScheduler(mode);
+      const payload = result as Record<string, unknown>;
+      await appendEvent({
+        event: "sync_scheduler_evaluated",
+        at: nowIso(),
+        mode,
+        executed: payload.executed === true,
+        outcome: typeof payload.outcome === "string" ? payload.outcome : "unknown",
+        reason_codes: Array.isArray(payload.reason_codes) ? payload.reason_codes.slice(0, 12) : [],
+      }).catch(() => undefined);
+      return jsonResult({ ok: true, mode, ...payload });
+    } catch (error) {
+      return jsonResult({
+        ok: false,
+        mode,
+        outcome: "retry_required",
+        reason_codes: ["sync_scheduler_runtime_failed"],
+        error: safeError(error),
       });
     }
   },

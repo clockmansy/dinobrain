@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Script } from "node:vm";
 import { DINOBRAIN_VERSION } from "./lib/version-manifest.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -435,6 +436,21 @@ tags: [context-pack]
     assert(state.sync_risk && state.sync_risk.status, "State endpoint did not include sync risk");
     assert(state.local_only?.enabled === true && state.local_only.push_policy === "blocked", "State endpoint did not expose local-only push policy");
     assert(state.local_only?.backup?.status === "verified", "State endpoint did not expose verified backup status");
+    assert(state.sync_scheduler?.push_policy === "blocked", "State endpoint scheduler did not inherit local-only push block");
+    assert(state.sync_scheduler?.automatic?.enabled === false, "State endpoint enabled automatic sync in local-only mode");
+    const syncRunResponse = await fetch(`http://127.0.0.1:${port}/api/sync/run`, {
+      method: "POST",
+      headers: { "x-dinobrain-action": "observatory" },
+    });
+    const syncRun = await syncRunResponse.json();
+    assert(syncRunResponse.status === 409 && syncRun.error === "local_only_remote_push_disabled", "Local-only Observatory allowed Sync now");
+    const syncAutomaticResponse = await fetch(`http://127.0.0.1:${port}/api/sync/automatic`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-dinobrain-action": "observatory" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const syncAutomatic = await syncAutomaticResponse.json();
+    assert(syncAutomaticResponse.status === 409 && syncAutomatic.error === "local_only_remote_push_disabled", "Local-only Observatory allowed automatic sync");
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
     assert(health.ok === true && health.observatory_version, "Health endpoint did not report Observatory version");
     assert(health.graph_health && typeof health.graph_health.score === "number", "Health endpoint did not include graph health");
@@ -490,12 +506,22 @@ tags: [context-pack]
       "Snapshot exceeded the bounded 256 KiB payload budget",
     );
     const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
+    const graphModule = await fetch(`http://127.0.0.1:${port}/assets/observatory-graph.mjs`).then((response) => response.text());
+    const classicScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert(classicScript, "UI does not include its classic runtime script");
+    new Script(classicScript, { filename: "dinobrain-observatory-inline.js" });
     assert(html.includes("Completion Readiness"), "UI does not include readiness block");
-    assert(html.includes("graph-cluster-label"), "UI does not include graph cluster labels");
-    assert(html.includes('id="graph-lane"') && html.includes('id="graph-relation"'), "UI does not include graph evidence filters");
-    assert(html.includes('id="graph-trace"'), "UI does not include focused evidence trace command");
-    assert(html.includes("Live loop"), "UI does not include live graph cluster label");
-    assert(html.includes("memory links"), "UI does not include memory link statistics");
+    assert(html.includes('id="observatory-graph-host"'), "UI does not include the mounted graph host");
+    assert(html.includes('import { mountObservatoryGraph }'), "UI does not mount the graph module");
+    assert(
+      graphModule.includes('aria-label": "지식 그래프 검색"') &&
+        graphModule.includes('aria-label": "유형 필터"') &&
+        graphModule.includes('aria-label": "상태 필터"') &&
+        graphModule.includes('aria-label": "수명주기 필터"'),
+      "Graph module does not include search and evidence filters",
+    );
+    assert(graphModule.includes('text: "맞춤"') && graphModule.includes('text: "초기화"'), "Graph module does not include fit/reset controls");
+    assert(graphModule.includes("evidence_paths") && graphModule.includes("onEvidencePath"), "Graph module does not expose focused evidence paths");
     assert(html.includes("readiness-blockers"), "UI does not include blocker lane container");
     assert(html.includes("readiness-audit-paths"), "UI does not include audit path container");
     assert(html.includes('fetch("/api/snapshot"'), "UI does not use the combined snapshot endpoint");
@@ -549,6 +575,14 @@ tags: [context-pack]
       ) && invalidReadiness.gates.every((gate) => gate.status !== "PASS"),
       "Canonical status drift did not invalidate the published generation",
     );
+    const staleGraph = await fetch(`http://127.0.0.1:${port}/api/graph?focus=${encodeURIComponent(memoryNode.id)}`).then((response) => response.json());
+    assert(staleGraph.ok === true, "Last valid evidence graph disappeared when status generation became stale");
+    assert(staleGraph.stale_snapshot === true, "Stale evidence graph fallback was not disclosed");
+    assert(
+      staleGraph.index_mode === "evidence_graph_v1+stale_canonical_fallback",
+      `Unexpected stale graph mode: ${staleGraph.index_mode}`,
+    );
+    assert(staleGraph.nodes.length > 0 && staleGraph.edges.length > 0, "Stale graph fallback returned an empty graph");
     console.log("observatory live graph verification ok");
   } finally {
     if (server.exitCode === null) {

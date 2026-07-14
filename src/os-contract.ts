@@ -83,6 +83,24 @@ function includesAny(value: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
+const ACTION_CLAUSE_BOUNDARY = /(?:[.!?;\n]+|\bbut\b|\bhowever\b|\bexcept\b|\uD558\uC9C0\uB9CC|\uB2E4\uB9CC)/u;
+const ACTION_NEGATION_PATTERNS = [
+  /\b(?:do\s+not|don't|never|without|avoid(?:ing)?|skip(?:ping)?|no)\b/,
+  /\b(?:disabled|off|not\s+requested)\b/,
+  /\uD558\uC9C0\s*\uB9C8/,
+  /\uD558\uC9C0\s*\uC54A/,
+  /\uC548\s*(?:\uD568|\uD574|\uD558)/,
+  /\uC5C6\uC774/,
+  /\uC81C\uC678/,
+  /\uAE08\uC9C0/,
+];
+
+function includesAffirmativeAction(value: string, patterns: RegExp[]): boolean {
+  return value
+    .split(ACTION_CLAUSE_BOUNDARY)
+    .some((clause) => includesAny(clause, patterns) && !includesAny(clause, ACTION_NEGATION_PATTERNS));
+}
+
 const DESTRUCTIVE_PATTERNS = [
   /\breset\s+--hard\b/,
   /\bremove-item\b.*\b-recurse\b/,
@@ -131,12 +149,12 @@ const DATA_SYNC_SCOPE_PATTERNS = [
 
 export function detectRequestActionIntent(request: string): RequestActionIntent {
   const normalized = request.toLowerCase();
-  const sync = includesAny(normalized, SYNC_PATTERNS);
+  const sync = includesAffirmativeAction(normalized, SYNC_PATTERNS);
   return {
-    destructive: includesAny(normalized, DESTRUCTIVE_PATTERNS),
-    persistence: includesAny(normalized, PERSISTENCE_PATTERNS),
+    destructive: includesAffirmativeAction(normalized, DESTRUCTIVE_PATTERNS),
+    persistence: includesAffirmativeAction(normalized, PERSISTENCE_PATTERNS),
     sync,
-    data_sync: sync && includesAny(normalized, DATA_SYNC_SCOPE_PATTERNS),
+    data_sync: sync && includesAffirmativeAction(normalized, DATA_SYNC_SCOPE_PATTERNS),
   };
 }
 

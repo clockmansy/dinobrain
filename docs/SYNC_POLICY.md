@@ -1,7 +1,7 @@
 # DinoBrain Sync Policy
 
-Date: 2026-07-11
-Status: SAFE-01/02/03 controls implemented; HG-09 legacy cleanup and external recovery evidence pending
+Date: 2026-07-13
+Status: SAFE-01/02/03 and LC-08 scheduler contracts implemented; Observatory entrypoint integration remains integration-owned
 
 ## Goal
 
@@ -121,6 +121,101 @@ and `DINOBRAIN_AUTO_SYNC_PUSH=0` prevent prompt-derived task, trace, context
 pack, gate, candidate, review, and compounding records from being auto-pushed.
 Closed-loop push tests and private/encrypted backup workflows may explicitly set
 both flags to `1`; that opt-in is not the default public data posture.
+
+## Bounded Automatic Sync Scheduler
+
+Task-scoped writes enter a durable local queue before any automatic sync is
+eligible. Queue admission is not based on a caller assertion. The scheduler:
+
+1. resolves the authoritative task scope;
+2. verifies SHA-256, Git-filtered blob id, size, approval, scope revision, and
+   scope-file SHA-256;
+3. independently runs the unified path and complete-content classifier;
+4. resolves the scope a second time to close the classify/admit race; and
+5. records only verified candidates in `.dino/sync-scheduler/state.json`.
+
+The state path is unclassified/local-only under the public-data policy. It is
+written through the process-wide `.dino/locks/sync-scheduler.lock`, replaced
+atomically after file sync, and protected by a canonical state SHA-256. Queue
+items have a deterministic identity derived from the task, artifact binding,
+scope binding, and classifier version. A restart reloads the queue; invalid or
+changed bytes are rejected during pre-execution revalidation.
+
+Automatic policy defaults are fixed and visible in the Observatory DTO:
+
+- minimum six-hour coalescing from queue admission;
+- at least ten minutes of user idle time;
+- at most four successful automatic pushes in a rolling 24-hour window;
+- retry after 15 minutes, one hour, then six hours (six hours remains the cap);
+- one process-held attempt at a time;
+- no run while a prior attempt is active, the index already contains staged
+  changes, conflicts exist, the branch is behind/diverged, the remote is
+  missing/unreachable, authentication is unavailable, or a queued artifact no
+  longer passes scope/hash/classifier checks.
+
+Unrelated **unstaged** backlog is observed and reported but never staged. This
+preserves the existing task-scoped contract that a safe artifact can be synced
+without consuming neighboring local work. Any pre-existing staged path is a
+hard skip because the scheduler must not take ownership of another actor's
+index. Sensitive, unclassified, pending-review, and non-opted-in conditional
+artifacts never enter the safe queue.
+
+The scheduler delegates the final task-scoped commit/push operation to the
+existing `auto_sync` contract through an integration adapter. The adapter
+receives exact per-task `allowed_paths`; it must not broaden them. Conditional
+artifacts continue to require the existing public sync receipt and commit
+trailers. The receipt schema remains
+`task_sync_public_receipt_20260712_v1`.
+
+Executor success is advisory, not authority. `pushed` and `no_op` results must
+include a commit OID, current branch, and exact remote branch ref. Before queue
+removal the scheduler independently proves that the commit exists locally, the
+local branch and remote ref point to it, every queued path resolves to its
+registered Git blob, and a pushed commit changed no path outside the selected
+scope. A receipt path is allowed only after `validatePublicSyncReceipt` passes
+and its filename id, task id, artifact bindings, classifier version, and scope
+binding match the selected task. Failed proof becomes `retry_required` and the
+queue remains durable. `no_op` additionally requires exact local/remote parity.
+
+One scheduler attempt selects only the oldest eligible task (queue time, then
+task id) and all currently eligible items for that task. Other task queues stay
+pending. This preserves the existing one-task/one-commit/one-push executor
+contract and makes one attempt equal at most one push, so the rolling four-push
+cap cannot be multiplied by the number of mature tasks.
+
+`readObservatorySyncState` exposes a bounded DTO containing automatic policy,
+last success, last attempt/result, next eligible time, safe and conditional
+queue counts, blocked count, skip reasons, queued items, branch, remote parity,
+and the safe manual action contract. It performs no push and no remote network
+probe.
+
+Sealed `local_only` mode overrides this remote-capable policy. In that mode,
+`finish_task` does not admit new remote-sync work, automatic enable requests are
+forced off, scheduler runs return `local_only_remote_push_disabled` before an
+executor or remote probe can run, and Observatory disables both Sync now and
+the automatic toggle. Existing queue metadata may remain visible for audit but
+cannot be executed. Local source commits and encrypted backup continue under
+`docs/LOCAL_ONLY_MODE.md`.
+
+`Sync now` is `manual_safe_scoped`: it may bypass automatic coalescing, idle,
+enable, and rolling-cap timing, but it does not bypass scope, hash, classifier,
+Git-index, conflict, remote, or authentication checks. Manual safe-scoped
+pushes do not consume the automatic rolling cap. Broad/manual recovery and the
+release gate remain separate approval-gated workflows and are not scheduler
+entrypoints.
+
+Run the deterministic LC-08 verifier after building:
+
+```text
+node scripts/verify-sync-scheduler.mjs
+node scripts/verify-task-scoped-sync.mjs
+```
+
+The scheduler verifier creates only temporary local repositories and local bare
+remotes. It proves queue restart persistence, atomic integrity, classifier and
+hash rejection, six-hour/idle gates, four-push rolling cap, lock serialization,
+retry timing, exact staging, manual separation, DTO fields, and that its
+production-sentinel remote receives zero pushes.
 
 Generated indexes under `.dino/index` and append-only event logs under `.dino/events` are local-only by default. Indexes are rebuilt during install/update and event logs can contain prompt/task payloads from more than the current task.
 

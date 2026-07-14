@@ -17,6 +17,7 @@ param(
   [string]$CodexManagedHookDir = "",
   [string]$ClaudeSettingsPath = "",
   [string]$ClaudeCommand = "claude",
+  [string]$ObservatoryLauncherSource = "",
   [ValidateSet("local", "project", "user")]
   [string]$ClaudeScope = "user",
   [switch]$SkipCodexConfig,
@@ -25,6 +26,7 @@ param(
   [switch]$SkipCodexRestartFlow,
   [switch]$SkipClaudeCodeConfig,
   [switch]$SkipSemanticRagPrewarm,
+  [switch]$SkipObservatoryStartup,
   [switch]$SkipVerify,
   [switch]$Force
 )
@@ -1666,9 +1668,12 @@ function New-DinoBrainCodexHookCommand {
   )
 
   $hookScript = Join-Path $AppPath "scripts\dinobrain-user-prompt-hook.ps1"
+  $launcher = Join-Path $AppPath "DinoBrain Observatory.exe"
   $hookLiteral = ConvertTo-PowerShellSingleQuotedString $hookScript
+  $launcherLiteral = ConvertTo-PowerShellSingleQuotedString $launcher
+  $appLiteral = ConvertTo-PowerShellSingleQuotedString $AppPath
   $vaultLiteral = ConvertTo-PowerShellSingleQuotedString $VaultPath
-  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; `$env:DINOBRAIN_AUTO_GROWTH = '0'; `$env:DINOBRAIN_AUTO_COMPOUND = '0'; `$env:DINOBRAIN_AUTO_SYNC = '0'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '0'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '0'; `$env:DINOBRAIN_HOOK_IMPORT_SESSION = '0'; `$env:DINOBRAIN_HOOK_CONTEXT_LIMIT = '3'; `$env:DINOBRAIN_HOOK_LEASE_SECONDS = '3600'; `$env:DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = '6000'; `$env:DINOBRAIN_HOOK_TIMEOUT_SECONDS = '8'; & $hookLiteral }`""
+  return "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:DINOBRAIN_DATA_DIR = $vaultLiteral; if (Test-Path -LiteralPath $launcherLiteral) { Start-Process -FilePath $launcherLiteral -ArgumentList @('--ensure-running','--timeout-seconds','2','--app-root',$appLiteral,'--data-dir',$vaultLiteral) -WindowStyle Hidden -ErrorAction SilentlyContinue }; `$env:DINOBRAIN_AUTO_GROWTH = '0'; `$env:DINOBRAIN_AUTO_COMPOUND = '0'; `$env:DINOBRAIN_AUTO_SYNC = '0'; `$env:DINOBRAIN_AUTO_SYNC_ALLOW_CONDITIONAL = '0'; `$env:DINOBRAIN_AUTO_SYNC_PUSH = '0'; `$env:DINOBRAIN_HOOK_AUTO_SYNC = '0'; `$env:DINOBRAIN_HOOK_IMPORT_SESSION = '0'; `$env:DINOBRAIN_HOOK_CONTEXT_LIMIT = '3'; `$env:DINOBRAIN_HOOK_LEASE_SECONDS = '3600'; `$env:DINOBRAIN_HOOK_SOFT_TIMEOUT_MS = '6000'; `$env:DINOBRAIN_HOOK_TIMEOUT_SECONDS = '8'; & $hookLiteral }`""
 }
 
 function Test-DinoBrainHookGroup {
@@ -1976,9 +1981,9 @@ function New-DinoBrainObservatoryLauncher {
     [Parameter(Mandatory = $true)][string]$NodeRoot
   )
 
-  $launcherScript = Join-Path $AppPath "scripts\start-dinobrain-observatory.ps1"
-  if (-not (Test-Path -LiteralPath $launcherScript)) {
-    Write-Warning "Observatory launcher script not found: $launcherScript"
+  $launcherExe = Join-Path $AppPath "DinoBrain Observatory.exe"
+  if (-not (Test-Path -LiteralPath $launcherExe)) {
+    Write-Warning "Native Observatory launcher was not found: $launcherExe"
     return @()
   }
 
@@ -1989,8 +1994,7 @@ function New-DinoBrainObservatoryLauncher {
   $content = @"
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$launcherScript" -DataDir "$VaultPath" -NodeRoot "$NodeRoot"
-if errorlevel 1 pause
+"$launcherExe" --open
 "@
 
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -2000,6 +2004,68 @@ if errorlevel 1 pause
     Write-Host "Observatory launcher created: $launcherPath"
   }
   return $launcherPaths
+}
+
+function Install-DinoBrainObservatoryNativeLauncher {
+  param(
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [string]$SourcePath = ""
+  )
+  $destination = Join-Path $AppPath "DinoBrain Observatory.exe"
+  if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+    if (Test-Path -LiteralPath $destination) { return $destination }
+    Write-Warning "Native Observatory launcher source was not supplied; setup EXE is required to install it."
+    return $null
+  }
+  if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { throw "Native Observatory launcher source was not found: $SourcePath" }
+  $temporary = "$destination.new-$([guid]::NewGuid().ToString('N'))"
+  $backup = "$destination.replace-backup-$([guid]::NewGuid().ToString('N'))"
+  try {
+    Copy-Item -LiteralPath $SourcePath -Destination $temporary -Force -ErrorAction Stop
+    if ((Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash) {
+      throw "Native Observatory launcher temporary copy did not match its source."
+    }
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 6; $attempt += 1) {
+      try {
+        if (Test-Path -LiteralPath $destination -PathType Leaf) {
+          [System.IO.File]::Replace($temporary, $destination, $backup)
+        } else {
+          [System.IO.File]::Move($temporary, $destination)
+        }
+        if (Test-Path -LiteralPath $destination -PathType Leaf) { return $destination }
+      } catch {
+        $lastError = $_
+      }
+      if ($attempt -lt 6) { Start-Sleep -Milliseconds 150 }
+    }
+    throw "Native Observatory launcher could not replace the existing executable after bounded retries: $lastError"
+  } finally {
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Set-DinoBrainObservatoryStartup {
+  param(
+    [Parameter(Mandatory = $true)][string]$LauncherPath,
+    [Parameter(Mandatory = $true)][string]$AppPath,
+    [Parameter(Mandatory = $true)][string]$VaultPath,
+    [switch]$Disable
+  )
+  $key = "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
+  $name = "DinoBrain Observatory"
+  if ($Disable) {
+    & reg.exe delete $key /v $name /f 2>$null | Out-Null
+    Write-Host "Observatory sign-in startup disabled."
+    return $false
+  }
+  if (-not (Test-Path -LiteralPath $LauncherPath)) { Write-Warning "Observatory startup was not registered because launcher is missing: $LauncherPath"; return $false }
+  $command = '"' + $LauncherPath + '" --ensure-running --timeout-seconds 2 --app-root "' + $AppPath + '" --data-dir "' + $VaultPath + '"'
+  & reg.exe add $key /v $name /t REG_SZ /d $command /f | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Could not register per-user Observatory startup entry." }
+  Write-Host "Observatory sign-in startup registered."
+  return $true
 }
 
 function New-DinoBrainHookDiagnoseLauncher {
@@ -2583,6 +2649,7 @@ $transaction = $null
 $nodeRoot = $null
 $expectedNodeRoot = $null
 $nodeRootExisted = $false
+$postCommitObservatoryStartup = $null
 $installLock = Enter-DinoBrainInstallLock -InstallRoot $InstallRoot
 try {
   $allowedSnapshotPaths = @(
@@ -2688,6 +2755,7 @@ try {
   foreach ($launcherName in Get-DinoBrainInstallerLauncherNames) {
     Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath (Join-Path $InstallRoot $launcherName)
   }
+  Save-DinoBrainInstallSnapshot -Transaction $transaction -TargetPath (Join-Path $AppDir "DinoBrain Observatory.exe")
 
   Invoke-DinoBrainInstallFailurePoint -Name "after_stage_build"
   Promote-DinoBrainInstallTransaction -Transaction $transaction
@@ -2749,6 +2817,7 @@ if (-not $SkipCodexHookConfig -and -not $SkipCodexManagedHookConfig) {
   }
 }
 
+$nativeObservatoryLauncher = Install-DinoBrainObservatoryNativeLauncher -AppPath $AppDir -SourcePath $ObservatoryLauncherSource
 $observatoryLaunchers = New-DinoBrainObservatoryLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot
 $hookDiagnoseLaunchers = New-DinoBrainHookDiagnoseLauncher -InstallRoot $InstallRoot -AppPath $AppDir -VaultPath $DataDir -NodeRoot $nodeRoot -ConfigPath $CodexConfigPath -HooksPath $CodexHooksPath -RequirementsPath $CodexRequirementsPath
 $hookApprovalLaunchers = @()
@@ -2779,6 +2848,7 @@ if (-not $SkipVerify) {
 }
 
 Complete-DinoBrainInstallTransaction -Transaction $transaction
+$postCommitObservatoryStartup = [pscustomobject]@{ launcher_path = $nativeObservatoryLauncher; app_path = $AppDir; vault_path = $DataDir; disable = [bool]$SkipObservatoryStartup }
 } catch {
   $originalError = $_
   if ($null -ne $transaction) {
@@ -2807,6 +2877,14 @@ Complete-DinoBrainInstallTransaction -Transaction $transaction
   throw $originalError
 } finally {
   Exit-DinoBrainInstallLock -LockHandle $installLock
+}
+
+if ($null -ne $postCommitObservatoryStartup -and -not [string]::IsNullOrWhiteSpace([string]$postCommitObservatoryStartup.launcher_path)) {
+  try {
+    Set-DinoBrainObservatoryStartup -LauncherPath ([string]$postCommitObservatoryStartup.launcher_path) -AppPath ([string]$postCommitObservatoryStartup.app_path) -VaultPath ([string]$postCommitObservatoryStartup.vault_path) -Disable:([bool]$postCommitObservatoryStartup.disable) | Out-Null
+  } catch {
+    Write-Warning "DinoBrain install committed, but Observatory sign-in startup could not be updated: $_"
+  }
 }
 
 if (-not $SkipCodexHookConfig -and -not $SkipCodexRestartFlow) {

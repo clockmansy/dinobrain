@@ -17,3 +17,5 @@ coverage/
 reports/
 artifacts/
 .codex-remote-attachments/
+.playwright-cli/
+output/

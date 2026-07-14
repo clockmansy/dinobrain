@@ -18,6 +18,10 @@ import {
   readEvidenceGraphWindow,
 } from "../dist/evidence-graph.js";
 import { localOnlyStatus } from "../dist/local-only.js";
+import {
+  readObservatorySyncState,
+  setSyncSchedulerAutomaticEnabled,
+} from "../dist/observatory-sync-state.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataRoot = path.resolve(process.env.DINOBRAIN_DATA_DIR ?? path.join(root, "..", "dinobrain-data"));
@@ -40,6 +44,9 @@ const graphWindowLimits = Object.freeze({ wiki_nodes: 300, total_nodes: 340, tot
 const graphNodeTypeLimits = Object.freeze({ root: 32, folder: 80, kind: 16, tag: 60, wikilink: 12, record: 221 });
 const statusGenerationArtifacts = new Set(STATUS_GENERATION_ARTIFACT_PATHS);
 let statusGenerationCache = { loaded_at: 0, source_checked_at: 0, pointer_signature: null, value: null, in_flight: null };
+let syncStateCache = { loaded_at: 0, value: null, in_flight: null };
+let syncRunInFlight = null;
+let automaticSyncNextProbeAt = 0;
 const resourceCounters = {
   http_requests: 0,
   http_active: 0,
@@ -142,6 +149,75 @@ function cacheHealth() {
     payload_bytes: result.payload_bytes + resource.payload_bytes,
   }), { hits: 0, misses: 0, coalesced: 0, loads: 0, errors: 0, payload_bytes: 0 });
   return { ttl_ms: cacheTtlMs, ...totals, resources };
+}
+
+function invalidateObservatoryStateCaches() {
+  for (const name of ["state", "snapshot", "readiness"]) {
+    const cache = resourceCaches.get(name);
+    if (cache) cache.expires_at = 0;
+  }
+  syncStateCache.loaded_at = 0;
+  syncStateCache.value = null;
+}
+
+async function readBoundedSyncState({ force = false } = {}) {
+  const ttlMs = 15_000;
+  if (!force && syncStateCache.value && Date.now() - syncStateCache.loaded_at < ttlMs) return syncStateCache.value;
+  if (syncStateCache.in_flight) return syncStateCache.in_flight;
+  syncStateCache.in_flight = readObservatorySyncState({ dataRoot })
+    .then((value) => {
+      syncStateCache.value = value;
+      syncStateCache.loaded_at = Date.now();
+      return value;
+    })
+    .finally(() => {
+      syncStateCache.in_flight = null;
+    });
+  return syncStateCache.in_flight;
+}
+
+async function runSyncScheduler(command) {
+  if (syncRunInFlight) return syncRunInFlight;
+  const scriptPath = path.join(root, "scripts", "run-sync-scheduler.mjs");
+  syncRunInFlight = execFileAsync(process.execPath, [scriptPath, command], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DINOBRAIN_DATA_DIR: dataRoot,
+      DINOBRAIN_SYNC_RUN_TIMEOUT_MS: "75000",
+    },
+    windowsHide: true,
+    timeout: 90_000,
+    maxBuffer: 2 * 1024 * 1024,
+  })
+    .then(({ stdout }) => JSON.parse(stdout))
+    .finally(() => {
+      syncRunInFlight = null;
+      invalidateObservatoryStateCaches();
+    });
+  return syncRunInFlight;
+}
+
+async function maybeRunAutomaticSync() {
+  if (Date.now() < automaticSyncNextProbeAt || syncRunInFlight) return;
+  try {
+    const state = await readBoundedSyncState();
+    const queued = Number(state.queued_safe_file_count ?? 0) + Number(state.queued_conditional_count ?? 0);
+    if (!state.automatic?.enabled || queued === 0) {
+      automaticSyncNextProbeAt = Date.now() + 5 * 60_000;
+      return;
+    }
+    const projected = Date.parse(state.next_eligible_automatic_sync ?? "");
+    if (Number.isFinite(projected) && projected > Date.now()) {
+      automaticSyncNextProbeAt = projected;
+      return;
+    }
+    const result = await runSyncScheduler("automatic");
+    const next = Date.parse(result.next_eligible_at ?? "");
+    automaticSyncNextProbeAt = Number.isFinite(next) && next > Date.now() ? next : Date.now() + 60_000;
+  } catch {
+    automaticSyncNextProbeAt = Date.now() + 15 * 60_000;
+  }
 }
 
 function rel(filePath) {
@@ -633,6 +709,41 @@ async function readEvents(limit = 100) {
     .slice(-limit);
 }
 
+// Activity has its own bounded adapter so the shell can stay responsive without
+// inflating the compact snapshot budget. The adapter deliberately returns the
+// same redacted event DTOs used by the existing state projection.
+async function readActivityEvents(limit = 500) {
+  const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 500));
+  const liveEvents = await readEvents(boundedLimit);
+  const canonicalPath = path.join(dataRoot, ".dino", "index", "sqlite", "operations.sqlite");
+  const resolved = await resolveObservablePath(canonicalPath);
+  const indexedEvents = [];
+  try {
+    if (resolved.managed && !resolved.filePath) throw new Error("status_generation_unavailable");
+    await fs.access(resolved.filePath);
+    const db = new DatabaseSync(resolved.filePath, { readOnly: true });
+    try {
+      const rows = db.prepare(`SELECT payload_json FROM events ORDER BY at DESC, event_key ASC LIMIT ${boundedLimit}`).all();
+      for (const row of rows) {
+        try { indexedEvents.push(JSON.parse(row.payload_json)); } catch { /* redaction-safe skip */ }
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // JSONL remains the portable fallback when the SQLite shard is absent.
+  }
+  const merged = mergeEvents(indexedEvents, liveEvents, boundedLimit)
+    .map((event) => projectEvent(event))
+    .sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")));
+  return {
+    ok: true,
+    generated_at: new Date().toISOString(),
+    limit: boundedLimit,
+    events: merged,
+  };
+}
+
 async function readJsonDir(relativeDir, limit = 50) {
   const dir = path.join(dataRoot, relativeDir);
   const scanLimit = Math.max(limit, Math.min(limit * 2, limit + 32));
@@ -653,9 +764,11 @@ async function readJsonDir(relativeDir, limit = 50) {
 async function readEvidenceGraph(options = {}) {
   const canonicalPath = path.join(dataRoot, ...EVIDENCE_GRAPH_SQLITE_RELATIVE_PATH.split("/"));
   const resolved = await resolveObservablePath(canonicalPath);
-  if (resolved.managed && !resolved.filePath) return null;
+  const staleCanonicalFallback = resolved.managed && !resolved.filePath && await pathExists(canonicalPath);
+  if (resolved.managed && !resolved.filePath && !staleCanonicalFallback) return null;
+  const databasePath = staleCanonicalFallback ? canonicalPath : resolved.filePath;
   const graph = await readEvidenceGraphWindow(dataRoot, {
-    databasePath: resolved.filePath,
+    databasePath,
     focusId: options.focusId ?? null,
     lane: options.lane ?? null,
     lifecycleState: options.lifecycleState ?? null,
@@ -668,6 +781,9 @@ async function readEvidenceGraph(options = {}) {
   if (!graph?.ok) return null;
   return {
     ...graph,
+    index_mode: staleCanonicalFallback ? `${graph.index_mode}+stale_canonical_fallback` : graph.index_mode,
+    stale_snapshot: staleCanonicalFallback,
+    stale_reason: staleCanonicalFallback ? resolved.generation?.reason ?? "status_generation_invalid" : null,
     nodes: graph.nodes.map(normalizeGraphNode),
     edges: graph.edges.map(normalizeGraphEdge),
   };
@@ -1567,6 +1683,7 @@ function projectStatePayload(payload) {
     controlled_compounding: boundedPayloadValue(payload.controlled_compounding),
     lifecycle: boundedPayloadValue(payload.lifecycle),
     sync_risk: boundedPayloadValue(payload.sync_risk),
+    sync_scheduler: boundedPayloadValue(payload.sync_scheduler),
     local_only: boundedPayloadValue(payload.local_only),
     os_v2: boundedPayloadValue(payload.os_v2),
     read_trace: boundedPayloadValue(payload.read_trace),
@@ -1701,7 +1818,7 @@ function enforceSnapshotPayloadBudget(snapshot) {
 
 async function buildState() {
   const localOnly = localOnlyStatus(dataRoot);
-  const [audits, auditCount, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, osV2] = await Promise.all([
+  const [audits, auditCount, live, sqlite, graphHealth, nativeAuthority, sourceLineage, behaviorRecallMigration, behaviorRecall, controlledCompounding, lifecycle, syncRisk, syncScheduler, osV2] = await Promise.all([
     readAuditLogs(stateLimits.memory_audits),
     countDirFiles(".dino/audits"),
     readLiveOperations(),
@@ -1714,6 +1831,7 @@ async function buildState() {
     readControlledCompoundingStatus(),
     readLifecycleQueue(),
     readSyncRisk(),
+    readBoundedSyncState(),
     readOsV2Status(),
   ]);
   const decorate = (payload) => projectStatePayload({
@@ -1732,6 +1850,7 @@ async function buildState() {
       operating_mode: localOnly.mode,
       push_policy: localOnly.push_policy,
       backup_status: localOnly.backup?.status ?? "not_verified",
+      sync_scheduler_status: syncScheduler.last_attempt?.outcome ?? (syncScheduler.queued_safe_file_count + syncScheduler.queued_conditional_count > 0 ? "queued" : "idle"),
       os_v2_status: osV2.status,
     },
     graph_health: graphHealth,
@@ -1743,6 +1862,7 @@ async function buildState() {
     lifecycle,
     sync_risk: syncRisk,
     local_only: localOnly,
+    sync_scheduler: syncScheduler,
     os_v2: osV2,
     read_trace: readTraceSummary(payload.events, payload.context_packs, payload.traces),
   });
@@ -1978,6 +2098,62 @@ function html() {
       font-size: 12px;
       white-space: nowrap;
     }
+    .shell-intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(90deg, rgba(124,198,106,.08), rgba(79,182,164,.04)), var(--panel);
+    }
+    .shell-intro h2 { margin: 0 0 4px; font-size: 15px; }
+    .shell-intro p { margin: 0; color: var(--muted); font-size: 12px; }
+    .connection-state { color: var(--muted); font-size: 12px; text-align: right; }
+    .connection-state strong { display: block; color: var(--text); }
+    .surface-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+    .surface-nav button { border: 1px solid var(--line); border-radius: 6px; background: #10150f; color: var(--muted); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+    .surface-nav button:hover, .surface-nav button:focus-visible { border-color: var(--amber); color: var(--text); outline: none; }
+    [data-surface-target] { scroll-margin-top: 76px; }
+    .chip[role="button"] { cursor: pointer; }
+    .chip[role="button"]:focus-visible, .activity-control:focus-visible, .event:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+    .activity-panel {
+      border: 1px solid #3b452f;
+      border-radius: 8px;
+      background: var(--panel-2);
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+    .activity-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #35422d; }
+    .activity-head h2 { margin: 0; font-size: 14px; }
+    .activity-meta { color: var(--muted); font-size: 12px; }
+    .activity-controls { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: rgba(9,13,10,.72); }
+    .activity-control, .activity-select, .activity-search { height: 28px; border: 1px solid #3b452f; border-radius: 6px; background: #0c110d; color: var(--text); padding: 4px 8px; font: inherit; }
+    .activity-control { cursor: pointer; }
+    .activity-control.active { border-color: var(--amber); color: #fff1c2; background: rgba(217,154,61,.12); }
+    .activity-search { min-width: 170px; flex: 1 1 180px; }
+    .activity-list { display: grid; gap: 6px; max-height: 310px; overflow: auto; padding: 9px 10px; overscroll-behavior: contain; }
+    .activity-list.compact .event { padding: 7px 9px; }
+    .activity-list.compact .event code { display: none; }
+    .activity-list .event { cursor: pointer; grid-template-columns: 94px minmax(0, 1fr) auto; gap: 8px; padding: 9px; }
+    .activity-list .event h2 { margin: 0; font-size: 12px; }
+    .activity-list .event .event-copy { color: var(--muted); font-size: 11px; }
+    .activity-list .event.normal { border-color: rgba(124,198,106,.18); }
+    .activity-list .event.warning { border-color: rgba(217,154,61,.52); }
+    .activity-list .event.blocked, .activity-list .event.failed { border-color: rgba(223,107,85,.62); }
+    .activity-empty { padding: 22px 10px; color: var(--muted); text-align: center; }
+    .inspector-backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.54); display: none; }
+    .inspector-backdrop.open { display: block; }
+    .inspector { position: fixed; z-index: 21; top: 70px; right: 18px; width: min(430px, calc(100vw - 36px)); max-height: calc(100vh - 90px); overflow: auto; border: 1px solid #536247; border-radius: 8px; background: #10160f; box-shadow: 0 24px 60px rgba(0,0,0,.5); padding: 14px; }
+    .inspector-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .inspector h2 { margin: 0; font-size: 16px; }
+    .inspector-close { border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; padding: 4px 8px; }
+    .inspector-status { margin: 8px 0 12px; padding: 8px; border-radius: 6px; background: rgba(124,198,106,.08); color: var(--bone); font-size: 12px; }
+    .inspector section { padding: 0; margin-top: 12px; }
+    .inspector section h3 { margin: 0 0 6px; font-size: 12px; color: var(--amber); }
+    .inspector code { display: block; white-space: pre-wrap; }
     .health-strip {
       display: grid;
       grid-template-columns: repeat(6, minmax(120px, 1fr));
@@ -2279,6 +2455,12 @@ function html() {
       color: var(--muted);
       font-size: 12px;
     }
+    .sync-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+    .sync-actions button { height: 30px; border: 1px solid #536247; border-radius: 6px; background: #111810; color: var(--text); padding: 4px 10px; font: inherit; cursor: pointer; }
+    .sync-actions button:hover, .sync-actions button:focus-visible { border-color: var(--amber); outline: none; }
+    .sync-actions button:disabled { cursor: wait; opacity: .55; }
+    .sync-toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .sync-notice { min-height: 18px; margin: 8px 0 0; color: var(--muted); font-size: 12px; }
     .list {
       display: grid;
       gap: 7px;
@@ -2304,6 +2486,10 @@ function html() {
       #graph-search, .graph-filter { width: 100%; }
       .graph-wrap { height: clamp(420px, 62vh, 580px); min-height: 420px; }
       .details { grid-template-columns: 1fr; }
+      .shell-intro { grid-template-columns: 1fr; }
+      .connection-state { text-align: left; }
+      .activity-list { max-height: 300px; }
+      .inspector { top: auto; right: 10px; bottom: 10px; left: 10px; width: auto; max-height: min(64vh, 520px); }
     }
   </style>
 </head>
@@ -2313,20 +2499,30 @@ function html() {
     <div class="toolbar"><span class="dot"></span><span id="status">connecting</span><code id="root"></code></div>
   </header>
   <nav class="health-strip" aria-label="DinoBrain OS health">
-    <div id="chip-active" class="chip"><strong>Active</strong><span>--</span></div>
-    <div id="chip-readiness" class="chip"><strong>Readiness</strong><span>--</span></div>
-    <div id="chip-v2" class="chip"><strong>OS v2</strong><span>--</span></div>
-    <div id="chip-mcp" class="chip"><strong>MCP</strong><span>--</span></div>
-    <div id="chip-read" class="chip"><strong>Read Trace</strong><span>--</span></div>
-    <div id="chip-lifecycle" class="chip"><strong>Lifecycle</strong><span>--</span></div>
-    <div id="chip-source" class="chip"><strong>Sources</strong><span>--</span></div>
-    <div id="chip-recall" class="chip"><strong>Recall</strong><span>--</span></div>
-    <div id="chip-compounding" class="chip"><strong>Compounding</strong><span>--</span></div>
-    <div id="chip-graph" class="chip"><strong>Graph Health</strong><span>--</span></div>
-    <div id="chip-sync" class="chip"><strong>GitHub Sync</strong><span>--</span></div>
+    <div id="chip-active" class="chip" role="button" tabindex="0" aria-label="현재 작업 상세"><strong>Active</strong><span>--</span></div>
+    <div id="chip-readiness" class="chip" role="button" tabindex="0" aria-label="준비 상태 상세"><strong>Readiness</strong><span>--</span></div>
+    <div id="chip-v2" class="chip" role="button" tabindex="0" aria-label="OS v2 상세"><strong>OS v2</strong><span>--</span></div>
+    <div id="chip-mcp" class="chip" role="button" tabindex="0" aria-label="MCP 상세"><strong>MCP</strong><span>--</span></div>
+    <div id="chip-read" class="chip" role="button" tabindex="0" aria-label="읽기 추적 상세"><strong>Read</strong><span>--</span></div>
+    <div id="chip-lifecycle" class="chip" role="button" tabindex="0" aria-label="노드 수명주기 상세"><strong>Nodes</strong><span>--</span></div>
+    <div id="chip-source" class="chip" role="button" tabindex="0" aria-label="출처 계보 상세"><strong>Sources</strong><span>--</span></div>
+    <div id="chip-recall" class="chip" role="button" tabindex="0" aria-label="행동 회상 상세"><strong>Recall</strong><span>--</span></div>
+    <div id="chip-compounding" class="chip" role="button" tabindex="0" aria-label="통제된 누적 상세"><strong>Compound</strong><span>--</span></div>
+    <div id="chip-graph" class="chip" role="button" tabindex="0" aria-label="그래프 상태 상세"><strong>Graph</strong><span>--</span></div>
+    <div id="chip-sync" class="chip" role="button" tabindex="0" aria-label="동기화 상태 상세"><strong>Sync</strong><span>--</span></div>
   </nav>
   <main>
     <section>
+      <div class="shell-intro" id="overview-surface" data-surface-target="overview" tabindex="-1">
+        <div><h2>현재 OS 상태</h2><p id="overview-summary">로컬 상태를 불러오는 중입니다.</p></div>
+        <div class="connection-state"><strong id="connection-label">연결 중</strong><span id="connection-detail">로컬 Observatory에 연결하고 있습니다.</span></div>
+      </div>
+      <nav class="surface-nav" aria-label="DinoBrain surfaces">
+        <button type="button" data-surface-nav="overview" data-surface-target="overview-surface">Overview</button>
+        <button type="button" data-surface-nav="activity" data-surface-target="activity-surface">Activity</button>
+        <button type="button" data-surface-nav="knowledge" data-surface-target="knowledge-surface">Knowledge</button>
+        <button type="button" data-surface-nav="settings" data-surface-target="settings-surface">Settings</button>
+      </nav>
       <div class="stats">
         <div class="stat"><strong id="stat-events">0</strong><span>events</span></div>
         <div class="stat"><strong id="stat-tasks">0</strong><span>tasks</span></div>
@@ -2334,45 +2530,25 @@ function html() {
         <div class="stat"><strong id="stat-audits">0</strong><span>memory audits</span></div>
         <div class="stat"><strong id="stat-active">0</strong><span>active tasks</span></div>
       </div>
-      <div class="graph-panel">
+      <div class="activity-panel" id="activity-surface" data-surface-target="activity" tabindex="-1" aria-labelledby="activity-title">
+        <div class="activity-head"><h2 id="activity-title">Activity <span class="activity-meta" id="activity-count">0개</span></h2><span class="activity-meta" id="activity-last-update">업데이트 대기 중</span></div>
+        <div class="activity-controls" role="toolbar" aria-label="Activity controls">
+          <button type="button" class="activity-control active" data-activity-filter="all">All</button><button type="button" class="activity-control" data-activity-filter="task">Task</button><button type="button" class="activity-control" data-activity-filter="hook">Hook</button><button type="button" class="activity-control" data-activity-filter="memory">Memory</button><button type="button" class="activity-control" data-activity-filter="sync">Sync</button><button type="button" class="activity-control" data-activity-filter="attention">Warning/Error</button>
+          <input class="activity-search" id="activity-search" type="search" placeholder="활동 검색" aria-label="활동 검색">
+          <button type="button" class="activity-control" id="activity-pause">Pause</button><button type="button" class="activity-control active" id="activity-follow">Follow tail</button><button type="button" class="activity-control" id="activity-mode">Expanded</button><button type="button" class="activity-control" id="activity-copy-visible">Copy visible</button><button type="button" class="activity-control" id="activity-clear">Clear view</button>
+        </div>
+        <div id="activity-list" class="activity-list" aria-live="polite"><div class="activity-empty">활동을 불러오는 중입니다…</div></div>
+      </div>
+      <div class="graph-panel" id="knowledge-surface" data-surface-target="knowledge" tabindex="-1">
         <div class="graph-head">
           <h2>Knowledge Graph</h2>
-          <div class="graph-meta">
-            <span id="graph-stats">0 nodes / 0 edges</span>
-            <span class="graph-legend">
-              <span class="legend-chip"><span class="legend-dot" style="background:#e6dcc2"></span>record</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#4fb6a4"></span>folder</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#7cc66a"></span>tag</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#d99a3d"></span>core</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#ffcc66"></span>active</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#c7d2fe"></span>trace</span>
-              <span class="legend-chip"><span class="legend-dot" style="background:#f3e7c7"></span>memory</span>
-            </span>
-            <select id="graph-lane" class="graph-filter" title="Filter by operational lane"><option value="all">All lanes</option></select>
-            <select id="graph-relation" class="graph-filter" title="Filter by relation"><option value="all">All relations</option></select>
-            <select id="graph-lifecycle" class="graph-filter" title="Filter by lifecycle"><option value="all">All lifecycle</option></select>
-            <select id="graph-provenance" class="graph-filter" title="Filter by provenance"><option value="all">All provenance</option></select>
-            <input id="graph-search" placeholder="Search">
-            <button id="graph-trace" class="graph-command" type="button" title="Trace selected node evidence">Trace</button>
-            <button id="graph-reset" class="graph-command" type="button" title="Reset graph filters">Reset</button>
-          </div>
+          <span class="muted">기억에서 작업까지 이어진 근거 관계</span>
         </div>
-        <div class="graph-wrap">
-          <canvas id="wiki-graph"></canvas>
-          <div class="graph-cluster-label live">Live loop</div>
-          <div class="graph-cluster-label wiki">Wiki</div>
-          <div class="graph-cluster-label sources">Sources</div>
-          <div class="graph-cluster-label projects">Projects</div>
-          <div class="graph-cluster-label instances">Memory</div>
-          <div class="graph-cluster-label context">Context</div>
-          <div class="graph-cluster-label operations">Operations</div>
-          <div class="graph-cluster-label tags">Tags</div>
-          <div id="graph-focus"></div>
-        </div>
+        <div id="observatory-graph-host" aria-label="DinoBrain knowledge graph"></div>
       </div>
       <div id="timeline" class="timeline"></div>
     </section>
-    <section class="details">
+    <section class="details" id="settings-surface" data-surface-target="settings" tabindex="-1">
       <div class="block">
         <h2>Completion Readiness</h2>
         <div id="readiness-summary" class="kv"></div>
@@ -2419,6 +2595,16 @@ function html() {
         <div id="sync-risk" class="kv"></div>
       </div>
       <div class="block">
+        <h2>Bounded GitHub Sync</h2>
+        <div id="sync-scheduler" class="kv"></div>
+        <div id="sync-queue" class="list"></div>
+        <div class="sync-actions">
+          <button id="sync-now" type="button">Sync now</button>
+          <label class="sync-toggle"><input id="sync-automatic" type="checkbox"> Automatic sync</label>
+        </div>
+        <p id="sync-action-status" class="sync-notice" aria-live="polite"></p>
+      </div>
+      <div class="block">
         <h2>Latest Task</h2>
         <div id="latest-task" class="kv"></div>
       </div>
@@ -2441,6 +2627,15 @@ function html() {
       </div>
     </section>
   </main>
+  <div id="inspector-backdrop" class="inspector-backdrop" aria-hidden="true"></div>
+  <aside id="inspector" class="inspector" role="dialog" aria-modal="true" aria-labelledby="inspector-title" hidden>
+    <div class="inspector-head"><div><h2 id="inspector-title">상세 정보</h2><div id="inspector-subtitle" class="muted"></div></div><button id="inspector-close" class="inspector-close" type="button" aria-label="상세 닫기">닫기</button></div>
+    <div id="inspector-status" class="inspector-status"></div>
+    <section><h3>현재 값</h3><div id="inspector-values" class="kv"></div></section>
+    <section><h3>왜 이렇게 표시되나요?</h3><p id="inspector-reason" class="muted"></p></section>
+    <section><h3>근거 경로 / 관련 이벤트</h3><div id="inspector-evidence" class="list"></div></section>
+    <section><h3>다음 행동</h3><p id="inspector-next" class="muted"></p></section>
+  </aside>
   <script>
     const statusEl = document.getElementById("status");
     const rootEl = document.getElementById("root");
@@ -2465,6 +2660,11 @@ function html() {
     const behaviorRecallFindingsEl = document.getElementById("behavior-recall-findings");
     const controlledCompoundingEl = document.getElementById("controlled-compounding");
     const syncRiskEl = document.getElementById("sync-risk");
+    const syncSchedulerEl = document.getElementById("sync-scheduler");
+    const syncQueueEl = document.getElementById("sync-queue");
+    const syncNowEl = document.getElementById("sync-now");
+    const syncAutomaticEl = document.getElementById("sync-automatic");
+    const syncActionStatusEl = document.getElementById("sync-action-status");
     const osV2El = document.getElementById("os-v2");
     const chips = {
       active: document.getElementById("chip-active"),
@@ -2479,8 +2679,34 @@ function html() {
       graph: document.getElementById("chip-graph"),
       sync: document.getElementById("chip-sync"),
     };
+    const activityListEl = document.getElementById("activity-list");
+    const activityCountEl = document.getElementById("activity-count");
+    const activityLastUpdateEl = document.getElementById("activity-last-update");
+    const activitySearchEl = document.getElementById("activity-search");
+    const connectionLabelEl = document.getElementById("connection-label");
+    const connectionDetailEl = document.getElementById("connection-detail");
+    const overviewSummaryEl = document.getElementById("overview-summary");
+    const inspectorEl = document.getElementById("inspector");
+    const inspectorBackdropEl = document.getElementById("inspector-backdrop");
+    const inspectorTitleEl = document.getElementById("inspector-title");
+    const inspectorSubtitleEl = document.getElementById("inspector-subtitle");
+    const inspectorStatusEl = document.getElementById("inspector-status");
+    const inspectorValuesEl = document.getElementById("inspector-values");
+    const inspectorReasonEl = document.getElementById("inspector-reason");
+    const inspectorEvidenceEl = document.getElementById("inspector-evidence");
+    const inspectorNextEl = document.getElementById("inspector-next");
+    let latestState = null;
+    let activityEvents = [];
+    let activityFilter = "all";
+    let activityPaused = false;
+    let activityFollowing = true;
+    let activityExpanded = true;
+    let activityClearedAt = 0;
+    let activitySignature = "";
+    let lastInvoker = null;
+    const legacyGraphEnabled = false;
     const graphCanvas = document.getElementById("wiki-graph");
-    const graphCtx = graphCanvas.getContext("2d");
+    const graphCtx = graphCanvas?.getContext("2d") ?? null;
     const graphStatsEl = document.getElementById("graph-stats");
     const graphFocusEl = document.getElementById("graph-focus");
     const graphSearchEl = document.getElementById("graph-search");
@@ -2504,6 +2730,242 @@ function html() {
       const text = String(value ?? "").replace(/\\s+/g, " ").trim();
       return text.length > max ? text.slice(0, max - 3) + "..." : text;
     };
+    const chipPlain = {
+      active: { title: "현재 작업", why: "실행 중인 task가 있으면 작업 루프가 열려 있는 상태입니다.", next: "작업이 끝날 때까지 Activity에서 진행 상황을 확인하세요." },
+      readiness: { title: "준비 상태", why: "완료 조건과 차단 항목을 합쳐 현재 준비 수준을 계산합니다.", next: "차단 항목이 있으면 해당 근거 경로를 먼저 검토하세요." },
+      v2: { title: "OS v2", why: "OS v2 게이트와 행동 평가의 최신 결과를 보여줍니다.", next: "게이트가 차단이면 Context Pack과 gate report를 확인하세요." },
+      mcp: { title: "MCP 관찰", why: "최근 관찰된 이벤트 수로 로컬 연결이 활동 중인지 표시합니다.", next: "연결이 끊겼다면 잠시 기다리거나 Observatory 서버 상태를 확인하세요." },
+      read: { title: "읽기 추적", why: "최근 Context Pack과 trace에서 실제로 사용된 기억을 요약합니다.", next: "사용된 기억이 없으면 다음 task의 Context Pack 생성을 확인하세요." },
+      lifecycle: { title: "노드 수명주기", why: "accepted/review/cold 노드와 lifecycle blocker를 집계합니다.", next: "보류 항목은 승인 전까지 자동으로 사용되지 않습니다." },
+      source: { title: "출처 계보", why: "검증된 source chunk와 연결된 claim의 상태를 집계합니다.", next: "blocker가 있으면 표시된 source 경로를 검토하세요." },
+      recall: { title: "행동 회상", why: "과거 행동 증거가 현재 회상 파이프라인에 연결됐는지 보여줍니다.", next: "오류가 있으면 recall finding의 근거 파일을 확인하세요." },
+      compounding: { title: "통제된 누적", why: "검토를 통과한 규칙만 누적·검색되는지 표시합니다.", next: "proposal은 독립 검토 전까지 적용하지 마세요." },
+      graph: { title: "Knowledge Graph", why: "기억·근거 연결 그래프의 인덱스 상태와 크기를 표시합니다.", next: "그래프가 비어 있으면 Graph 화면의 근거 상태와 index 경로를 확인하세요." },
+      sync: { title: "GitHub 동기화", why: "현재 작업 트리의 dirty/untracked 위험을 읽기 전용으로 보여줍니다.", next: "자동 push 대신 task-scoped 안전 sync 정책을 확인하세요." },
+    };
+    const pathValues = (value) => {
+      const paths = [];
+      const walk = (item, key = "") => {
+        if (!item || paths.length >= 8) return;
+        if (typeof item === "string" && (key.toLowerCase().includes("path") || item.includes(".dino/") || item.includes("reports/"))) paths.push(item);
+        else if (Array.isArray(item)) item.forEach((child) => walk(child, key));
+        else if (typeof item === "object") Object.entries(item).forEach(([childKey, child]) => walk(child, childKey));
+      };
+      walk(value);
+      return [...new Set(paths)];
+    };
+    function flattenScalars(value, prefix = "", rows = [], depth = 0) {
+      if (rows.length >= 30 || depth > 4) return rows;
+      if (value === null || value === undefined || value === "") {
+        if (prefix) rows.push([prefix, "없음"]);
+        return rows;
+      }
+      if (typeof value !== "object") {
+        rows.push([prefix || "값", compact(value, 220)]);
+        return rows;
+      }
+      const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value);
+      if (!entries.length && prefix) rows.push([prefix, "값 없음"]);
+      for (const [key, child] of entries) {
+        if (rows.length >= 30) break;
+        flattenScalars(child, prefix ? prefix + "." + key : key, rows, depth + 1);
+      }
+      return rows;
+    }
+    function eventSeverity(event) {
+      const explicitKeys = ["status", "outcome", "action_decision", "event", "severity", "level", "result"];
+      const explicit = explicitKeys.map((key) => event?.[key]).filter((value) => value !== undefined && value !== null).map((value) => String(value).toLowerCase()).join(" ");
+      const text = explicit || "";
+      if (/(blocked|block|quarantine)/.test(text)) return "blocked";
+      if (/(failed|failure|error|denied)/.test(text)) return "failed";
+      if (/(warning|warn|pending|degraded|at_risk)/.test(text)) return "warning";
+      if (explicit) return "normal";
+      const fallback = JSON.stringify(event).toLowerCase();
+      if (/(blocked|block|quarantine)/.test(fallback) && !/blocked"\s*:\s*false/.test(fallback)) return "blocked";
+      if (/(failed|failure|error|denied)/.test(fallback)) return "failed";
+      if (/(warning|warn|pending|degraded|at_risk)/.test(fallback)) return "warning";
+      return "normal";
+    }
+    function eventCategory(event) {
+      const name = String(event?.event ?? "").toLowerCase();
+      if (name.includes("sync")) return "sync";
+      if (name.includes("memory") || name.includes("context_pack") || name.includes("trace")) return "memory";
+      if (name.includes("hook") || name.includes("preflight") || name.includes("codex")) return "hook";
+      if (name.includes("task")) return "task";
+      return eventSeverity(event) === "normal" ? "other" : "attention";
+    }
+    function openInspector(kind, value, invoker = null) {
+      const definition = chipPlain[kind] || { title: "Activity 이벤트", why: "구조화된 로컬 이벤트의 상세 정보입니다.", next: "추가 조치가 필요하면 원본 근거를 확인하세요." };
+      lastInvoker = invoker || document.activeElement;
+      inspectorTitleEl.textContent = definition.title;
+      inspectorSubtitleEl.textContent = kind === "event" ? eventTitle(value) : "공유 상태 inspector";
+      const status = kind === "event" ? eventSeverity(value) : (value?.status || value?.operational_status || "unknown");
+      inspectorStatusEl.textContent = kind === "event" ? (status === "normal" ? "정상 이벤트" : status === "warning" ? "주의 이벤트" : status === "blocked" ? "차단 이벤트" : "실패 이벤트") + " · " + formatTime(value?.at) : "현재 상태: " + String(status);
+      const rows = kind === "event"
+        ? [["event", eventTitle(value)], ["time", value?.at], ["source", value?._path], ["detail", eventDetail(value)]]
+        : flattenScalars(value);
+      kv(inspectorValuesEl, rows.length ? rows : [["상태", "값 없음"]]);
+      inspectorReasonEl.textContent = definition.why + (kind === "event" ? " 이벤트 종류는 " + eventCategory(value) + "로 분류했습니다." : "");
+      const evidence = kind === "event" ? pathValues(value) : pathValues(value);
+      inspectorEvidenceEl.innerHTML = evidence.length ? evidence.map((item) => "<div class=\\\"item\\\"><code>" + esc(item) + "</code></div>").join("") : '<p class="muted">표시할 근거 경로가 없습니다.</p>';
+      inspectorNextEl.textContent = definition.next;
+      inspectorEl.hidden = false;
+      inspectorBackdropEl.classList.add("open");
+      inspectorBackdropEl.setAttribute("aria-hidden", "false");
+      window.setTimeout(() => document.getElementById("inspector-close")?.focus(), 0);
+    }
+    function closeInspector() {
+      inspectorEl.hidden = true;
+      inspectorBackdropEl.classList.remove("open");
+      inspectorBackdropEl.setAttribute("aria-hidden", "true");
+      if (lastInvoker && typeof lastInvoker.focus === "function") lastInvoker.focus();
+    }
+    const chipData = {
+      active: () => latestState?.tasks?.find((item) => item.status === "started") || latestState?.summary || {},
+      readiness: () => latestState?.readiness || latestState?.summary || {},
+      v2: () => latestState?.os_v2 || {},
+      mcp: () => ({ summary: latestState?.summary, events: latestState?.events?.slice(0, 5) }),
+      read: () => latestState?.read_trace || {},
+      lifecycle: () => latestState?.lifecycle || {},
+      source: () => latestState?.source_lineage || {},
+      recall: () => ({ ...(latestState?.behavior_recall_migration || {}), current: latestState?.behavior_recall || {} }),
+      compounding: () => latestState?.controlled_compounding || {},
+      graph: () => latestState?.graph_health || {},
+      sync: () => ({ scheduler: latestState?.sync_scheduler || {}, repository: latestState?.sync_risk || {} }),
+    };
+    Object.entries(chips).forEach(([kind, chip]) => {
+      chip.addEventListener("click", () => openInspector(kind, chipData[kind](), chip));
+      chip.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openInspector(kind, chipData[kind](), chip); } });
+    });
+    document.getElementById("inspector-close").addEventListener("click", closeInspector);
+    inspectorBackdropEl.addEventListener("click", closeInspector);
+    window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !inspectorEl.hidden) closeInspector(); });
+    window.addEventListener("dinobrain-graph-inspect", (event) => {
+      openInspector("graph", event.detail || {}, document.getElementById("knowledge-surface"));
+    });
+    document.querySelectorAll("[data-surface-nav]").forEach((button) => button.addEventListener("click", () => {
+      const target = document.getElementById(button.dataset.surfaceTarget);
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.setTimeout(() => target.focus({ preventScroll: true }), 260);
+    }));
+    function activityKey(event) { return String(event?.event_key || event?._path || "") + "|" + String(event?.at || "") + "|" + String(event?.event || ""); }
+    function getVisibleActivity() {
+      const query = String(activitySearchEl.value || "").trim().toLowerCase();
+      return activityEvents.filter((event) => {
+        if (activityClearedAt && Date.parse(event.at || "") <= activityClearedAt) return false;
+        const category = eventCategory(event);
+        if (activityFilter === "attention" && !["warning", "blocked", "failed"].includes(eventSeverity(event))) return false;
+        if (activityFilter !== "all" && activityFilter !== "attention" && category !== activityFilter) return false;
+        return !query || JSON.stringify(event).toLowerCase().includes(query);
+      }).slice(-500);
+    }
+    function renderActivity() {
+      const visible = getVisibleActivity();
+      activityCountEl.textContent = visible.length + "개 / 최대 500개";
+      activityListEl.classList.toggle("compact", !activityExpanded);
+      activityListEl.innerHTML = visible.length ? visible.map((event) => {
+        const severity = eventSeverity(event);
+        return "<article class=\\\"event " + severity + "\\\" tabindex=\\\"0\\\" data-activity-key=\\\"" + esc(activityKey(event)) + "\\\"><time>" + esc(formatTime(event.at)) + "</time><div><h2><span class=\\\"badge\\\">" + esc(eventTitle(event)) + "</span></h2><div class=\\\"event-copy\\\">" + esc(compact(eventDetail(event), 220)) + "</div></div><button type=\\\"button\\\" class=\\\"activity-control\\\" data-copy-event=\\\"" + esc(activityKey(event)) + "\\\">Copy</button></article>";
+      }).join("") : '<div class="activity-empty">' + (activityPaused ? "일시정지 중입니다. Resume을 누르면 새 활동을 확인합니다." : "표시할 활동이 없습니다. 필터를 바꾸거나 잠시 기다려 주세요.") + "</div>";
+      activityListEl.querySelectorAll("[data-activity-key]").forEach((row) => {
+        const event = visible.find((item) => activityKey(item) === row.dataset.activityKey);
+        row.addEventListener("click", (clickEvent) => { if (clickEvent.target.closest("button")) return; openInspector("event", event, row); });
+        row.addEventListener("keydown", (keyEvent) => { if ((keyEvent.key === "Enter" || keyEvent.key === " ") && !keyEvent.target.closest("button")) { keyEvent.preventDefault(); openInspector("event", event, row); } });
+      });
+      activityListEl.querySelectorAll("[data-copy-event]").forEach((button) => button.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const item = activityEvents.find((candidate) => activityKey(candidate) === button.dataset.copyEvent);
+        try { await navigator.clipboard.writeText(JSON.stringify(item)); button.textContent = "Copied"; window.setTimeout(() => { button.textContent = "Copy"; }, 900); } catch { button.textContent = "Copy unavailable"; }
+      }));
+      if (activityFollowing) activityListEl.scrollTop = activityListEl.scrollHeight;
+    }
+    function mergeActivity(events) {
+      const byKey = new Map(activityEvents.map((event) => [activityKey(event), event]));
+      (Array.isArray(events) ? events : []).forEach((event) => byKey.set(activityKey(event), event));
+      activityEvents = [...byKey.values()].sort((a, b) => String(a.at || "").localeCompare(String(b.at || ""))).slice(-500);
+      const nextSignature = activityEvents.map((event) => activityKey(event) + ":" + JSON.stringify(event)).join("\u001f");
+      if (nextSignature === activitySignature) return;
+      activitySignature = nextSignature;
+      renderActivity();
+    }
+    async function tickActivity() {
+      if (!activityPaused) {
+        try {
+          const response = await fetch("/api/activity?limit=500", { cache: "no-store" });
+          if (!response.ok) throw new Error("activity request failed");
+          const payload = await response.json();
+          mergeActivity(payload.events);
+          activityLastUpdateEl.textContent = "마지막 업데이트 " + formatTime(payload.generated_at);
+        } catch {
+          activityLastUpdateEl.textContent = "재연결 대기 중";
+        }
+      }
+      window.setTimeout(tickActivity, 1500);
+    }
+    document.querySelectorAll("[data-activity-filter]").forEach((button) => button.addEventListener("click", () => {
+      document.querySelectorAll("[data-activity-filter]").forEach((item) => item.classList.toggle("active", item === button));
+      activityFilter = button.dataset.activityFilter;
+      renderActivity();
+    }));
+    activitySearchEl.addEventListener("input", renderActivity);
+    document.getElementById("activity-pause").addEventListener("click", (event) => { activityPaused = !activityPaused; event.currentTarget.textContent = activityPaused ? "Resume" : "Pause"; event.currentTarget.classList.toggle("active", activityPaused); renderActivity(); });
+    document.getElementById("activity-follow").addEventListener("click", (event) => { activityFollowing = !activityFollowing; event.currentTarget.classList.toggle("active", activityFollowing); });
+    document.getElementById("activity-mode").addEventListener("click", (event) => { activityExpanded = !activityExpanded; event.currentTarget.textContent = activityExpanded ? "Compact" : "Expanded"; renderActivity(); });
+    document.getElementById("activity-clear").addEventListener("click", () => { activityClearedAt = Date.now(); renderActivity(); });
+    document.getElementById("activity-copy-visible").addEventListener("click", async (event) => { try { await navigator.clipboard.writeText(JSON.stringify(getVisibleActivity())); event.currentTarget.textContent = "Copied"; window.setTimeout(() => { event.currentTarget.textContent = "Copy visible"; }, 900); } catch { event.currentTarget.textContent = "Copy unavailable"; } });
+    syncNowEl.addEventListener("click", async () => {
+      if (currentLocalOnly?.enabled) {
+        syncActionStatusEl.textContent = "Local-only 모드에서는 원격 push가 차단됩니다.";
+        return;
+      }
+      syncNowEl.disabled = true;
+      syncActionStatusEl.textContent = "검증된 task 범위에서 동기화를 확인하고 있습니다.";
+      try {
+        const response = await fetch("/api/sync/run", { method: "POST", headers: { "x-dinobrain-action": "observatory" }, cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || "sync request failed");
+        const reasons = Array.isArray(payload.reason_codes) ? payload.reason_codes.join(", ") : "";
+        syncActionStatusEl.textContent = payload.executed
+          ? "동기화 결과: " + String(payload.outcome || "완료")
+          : "실행하지 않음: " + (reasons || "안전한 대기 파일이 없습니다.");
+        await tick();
+      } catch (error) {
+        syncActionStatusEl.textContent = "동기화 실패: " + compact(error?.message || error, 160);
+      } finally {
+        syncNowEl.disabled = false;
+      }
+    });
+    syncAutomaticEl.addEventListener("change", async () => {
+      const requested = syncAutomaticEl.checked;
+      if (currentLocalOnly?.enabled) {
+        syncAutomaticEl.checked = false;
+        syncActionStatusEl.textContent = "Local-only 모드에서는 자동 원격 동기화를 켤 수 없습니다.";
+        return;
+      }
+      syncAutomaticEl.disabled = true;
+      syncActionStatusEl.textContent = requested ? "자동 동기화를 켜는 중입니다." : "자동 동기화를 끄는 중입니다.";
+      try {
+        const response = await fetch("/api/sync/automatic", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-dinobrain-action": "observatory" },
+          body: JSON.stringify({ enabled: requested }),
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || "sync setting failed");
+        syncActionStatusEl.textContent = requested
+          ? "자동 동기화가 켜졌습니다. 6시간 병합과 10분 유휴 조건을 지킵니다."
+          : "자동 동기화가 꺼졌습니다. 로컬 기록과 수동 Sync now는 유지됩니다.";
+        await tick();
+      } catch (error) {
+        syncAutomaticEl.checked = !requested;
+        syncActionStatusEl.textContent = "설정 변경 실패: " + compact(error?.message || error, 160);
+      } finally {
+        syncAutomaticEl.disabled = false;
+      }
+    });
+    renderActivity();
+    tickActivity();
     function kv(target, rows) {
       target.innerHTML = rows.map(([key, value]) => \`<span>\${esc(key)}</span><code>\${esc(value ?? "--")}</code>\`).join("");
     }
@@ -2534,6 +2996,7 @@ function html() {
       return event.prompt_preview || event.audit_id || event.task_id || event.pack_id || event.trace_path || event.context_pack_trace || event.path || event.error || "";
     }
     function renderReadiness(readiness) {
+      latestState = { ...(latestState || {}), readiness };
       renderChip(
         chips.readiness,
         "Ready",
@@ -3151,11 +3614,12 @@ function html() {
       graphFocusEl.innerHTML = graphFocusHtml(focus, connected);
     }
     function animateGraph() {
+      if (!legacyGraphEnabled) return;
       stepGraph();
       drawGraph();
       requestAnimationFrame(animateGraph);
     }
-    graphSearchEl.addEventListener("input", () => {
+    if (legacyGraphEnabled) graphSearchEl.addEventListener("input", () => {
       graphSearch = graphSearchEl.value.trim().toLowerCase();
     });
     async function refreshGraphView(focusId = null) {
@@ -3176,37 +3640,49 @@ function html() {
         graphFetchInFlight = false;
       }
     }
-    for (const control of [graphLaneEl, graphRelationEl, graphLifecycleEl, graphProvenanceEl]) {
+    for (const control of legacyGraphEnabled ? [graphLaneEl, graphRelationEl, graphLifecycleEl, graphProvenanceEl] : []) {
       control.addEventListener("change", () => void refreshGraphView());
     }
-    graphTraceEl.addEventListener("click", () => {
+    if (legacyGraphEnabled) graphTraceEl.addEventListener("click", () => {
       if (graphSelected) void refreshGraphView(graphSelected);
     });
-    graphResetEl.addEventListener("click", () => {
+    if (legacyGraphEnabled) graphResetEl.addEventListener("click", () => {
       for (const control of [graphLaneEl, graphRelationEl, graphLifecycleEl, graphProvenanceEl]) control.value = "all";
       graphSelected = null;
       graphViewCustom = false;
       void refreshGraphView();
     });
-    graphCanvas.addEventListener("mousemove", (event) => {
+    if (legacyGraphEnabled) graphCanvas.addEventListener("mousemove", (event) => {
       const rect = graphCanvas.getBoundingClientRect();
       const dpr = Math.max(1, window.devicePixelRatio || 1);
       graphMouse = { x: (event.clientX - rect.left) * dpr, y: (event.clientY - rect.top) * dpr };
       graphCanvas.style.cursor = graphHoverNode() ? "pointer" : "default";
     });
-    graphCanvas.addEventListener("mouseleave", () => {
+    if (legacyGraphEnabled) graphCanvas.addEventListener("mouseleave", () => {
       graphMouse = { x: -9999, y: -9999 };
       graphCanvas.style.cursor = "default";
     });
-    graphCanvas.addEventListener("click", () => {
+    if (legacyGraphEnabled) graphCanvas.addEventListener("click", () => {
       const hovered = graphHoverNode();
       graphSelected = hovered ? (graphSelected === hovered.id ? null : hovered.id) : null;
     });
-    window.addEventListener("resize", graphSize);
-    requestAnimationFrame(animateGraph);
     let currentLocalOnly = null;
+    if (legacyGraphEnabled) {
+      window.addEventListener("resize", graphSize);
+      requestAnimationFrame(animateGraph);
+    }
     function render(data) {
+      latestState = data;
       statusEl.textContent = "live - " + formatTime(data.summary.generated_at);
+      connectionLabelEl.textContent = "연결됨";
+      connectionDetailEl.textContent = "최근 상태 " + formatTime(data.summary.generated_at) + " · Activity는 1.5초마다 확인합니다.";
+      const activeTaskCount = (data.tasks || []).filter((item) => item.status === "started").length;
+      const blockerCount = Number(data.readiness?.counts?.blockers || 0);
+      overviewSummaryEl.textContent = activeTaskCount
+        ? activeTaskCount + "개 작업이 진행 중입니다. " + (blockerCount ? blockerCount + "개 확인 항목이 있습니다." : "현재 차단 항목은 없습니다.")
+        : blockerCount
+          ? "진행 중인 작업은 없고 " + blockerCount + "개 확인 항목이 있습니다."
+          : "정상 연결됨 · 진행 중인 작업과 차단 항목이 없습니다.";
       rootEl.textContent = data.summary.data_root;
       document.getElementById("stat-events").textContent = data.summary.event_count;
       document.getElementById("stat-tasks").textContent = data.summary.task_count;
@@ -3223,6 +3699,8 @@ function html() {
       const syncRisk = data.sync_risk || {};
       const localOnly = data.local_only || {};
       currentLocalOnly = localOnly;
+      const syncScheduler = data.sync_scheduler || { automatic: {}, queued_items: [] };
+      const queuedSyncCount = Number(syncScheduler.queued_safe_file_count || 0) + Number(syncScheduler.queued_conditional_count || 0);
       const osV2 = data.os_v2 || { counts: {} };
       renderChip(
         chips.active,
@@ -3293,9 +3771,9 @@ function html() {
         renderChip(
           chips.sync,
           "Sync",
-          syncRisk.status || "--",
-          (syncRisk.dirty_count ?? 0) + " dirty / " + (syncRisk.untracked_count ?? 0) + " untracked",
-          healthTone(syncRisk.status),
+          syncScheduler.last_attempt?.outcome || (queuedSyncCount ? "queued" : "idle"),
+          queuedSyncCount + " queued · auto " + (syncScheduler.automatic?.enabled ? "on" : "off"),
+          syncScheduler.last_attempt?.outcome === "blocked" || syncScheduler.last_attempt?.outcome === "retry_required" ? "warning" : "ready",
         );
       }
       kv(osHealthEl, [
@@ -3434,6 +3912,31 @@ function html() {
         ["untracked", syncRisk.untracked_count],
         ["detail", Array.isArray(syncRisk.detail) ? syncRisk.detail.join(" | ") : syncRisk.detail],
       ]);
+      kv(syncSchedulerEl, [
+        ["automatic", syncScheduler.automatic?.enabled ? "enabled" : "disabled"],
+        ["cadence", (syncScheduler.automatic?.coalesce_hours ?? 6) + "h coalesce · " + (syncScheduler.automatic?.idle_minutes ?? 10) + "m idle"],
+        ["daily cap", (syncScheduler.automatic?.pushes_in_rolling_24h ?? 0) + " / " + (syncScheduler.automatic?.maximum_pushes_per_24h ?? 4)],
+        ["last success", syncScheduler.last_successful_sync ? new Date(syncScheduler.last_successful_sync).toLocaleString() : "none"],
+        ["last attempt", syncScheduler.last_attempt ? syncScheduler.last_attempt.outcome + " · " + syncScheduler.last_attempt.reason : "none"],
+        ["next automatic", syncScheduler.next_eligible_automatic_sync ? new Date(syncScheduler.next_eligible_automatic_sync).toLocaleString() : "not scheduled"],
+        ["queued safe", syncScheduler.queued_safe_file_count],
+        ["queued conditional", syncScheduler.queued_conditional_count],
+        ["blocked", syncScheduler.blocked_count],
+        ["branch", syncScheduler.branch],
+        ["remote parity", syncScheduler.remote_parity],
+        ["skip reasons", Array.isArray(syncScheduler.skip_reasons) ? syncScheduler.skip_reasons.join(", ") : ""],
+      ]);
+      syncQueueEl.innerHTML = Array.isArray(syncScheduler.queued_items) && syncScheduler.queued_items.length
+        ? syncScheduler.queued_items.slice(0, 8).map((item) => \`<div class="item"><code>\${esc(item.path)}</code><div class="muted">\${esc(item.task_id)} · \${esc(item.classification)} · eligible \${esc(new Date(item.eligible_at).toLocaleString())}</div></div>\`).join("")
+        : '<p class="muted">동기화 대기 파일이 없습니다.</p>';
+      syncAutomaticEl.checked = Boolean(syncScheduler.automatic?.enabled);
+      const remoteSyncBlocked = Boolean(localOnly.enabled || syncScheduler.push_policy === "blocked");
+      syncNowEl.disabled = remoteSyncBlocked;
+      syncAutomaticEl.disabled = remoteSyncBlocked;
+      if (remoteSyncBlocked) {
+        syncAutomaticEl.checked = false;
+        syncActionStatusEl.textContent = "Local-only 모드: 원격 push는 봉인되어 있고 로컬 기록과 암호화 백업만 유지됩니다.";
+      }
       timelineEl.innerHTML = data.events.map((event) => \`
         <article class="event \${esc(event.event)}">
           <time>\${esc(formatTime(event.at))}</time>
@@ -3490,11 +3993,14 @@ function html() {
         const response = await fetch("/api/snapshot", { cache: "no-store" });
         if (!response.ok) throw new Error("snapshot request failed: " + response.status);
         const snapshot = await response.json();
+        latestState = { ...snapshot.state, readiness: snapshot.readiness };
         render(snapshot.state);
-        if (!graphViewCustom) renderGraph(snapshot.graph);
+        window.dispatchEvent(new CustomEvent("dinobrain-graph-update", { detail: snapshot.graph }));
         renderReadiness(snapshot.readiness);
       } catch (error) {
         statusEl.textContent = "disconnected";
+        connectionLabelEl.textContent = "연결 끊김";
+        connectionDetailEl.textContent = "자동으로 다시 연결을 시도하고 있습니다.";
       } finally {
         pollInFlight = false;
         window.setTimeout(tick, pollIntervalMs);
@@ -3502,18 +4008,65 @@ function html() {
     }
     tick();
   </script>
+  <script type="module">
+    import { mountObservatoryGraph } from "/assets/observatory-graph.mjs";
+
+    const graphHost = document.getElementById("observatory-graph-host");
+    const graphWidget = mountObservatoryGraph(graphHost, {
+      graphUrl: "/api/graph",
+      subscribe(callback) {
+        const handler = (event) => callback(event.detail);
+        window.addEventListener("dinobrain-graph-update", handler);
+        return () => window.removeEventListener("dinobrain-graph-update", handler);
+      },
+      onEvidencePath(evidencePath, payload) {
+        window.dispatchEvent(new CustomEvent("dinobrain-graph-inspect", {
+          detail: { ...payload, evidence_path: evidencePath, status: payload?.status || "evidence" },
+        }));
+      },
+      onReindex(action) {
+        navigator.clipboard?.writeText(action.command).catch(() => undefined);
+        window.dispatchEvent(new CustomEvent("dinobrain-graph-inspect", {
+          detail: {
+            status: "action_available",
+            action: action.label,
+            command: action.command,
+            scope: action.scope,
+            next_action: "복사된 명령을 앱 폴더에서 실행하면 로컬 그래프 인덱스만 다시 만듭니다.",
+          },
+        }));
+      },
+    });
+    window.__dinobrainObservatoryGraph = graphWidget;
+  </script>
 </body>
 </html>`;
 }
 
-function sendJson(response, value) {
+function sendJson(response, value, statusCode = 200) {
   const body = JSON.stringify(value);
-  response.writeHead(200, {
+  response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(body, "utf8"),
   });
   response.end(body);
+}
+
+async function readSmallJsonBody(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 2048) throw new Error("request_body_too_large");
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function hasObservatoryActionHeader(request) {
+  return request.headers["x-dinobrain-action"] === "observatory";
 }
 
 const server = http.createServer(async (request, response) => {
@@ -3522,6 +4075,16 @@ const server = http.createServer(async (request, response) => {
   resourceCounters.http_peak_active = Math.max(resourceCounters.http_peak_active, resourceCounters.http_active);
   try {
     const requestUrl = new URL(request.url ?? "/", `http://${host}:${port}`);
+    if (requestUrl.pathname === "/assets/observatory-graph.mjs") {
+      const body = await fs.readFile(path.join(root, "scripts", "observatory-graph.mjs"));
+      response.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-store",
+        "content-length": body.length,
+      });
+      response.end(body);
+      return;
+    }
     if (requestUrl.pathname === "/api/health") {
       const [graphHealth, readiness] = await Promise.all([readGraphHealth(), getReadiness()]);
       sendJson(response, {
@@ -3547,13 +4110,61 @@ const server = http.createServer(async (request, response) => {
           source_stat_ttl_ms: sourceStatTtlMs,
           process_memory: process.memoryUsage(),
         },
-        endpoints: ["/api/health", "/api/snapshot", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health"],
+        endpoints: ["/api/health", "/api/snapshot", "/api/activity", "/api/state", "/api/readiness", "/api/graph", "/api/graph-health", "/api/sync-state", "/api/sync/run", "/api/sync/automatic"],
       });
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/sync-state") {
+      if (request.method !== "GET") {
+        sendJson(response, { ok: false, error: "method_not_allowed" }, 405);
+        return;
+      }
+      sendJson(response, await readBoundedSyncState());
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/sync/run") {
+      if (request.method !== "POST" || !hasObservatoryActionHeader(request)) {
+        sendJson(response, { ok: false, error: "observatory_action_required" }, 403);
+        return;
+      }
+      if (localOnlyStatus(dataRoot).enabled === true) {
+        sendJson(response, { ok: false, outcome: "blocked", error: "local_only_remote_push_disabled" }, 409);
+        return;
+      }
+      sendJson(response, await runSyncScheduler("manual"));
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/sync/automatic") {
+      if (request.method !== "POST" || !hasObservatoryActionHeader(request)) {
+        sendJson(response, { ok: false, error: "observatory_action_required" }, 403);
+        return;
+      }
+      const payload = await readSmallJsonBody(request);
+      if (typeof payload.enabled !== "boolean") {
+        sendJson(response, { ok: false, error: "enabled_boolean_required" }, 400);
+        return;
+      }
+      if (payload.enabled && localOnlyStatus(dataRoot).enabled === true) {
+        sendJson(response, { ok: false, automatic_enabled: false, error: "local_only_remote_push_disabled" }, 409);
+        return;
+      }
+      const state = await setSyncSchedulerAutomaticEnabled({ dataRoot, enabled: payload.enabled });
+      invalidateObservatoryStateCaches();
+      automaticSyncNextProbeAt = 0;
+      sendJson(response, { ok: true, automatic_enabled: state.automatic_enabled, immediate_push: false });
       return;
     }
 
     if (requestUrl.pathname === "/api/snapshot") {
       sendJson(response, await getSnapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/activity") {
+      sendJson(response, await readActivityEvents(requestUrl.searchParams.get("limit") ?? 500));
       return;
     }
 
@@ -3600,6 +4211,12 @@ const server = http.createServer(async (request, response) => {
       "cache-control": "no-store",
     });
     response.end(html());
+  } catch (error) {
+    if (!response.headersSent) {
+      sendJson(response, { ok: false, error: String(error?.message || error).slice(0, 240) }, 500);
+    } else if (!response.writableEnded) {
+      response.end();
+    }
   } finally {
     resourceCounters.http_active = Math.max(0, resourceCounters.http_active - 1);
   }
@@ -3608,3 +4225,9 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(JSON.stringify({ ok: true, url: `http://${host}:${port}/`, data_root: dataRoot }, null, 2));
 });
+
+const automaticSyncTimer = setInterval(() => {
+  void maybeRunAutomaticSync();
+}, 60_000);
+automaticSyncTimer.unref();
+void maybeRunAutomaticSync();

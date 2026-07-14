@@ -58,6 +58,15 @@ internal static class Program
             return true;
         }
 
+        var launcherIndex = Array.FindIndex(args, arg => string.Equals(arg, "--extract-observatory-launcher", StringComparison.OrdinalIgnoreCase));
+        if (launcherIndex >= 0)
+        {
+            if (launcherIndex + 1 >= args.Length)
+                throw new InvalidOperationException("--extract-observatory-launcher requires an output path.");
+            InstallerResources.ExtractObservatoryLauncher(args[launcherIndex + 1]);
+            return true;
+        }
+
         return false;
     }
 
@@ -73,6 +82,15 @@ internal static class Program
 
 internal static class InstallerResources
 {
+    internal static void ExtractObservatoryLauncher(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath));
+        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+        using var stream = OpenResource("observatory-launcher.exe");
+        using var file = File.Create(destinationPath);
+        stream.CopyTo(file);
+    }
+
     internal static void ExtractInstallScript(string destinationPath)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(destinationPath));
@@ -81,23 +99,23 @@ internal static class InstallerResources
             Directory.CreateDirectory(directory);
         }
 
-        using var stream = OpenInstallScript();
+        using var stream = OpenResource("install.ps1");
         using var file = File.Create(destinationPath);
         stream.CopyTo(file);
     }
 
-    private static Stream OpenInstallScript()
+    private static Stream OpenResource(string expectedName)
     {
         var assembly = Assembly.GetExecutingAssembly();
         var resourceName = assembly
             .GetManifestResourceNames()
-            .FirstOrDefault(name => string.Equals(name, "install.ps1", StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(name => string.Equals(name, expectedName, StringComparison.OrdinalIgnoreCase));
         if (resourceName is null)
         {
-            throw new InvalidOperationException("Embedded install.ps1 was not found.");
+            throw new InvalidOperationException($"Embedded {expectedName} was not found.");
         }
 
         return assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException("Embedded install.ps1 could not be opened.");
+            ?? throw new InvalidOperationException($"Embedded {expectedName} could not be opened.");
     }
 }

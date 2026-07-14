@@ -5,6 +5,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { atomicWriteJson, withFileLock } from "./concurrency.js";
+import {
+  DATA_CLASSIFICATION_POLICY_VERSION,
+  classifyDataFileAtPath,
+  type DataFileClassification,
+} from "./data-classification.js";
 
 export const TASK_SYNC_SCOPE_VERSION = "task_sync_scope_20260711_v2";
 
@@ -38,6 +43,7 @@ export type TaskSyncScopeResolution = {
   state: "verified" | "blocked";
   task_id: string;
   scope_path: string;
+  scope_version: string | null;
   scope_revision: number | null;
   scope_sha256: string | null;
   task_path: string | null;
@@ -46,6 +52,26 @@ export type TaskSyncScopeResolution = {
   entries: TaskSyncScopeEntry[];
   reason_codes: string[];
   rejected_paths: Array<{ path: string; reason: string }>;
+};
+
+export type TaskSyncQueueCandidate = TaskSyncScopeEntry & {
+  classification: "syncable" | "conditional";
+  classifier_policy_version: string;
+  policy: string;
+};
+
+export type TaskSyncQueueCandidateResolution = {
+  ok: boolean;
+  task_id: string;
+  scope: TaskSyncScopeResolution;
+  candidates: TaskSyncQueueCandidate[];
+  rejected_paths: Array<{
+    path: string;
+    reason: string;
+    classification: DataFileClassification["classification"] | "scope_blocked";
+    policy: string;
+  }>;
+  reason_codes: string[];
 };
 
 function sha256Text(value: string): string {
@@ -319,6 +345,7 @@ export async function resolveTaskSyncScope(input: {
     state: uniqueReasons.length === 0 && selected.length > 0 ? "verified" : "blocked",
     task_id: input.taskId,
     scope_path: scopeRelative,
+    scope_version: scope?.version ?? null,
     scope_revision: scope?.revision ?? null,
     scope_sha256: scopeSha256,
     task_path: scope?.task_path ?? null,
@@ -327,5 +354,116 @@ export async function resolveTaskSyncScope(input: {
     entries: selected,
     reason_codes: uniqueReasons,
     rejected_paths: rejected.slice(0, 100),
+  };
+}
+
+function sameScopeEntry(left: TaskSyncScopeEntry | undefined, right: TaskSyncScopeEntry | undefined): boolean {
+  return Boolean(
+    left &&
+      right &&
+      left.path === right.path &&
+      left.sha256 === right.sha256 &&
+      left.git_blob_oid === right.git_blob_oid &&
+      left.size_bytes === right.size_bytes &&
+      left.approval === right.approval,
+  );
+}
+
+/**
+ * Resolves a task scope and independently re-runs the unified path/content
+ * classifier. A second scope resolution closes the race between classification
+ * and queue admission, so queue candidates remain bound to the reviewed bytes.
+ */
+export async function resolveTaskSyncQueueCandidates(input: {
+  dataRoot: string;
+  taskId: string;
+  requestedPaths: string[];
+  allowConditional?: boolean;
+}): Promise<TaskSyncQueueCandidateResolution> {
+  const first = await resolveTaskSyncScope(input);
+  if (!first.ok) {
+    return {
+      ok: false,
+      task_id: input.taskId,
+      scope: first,
+      candidates: [],
+      rejected_paths: first.rejected_paths.map((entry) => ({
+        path: entry.path,
+        reason: entry.reason,
+        classification: "scope_blocked",
+        policy: "task_sync_scope",
+      })),
+      reason_codes: first.reason_codes,
+    };
+  }
+
+  const classified = await Promise.all(
+    first.entries.map(async (entry) => ({
+      entry,
+      decision: await classifyDataFileAtPath({
+        root: input.dataRoot,
+        relativePath: entry.path,
+        scanContent: true,
+      }),
+    })),
+  );
+  const second = await resolveTaskSyncScope(input);
+  const secondByPath = new Map(second.entries.map((entry) => [entry.path, entry]));
+  const candidates: TaskSyncQueueCandidate[] = [];
+  const rejected: TaskSyncQueueCandidateResolution["rejected_paths"] = [];
+  const reasonCodes = new Set<string>(second.reason_codes);
+
+  for (const { entry, decision } of classified) {
+    if (!second.ok || !sameScopeEntry(entry, secondByPath.get(entry.path))) {
+      reasonCodes.add("task_scope_changed_during_classification");
+      rejected.push({
+        path: entry.path,
+        reason: "task scope or artifact identity changed during classifier evaluation",
+        classification: "scope_blocked",
+        policy: "task_scope_race",
+      });
+      continue;
+    }
+    if (
+      decision.policy_version !== DATA_CLASSIFICATION_POLICY_VERSION ||
+      !decision.scan.complete ||
+      decision.classification === "blocked" ||
+      decision.findings.some((finding) => finding.severity === "blocker")
+    ) {
+      reasonCodes.add("task_sync_candidate_classifier_blocked");
+      rejected.push({
+        path: entry.path,
+        reason: decision.reasons.join(", ") || "unified classifier blocked the artifact",
+        classification: decision.classification,
+        policy: decision.policy,
+      });
+      continue;
+    }
+    if (decision.classification === "conditional" && input.allowConditional !== true) {
+      reasonCodes.add("task_sync_candidate_conditional_requires_opt_in");
+      rejected.push({
+        path: entry.path,
+        reason: "conditional artifacts require the existing explicit policy opt-in",
+        classification: decision.classification,
+        policy: decision.policy,
+      });
+      continue;
+    }
+    candidates.push({
+      ...entry,
+      classification: decision.classification,
+      classifier_policy_version: decision.policy_version,
+      policy: decision.policy,
+    });
+  }
+
+  candidates.sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    ok: candidates.length > 0 && rejected.length === 0 && reasonCodes.size === 0,
+    task_id: input.taskId,
+    scope: second,
+    candidates,
+    rejected_paths: rejected,
+    reason_codes: Array.from(reasonCodes),
   };
 }
